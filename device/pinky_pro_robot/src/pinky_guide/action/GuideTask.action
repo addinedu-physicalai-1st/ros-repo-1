@@ -1,0 +1,15 @@
+# Goal
+string dest_name       # locations.yaml 의 목적지 키
+uint8  cmd_type        # GuideCommand 상수
+
+---
+# Result
+uint8  status          # GuideResult 상수
+string message
+
+---
+# Feedback
+string current_waypoint    # 현재 이동 중인 웨이포인트 이름
+uint8  waypoints_done      # 완료된 웨이포인트 수
+uint8  waypoints_total     # 전체 웨이포인트 수
+float32 dist_to_next       # 다음 웨이포인트까지 거리 (m)

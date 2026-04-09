@@ -1,0 +1,134 @@
+# ============================================================
+# 뷔페 내부 웨이포인트 좌표 DB
+# 모든 좌표는 map 프레임 기준 (단위: m, rad)
+# waypoints: 순서대로 경유하는 중간 지점들
+# goal:      최종 목적지
+# max_speed: 이 구간에서 허용할 최대 속도 (m/s)
+# ============================================================
+
+# ── 대기 장소 ──────────────────────────────────────────
+dock_a:
+  description: "대기장소 A"
+  goal:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+dock_b:
+  description: "대기장소 B"
+  goal:
+    x: 1.5
+    y: 0.0
+    yaw: 3.14
+
+# ── 테이블 ─────────────────────────────────────────────
+table_1:
+  description: "테이블 1번"
+  max_speed: 0.3
+  waypoints:
+    - { x: 1.0, y: 0.5, yaw: 0.0, label: "복도 진입" }
+    - { x: 2.0, y: 0.5, yaw: 0.0, label: "1구역 입구" }
+  goal:
+    x: 2.5
+    y: 1.0
+    yaw: 1.57
+
+table_2:
+  description: "테이블 2번"
+  max_speed: 0.3
+  waypoints:
+    - { x: 1.0, y: 0.5, yaw: 0.0, label: "복도 진입" }
+    - { x: 2.0, y: 0.5, yaw: 0.0, label: "1구역 입구" }
+  goal:
+    x: 2.5
+    y: 2.0
+    yaw: 1.57
+
+table_3:
+  description: "테이블 3번"
+  max_speed: 0.3
+  waypoints:
+    - { x: 1.0, y: 0.5, yaw: 0.0, label: "복도 진입" }
+    - { x: 3.0, y: 0.5, yaw: 0.0, label: "2구역 입구" }
+  goal:
+    x: 3.5
+    y: 1.5
+    yaw: 1.57
+
+# ── 화장실 ─────────────────────────────────────────────
+toilet_a:
+  description: "화장실 A (입구 우측)"
+  max_speed: 0.3
+  waypoints:
+    - { x: 1.0, y: -0.5, yaw: -1.57, label: "우측 복도" }
+    - { x: 1.0, y: -2.0, yaw: -1.57, label: "화장실 통로" }
+  goal:
+    x: 1.0
+    y: -3.0
+    yaw: -1.57
+
+toilet_b:
+  description: "화장실 B (2층)"
+  max_speed: 0.3
+  waypoints:
+    - { x: 0.5, y: 1.0, yaw: 1.57, label: "엘리베이터 방향" }
+  goal:
+    x: 0.5
+    y: 3.0
+    yaw: 1.57
+
+# ── 메뉴 진열대 ────────────────────────────────────────
+display_steak:
+  description: "스테이크 진열대 (A구역)"
+  max_speed: 0.3
+  waypoints:
+    - { x: 4.0, y: 0.0, yaw: 0.0, label: "A구역 복도" }
+  goal:
+    x: 5.0
+    y: 0.5
+    yaw: 0.0
+
+display_salad:
+  description: "샐러드 바 (B구역)"
+  max_speed: 0.3
+  waypoints:
+    - { x: 4.0, y: 2.0, yaw: 1.57, label: "B구역 복도" }
+  goal:
+    x: 5.0
+    y: 2.5
+    yaw: 0.0
+
+display_sushi:
+  description: "초밥 진열대 (C구역)"
+  max_speed: 0.3
+  waypoints:
+    - { x: 4.0, y: 4.0, yaw: 1.57, label: "C구역 복도" }
+  goal:
+    x: 5.0
+    y: 4.5
+    yaw: 0.0
+
+display_drink:
+  description: "음료 코너"
+  max_speed: 0.3
+  waypoints:
+    - { x: 2.0, y: -1.0, yaw: -1.57, label: "음료 코너 방향" }
+  goal:
+    x: 2.5
+    y: -2.0
+    yaw: -1.57
+
+# ── 목적지 ID → 키 매핑 (바이너리 프로토콜용) ──────────
+# dest_id (uint16) → locations.yaml 키
+id_map:
+  1:   "table_1"
+  2:   "table_2"
+  3:   "table_3"
+  32:  "toilet_a"
+  33:  "toilet_b"
+  48:  "display_steak"
+  49:  "display_salad"
+  50:  "display_sushi"
+  51:  "display_drink"
+  64:  "dock_a"
+  65:  "dock_b"
