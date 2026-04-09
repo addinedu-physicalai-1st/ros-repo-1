@@ -4,7 +4,7 @@
     <arg name="namespace" default=""/>
     <arg name="robot_name" default="$(var namespace)pinky"/>
     <arg name="cam_tilt_deg" default="0"/>
-    <arg name="world_name" default="pinky_factory.world"/>
+    <arg name="world_name" default="world.world"/>
     <arg name="world" default="$(find-pkg-share pinky_gz_sim)/worlds/$(var world_name)"/>
     <arg name="bridge_params" default="$(find-pkg-share pinky_gz_sim)/params/pinky_bridge.yaml"/>
     
