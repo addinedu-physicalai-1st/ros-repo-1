@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>주방 관리 패널</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #111214;
+  --surface: #1a1b1f;
+  --surface2: #222429;
+  --border: rgba(255,255,255,0.07);
+  --border-md: rgba(255,255,255,0.13);
+  --text: #f0efe8;
+  --text-muted: #7a7a82;
+  --text-dim: #3a3a42;
+  --orange: #f0833a;
+  --orange-dim: rgba(240,131,58,0.13);
+  --orange-border: rgba(240,131,58,0.35);
+  --blue: #5ba4f5;
+  --blue-dim: rgba(91,164,245,0.12);
+  --blue-border: rgba(91,164,245,0.32);
+  --green: #5fd68a;
+  --green-dim: rgba(95,214,138,0.11);
+  --green-border: rgba(95,214,138,0.30);
+  --red: #e8605a;
+  --radius: 18px;
+  --radius-sm: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Noto Sans KR', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ── HEADER ─────────────────────────── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 1.4rem;
+  height: 54px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky; top: 0; z-index: 50;
+}
+.topbar-left { display: flex; align-items: center; gap: 10px; }
+.topbar-logo { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+.topbar-logo span { color: var(--orange); }
+.badge-kitchen {
+  background: var(--orange-dim); border: 1px solid var(--orange-border);
+  color: var(--orange); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.07em; padding: 2px 9px;
+  border-radius: 30px; text-transform: uppercase;
+}
+.clock {
+  font-family: 'DM Mono', monospace;
+  font-size: 13px; color: var(--text-muted);
+}
+
+/* ── STATUS BAR ─────────────────────── */
+.status-bar {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px; padding: 1rem 1.2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.stat {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  text-align: center;
+}
+.stat-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 22px; font-weight: 500;
+  line-height: 1;
+}
+.stat-val.orange { color: var(--orange); }
+.stat-val.blue   { color: var(--blue); }
+.stat-val.green  { color: var(--green); }
+.stat-lbl { font-size: 10px; color: var(--text-muted); margin-top: 5px; letter-spacing: 0.04em; }
+
+/* ── MAIN ───────────────────────────── */
+.page { padding: 1.2rem; max-width: 520px; margin: 0 auto; }
+
+/* ── ACTION CARDS ───────────────────── */
+.action-section { margin-bottom: 1.6rem; }
+.section-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-muted);
+  margin-bottom: 10px; padding-left: 2px;
+}
+
+.action-card {
+  border-radius: var(--radius);
+  padding: 1.4rem 1.4rem;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--border);
+  transition: filter 0.15s, transform 0.1s;
+  display: flex; align-items: center; gap: 1.1rem;
+  margin-bottom: 10px;
+  position: relative;
+  overflow: hidden;
+}
+.action-card:last-child { margin-bottom: 0; }
+.action-card:hover { filter: brightness(1.08); }
+.action-card:active { transform: scale(0.98); }
+
+.action-card.ready {
+  background: var(--orange-dim);
+  border-color: var(--orange-border);
+}
+.action-card.arrived {
+  background: var(--blue-dim);
+  border-color: var(--blue-border);
+}
+.action-card.loaded {
+  background: var(--green-dim);
+  border-color: var(--green-border);
+}
+
+.card-icon {
+  width: 52px; height: 52px; flex-shrink: 0;
+  border-radius: 14px; display: flex; align-items: center; justify-content: center;
+  font-size: 26px;
+}
+.ready  .card-icon { background: rgba(240,131,58,0.18); }
+.arrived .card-icon { background: rgba(91,164,245,0.18); }
+.loaded .card-icon { background: rgba(95,214,138,0.18); }
+
+.card-body { flex: 1; min-width: 0; }
+.card-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+.ready   .card-title { color: var(--orange); }
+.arrived .card-title { color: var(--blue); }
+.loaded  .card-title { color: var(--green); }
+.card-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+
+.card-arrow {
+  font-size: 18px; color: var(--text-dim); flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.action-card:hover .card-arrow { transform: translateX(3px); }
+
+/* ── LOG ────────────────────────────── */
+.log-section { margin-bottom: 2rem; }
+.log-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.log-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  animation: fadeIn 0.3s ease;
+}
+.log-item:last-child { border-bottom: none; }
+.log-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.log-dot.orange { background: var(--orange); }
+.log-dot.blue   { background: var(--blue); }
+.log-dot.green  { background: var(--green); }
+.log-text { flex: 1; color: var(--text); }
+.log-time { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--text-muted); }
+.log-empty { padding: 1.2rem; text-align: center; font-size: 12px; color: var(--text-dim); }
+
+@keyframes fadeIn { from { opacity:0; transform: translateX(-6px); } to { opacity:1; transform: translateX(0); } }
+
+/* ── MENU MODAL ─────────────────────── */
+.overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  z-index: 200; align-items: flex-end; justify-content: center;
+  padding-bottom: 0;
+}
+.overlay.show { display: flex; }
+
+.sheet {
+  width: 100%; max-width: 520px;
+  background: var(--surface);
+  border: 1px solid var(--border-md);
+  border-radius: 24px 24px 0 0;
+  padding: 1.4rem 1.4rem 2.4rem;
+  animation: slideUp 0.3s cubic-bezier(0.34,1.1,0.64,1);
+}
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.sheet-handle {
+  width: 36px; height: 4px; background: var(--border-md);
+  border-radius: 2px; margin: 0 auto 1.2rem;
+}
+.sheet-title {
+  font-size: 16px; font-weight: 700; margin-bottom: 4px;
+  color: var(--orange);
+}
+.sheet-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 1.2rem; }
+
+.menu-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+  margin-bottom: 1rem;
+}
+.menu-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 10px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  user-select: none;
+}
+.menu-chip:hover { border-color: var(--orange-border); background: var(--orange-dim); }
+.menu-chip:active { transform: scale(0.96); }
+.menu-chip.selected {
+  border-color: var(--orange);
+  background: var(--orange-dim);
+  box-shadow: 0 0 0 1px var(--orange);
+}
+.menu-chip-icon { font-size: 28px; margin-bottom: 7px; }
+.menu-chip-name { font-size: 13px; font-weight: 700; color: var(--text); }
+.menu-chip-loc  { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+
+.sheet-qty {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 12px 14px;
+  margin-bottom: 1rem;
+}
+.sheet-qty label { font-size: 12px; color: var(--text-muted); flex: 1; }
+.qty-control { display: flex; align-items: center; gap: 10px; }
+.qty-btn {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--border-md);
+  color: var(--text); font-size: 18px; font-weight: 500;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  line-height: 1; transition: background 0.12s;
+}
+.qty-btn:hover { background: var(--border-md); }
+.qty-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 16px; font-weight: 500; min-width: 24px; text-align: center;
+}
+
+.btn-confirm {
+  width: 100%; padding: 14px;
+  background: var(--orange);
+  color: #1a0a00; font-family: 'Noto Sans KR', sans-serif;
+  font-size: 15px; font-weight: 700;
+  border: none; border-radius: var(--radius-sm);
+  cursor: pointer; transition: opacity 0.15s;
+}
+.btn-confirm:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn-confirm:not(:disabled):hover { opacity: 0.88; }
+.btn-cancel {
+  width: 100%; padding: 12px; margin-top: 8px;
+  background: transparent; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: 'Noto Sans KR', sans-serif; font-size: 13px;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.btn-cancel:hover { border-color: var(--border-md); }
+
+/* ── TOAST ──────────────────────────── */
+.toast {
+  display: none; position: fixed;
+  bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+  background: var(--surface2); border: 1px solid var(--border-md);
+  border-radius: 30px; padding: 10px 22px;
+  font-size: 13px; color: var(--text); white-space: nowrap;
+  z-index: 400; box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+}
+.toast.show { display: block; animation: toastUp 0.2s ease; }
+.toast.ok   { border-color: var(--green-border); color: var(--green); }
+.toast.err  { border-color: rgba(232,96,90,0.35); color: var(--red); }
+@keyframes toastUp {
+  from { opacity:0; transform: translateX(-50%) translateY(8px); }
+  to   { opacity:1; transform: translateX(-50%) translateY(0); }
+}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="topbar-logo">주방 <span>Panel</span></div>
+    <div class="badge-kitchen">Kitchen</div>
+  </div>
+  <div class="clock" id="clock">--:--:--</div>
+</div>
+
+<!-- STATUS -->
+<div class="status-bar">
+  <div class="stat">
+    <div class="stat-val orange" id="statReady">0</div>
+    <div class="stat-lbl">준비 요청</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val blue" id="statArrived">0</div>
+    <div class="stat-lbl">로봇 도착</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val green" id="statLoaded">0</div>
+    <div class="stat-lbl">적재 완료</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="page">
+
+  <div class="action-section">
+    <div class="section-label">액션</div>
+
+    <!-- 메뉴 준비 완료 -->
+    <div class="action-card ready" onclick="openMenuSheet()">
+      <div class="card-icon">🍳</div>
+      <div class="card-body">
+        <div class="card-title">메뉴 준비 완료</div>
+        <div class="card-desc">준비된 메뉴를 선택하고 로봇을 호출합니다</div>
+      </div>
+      <div class="card-arrow">›</div>
+    </div>
+
+    <!-- 로봇 도착 확인 -->
+    <div class="action-card arrived" onclick="sendAction('robotArrived', '로봇 도착 확인')">
+      <div class="card-icon">🤖</div>
+      <div class="card-body">
+        <div class="card-title">로봇 도착 확인</div>
+        <div class="card-desc">로봇이 주방에 도착한 것을 확인했습니다</div>
+      </div>
+      <div class="card-arrow">›</div>
+    </div>
+
+    <!-- 적재 완료 -->
+    <div class="action-card loaded" onclick="sendAction('robotLoaded', '적재 완료')">
+      <div class="card-icon">📦</div>
+      <div class="card-body">
+        <div class="card-title">적재 완료</div>
+        <div class="card-desc">준비한 음식을 로봇에 모두 올렸습니다</div>
+      </div>
+      <div class="card-arrow">›</div>
+    </div>
+  </div>
+
+  <!-- 로그 -->
+  <div class="log-section">
+    <div class="section-label">전송 기록</div>
+    <div class="log-list" id="logList">
+      <div class="log-empty" id="logEmpty">전송 기록이 없습니다</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 메뉴 선택 바텀 시트 -->
+<div class="overlay" id="menuOverlay" onclick="handleOverlay(event)">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">메뉴 준비 완료</div>
+    <div class="sheet-sub">준비된 메뉴를 선택하고 로봇을 호출하세요</div>
+
+    <div class="menu-grid" id="menuGrid">
+      <!-- JS로 렌더링 -->
+    </div>
+
+    <div class="sheet-qty">
+      <label>준비 수량</label>
+      <div class="qty-control">
+        <button class="qty-btn" onclick="changeQty(-1)">−</button>
+        <div class="qty-val" id="qtyVal">1</div>
+        <button class="qty-btn" onclick="changeQty(1)">＋</button>
+      </div>
+    </div>
+
+    <button class="btn-confirm" id="btnConfirm" onclick="confirmMenu()" disabled>
+      메뉴 선택 후 로봇 호출
+    </button>
+    <button class="btn-cancel" onclick="closeMenuSheet()">취소</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SERVER_URL = localStorage.getItem('buffetServerUrl') || 'https://your-control-server.com/api/kitchen';
+
+// 관리자 페이지 localStorage와 공유
+const DEFAULT_MENUS = [
+  { id:1, name:'스테이크', icon:'🥩', location:'A구역 3번 진열대' },
+  { id:2, name:'샐러드',   icon:'🥗', location:'B구역 1번 진열대' },
+  { id:3, name:'초밥',     icon:'🍣', location:'C구역 2번 진열대' },
+  { id:4, name:'음료수',   icon:'🥤', location:'음료 코너' },
+];
+
+function getMenus() {
+  try {
+    const stored = localStorage.getItem('buffetMenuItems');
+    if (stored) {
+      const items = JSON.parse(stored);
+      if (items.length > 0) return items.sort((a,b) => a.order - b.order);
+    }
+  } catch(e) {}
+  return DEFAULT_MENUS;
+}
+
+let selectedMenu = null;
+let qty = 1;
+const counts = { ready: 0, arrived: 0, loaded: 0 };
+const logs = [];
+
+// ── CLOCK ──────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('ko-KR', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false });
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── STATS ──────────────────────────────
+function updateStats() {
+  document.getElementById('statReady').textContent   = counts.ready;
+  document.getElementById('statArrived').textContent = counts.arrived;
+  document.getElementById('statLoaded').textContent  = counts.loaded;
+}
+
+// ── LOG ────────────────────────────────
+function addLog(text, color) {
+  logs.unshift({ text, color, time: new Date().toLocaleTimeString('ko-KR', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }) });
+  if (logs.length > 20) logs.pop();
+  renderLog();
+}
+function renderLog() {
+  const list = document.getElementById('logList');
+  const empty = document.getElementById('logEmpty');
+  if (logs.length === 0) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  list.innerHTML = logs.map(l => `
+    <div class="log-item">
+      <div class="log-dot ${l.color}"></div>
+      <div class="log-text">${l.text}</div>
+      <div class="log-time">${l.time}</div>
+    </div>
+  `).join('');
+}
+
+// ── SEND ───────────────────────────────
+async function sendAction(type, label, extra) {
+  const payload = { type, label, timestamp: new Date().toISOString(), ...extra };
+  try {
+    const res = await fetch(SERVER_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const ok = res.ok;
+    showToast((ok ? '✓ ' : '⚠ ') + label + (ok ? ' 전송됨' : ' — 서버 오류'), ok ? 'ok' : 'err');
+  } catch {
+    showToast('✓ [데모] ' + label + ' 전송됨', 'ok');
+  }
+
+  if (type === 'menuReady')     { counts.ready++;   addLog('메뉴 준비 완료 · ' + (extra.menu||'') + ' × ' + (extra.qty||1) + '개', 'orange'); }
+  if (type === 'robotArrived')  { counts.arrived++;  addLog('로봇 도착 확인', 'blue'); }
+  if (type === 'robotLoaded')   { counts.loaded++;   addLog('적재 완료 — 로봇 출발 대기', 'green'); }
+  updateStats();
+}
+
+// ── MENU SHEET ─────────────────────────
+function openMenuSheet() {
+  selectedMenu = null; qty = 1;
+  document.getElementById('qtyVal').textContent = '1';
+  document.getElementById('btnConfirm').disabled = true;
+
+  const menus = getMenus();
+  document.getElementById('menuGrid').innerHTML = menus.map(m => `
+    <div class="menu-chip" id="chip-${m.id}" onclick="selectMenu(${m.id})">
+      <div class="menu-chip-icon">${m.icon || '🍽️'}</div>
+      <div class="menu-chip-name">${m.name}</div>
+      <div class="menu-chip-loc">${m.location || ''}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('menuOverlay').classList.add('show');
+}
+
+function selectMenu(id) {
+  selectedMenu = id;
+  document.querySelectorAll('.menu-chip').forEach(c => c.classList.remove('selected'));
+  const chip = document.getElementById('chip-' + id);
+  if (chip) chip.classList.add('selected');
+  document.getElementById('btnConfirm').disabled = false;
+}
+
+function changeQty(delta) {
+  qty = Math.max(1, Math.min(99, qty + delta));
+  document.getElementById('qtyVal').textContent = qty;
+}
+
+function confirmMenu() {
+  if (!selectedMenu) return;
+  const menus = getMenus();
+  const menu = menus.find(m => m.id === selectedMenu);
+  closeMenuSheet();
+  sendAction('menuReady', '메뉴 준비 완료', { menu: menu ? menu.name : '알 수 없음', qty });
+}
+
+function closeMenuSheet() {
+  document.getElementById('menuOverlay').classList.remove('show');
+}
+function handleOverlay(e) {
+  if (e.target === document.getElementById('menuOverlay')) closeMenuSheet();
+}
+
+// ── TOAST ──────────────────────────────
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + type + ' show';
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.className = 'toast', 2800);
+}
+</script>
+</body>
+</html>
