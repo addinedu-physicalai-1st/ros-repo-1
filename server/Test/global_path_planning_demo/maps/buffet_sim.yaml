@@ -38,7 +38,6 @@ occupied_thresh: 0.65
 free_thresh: 0.196
 
 defaults:
-  entry_radius: 0.35       # m; most free points are within reach of a column
   dynamic_radius: 0.12     # m; another pinky-pro + small margin
   inflation_radius: 0.09   # m; matches Nav2 inscribed + padding
 

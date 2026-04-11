@@ -58,9 +58,10 @@ import numpy as np
 import yaml
 
 
-# Default YAML map shipped with the demo.
+# Default YAML map shipped with the demo - the real SLAM scan of
+# the pinky-pro operational environment.
 DEFAULT_MAP_PATH: Path = (
-    Path(__file__).parent / "maps" / "buffet_default.yaml"
+    Path(__file__).parent / "maps" / "buffet_sim.yaml"
 )
 
 # Pinky-pro physical dimensions (derived from the URDF and the Nav2
@@ -73,27 +74,30 @@ DEFAULT_MAP_PATH: Path = (
 # The inscribed radius of the 12 cm square is 0.06 m; adding the
 # 0.03 m footprint_padding gives 0.09 m, which matches what Nav2's
 # local costmap effectively uses as the robot radius for the inflation
-# layer. The circumscribed radius (sqrt(2) * 0.06 + 0.03 ~= 0.115 m)
-# would be even more conservative but leaves almost no free space
-# inside the tight 2 m x 1.6 m buffet; we match Nav2 and use the
-# inscribed value.
+# layer.
 PINKY_PRO_RADIUS: float = 0.09
 
 # Circular footprint (in metres) used for a dynamic obstacle when no
 # per-map default is provided. Sized to cover another pinky-pro disc.
-# Large test maps (buffet_default) explicitly override this via their
-# ``defaults:`` block.
 DEFAULT_DYNAMIC_RADIUS: float = 0.12
-
-# Maximum allowed straight-line distance from a free start point to its
-# entry waypoint. Small-space default appropriate for the pinky-pro
-# deployment scale. Large maps override via ``defaults:``.
-DEFAULT_ENTRY_RADIUS: float = 0.40
 
 # Default inflation of static obstacles (in metres). Matches the
 # pinky-pro inscribed radius + Nav2 padding so the global planner by
 # default plans safely for the real robot.
 DEFAULT_INFLATION_RADIUS: float = PINKY_PRO_RADIUS
+
+# Soft penalty applied to the entry segment length when a free start
+# point is seeded into the multi-source A*. Values > 1.0 bias the
+# planner toward entering the corridor network through nearby
+# waypoints instead of taking a long diagonal through open space.
+# 1.2 means "each metre of entry segment costs as much as 1.2 m of
+# corridor edge" - enough to suppress tiny (~2%) shortcuts while
+# still allowing meaningful (~20%) shortcuts when they actually win.
+# Physical interpretation: entry segments have slightly less safety
+# margin and slightly less predictability than corridor-aligned
+# edges, so we prefer corridor-following unless the savings are
+# clearly worth it.
+DEFAULT_ENTRY_PENALTY_FACTOR: float = 1.2
 
 # Sampling step (m) used for line-of-sight / segment-clear checks. Small
 # enough for the demo's 1 m grid and the typical 0.05 m SLAM resolution.
@@ -276,13 +280,10 @@ def components_after_removing(
 class MapDefaults:
     """Per-map default values for the planner and visualizer.
 
-    These scale with the physical size of the map so a tiny 2 m x 1.6 m
-    deployment and a 20 m x 15 m test hall can share the same code. They
-    are populated from the optional ``defaults:`` block in the YAML
-    file; missing fields fall back to the module-level globals.
+    Populated from the optional ``defaults:`` block in the YAML file;
+    missing fields fall back to the module-level globals.
     """
 
-    entry_radius: float = DEFAULT_ENTRY_RADIUS
     dynamic_radius: float = DEFAULT_DYNAMIC_RADIUS
     inflation_radius: float = DEFAULT_INFLATION_RADIUS
 
@@ -608,9 +609,8 @@ class BuffetMap:
     width_m: float
     height_m: float
     name: str = ""
-    # Per-map default values for entry_radius / dynamic_radius /
-    # inflation_radius. Pulled from the optional `defaults:` block in
-    # the YAML file.
+    # Per-map default values for dynamic_radius / inflation_radius.
+    # Pulled from the optional `defaults:` block in the YAML file.
     defaults: MapDefaults = field(default_factory=MapDefaults)
     # Optional: original obstacle list for the rect format. Kept around
     # so callers that want to inspect named regions still can.
@@ -768,7 +768,7 @@ def _parse_defaults(raw: Any) -> MapDefaults:
     if not isinstance(raw, Mapping):
         raise ValueError("map: 'defaults' must be a mapping")
     result = MapDefaults()
-    allowed = ("entry_radius", "dynamic_radius", "inflation_radius")
+    allowed = ("dynamic_radius", "inflation_radius")
     for key, value in raw.items():
         if key not in allowed:
             raise ValueError(
@@ -779,10 +779,6 @@ def _parse_defaults(raw: Any) -> MapDefaults:
         if num < 0.0:
             raise ValueError(
                 f"map: defaults.{key} must be non-negative, got {num}"
-            )
-        if key == "entry_radius" and num == 0.0:
-            raise ValueError(
-                "map: defaults.entry_radius must be positive"
             )
         if key == "dynamic_radius" and num == 0.0:
             raise ValueError(

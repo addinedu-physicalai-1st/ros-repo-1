@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from map_data import (
-    DEFAULT_ENTRY_RADIUS,
+    DEFAULT_ENTRY_PENALTY_FACTOR,
     BuffetMap,
     DynamicObstacle,
     StaticEnv,
@@ -202,11 +202,7 @@ class FreeStartPlan:
     ``waypoints`` is the waypoint id sequence from the chosen entry node
     to the goal. ``entry_distance`` is the straight-line distance from
     the user-provided ``start_xy`` to ``waypoints[0]``. ``waypoint_cost``
-    is the cost of the waypoint chain itself. ``entry_radius`` is the
-    radius that was used to filter entry candidates, and
-    ``entry_radius_fallback`` is True if no waypoint was reachable inside
-    that radius and the planner had to relax the constraint and fall
-    back to the single nearest reachable waypoint.
+    is the cost of the waypoint chain itself.
 
     ``goal_yaw`` is the orientation (radians) the robot should hold
     upon arriving at the goal, if one was declared. Pulled from the
@@ -219,8 +215,6 @@ class FreeStartPlan:
     waypoints: List[int]
     entry_distance: float
     waypoint_cost: float
-    entry_radius: float
-    entry_radius_fallback: bool = False
     goal_yaw: Optional[float] = None
 
     @property
@@ -236,42 +230,44 @@ def plan_path_from_point(
     buffet_map: BuffetMap,
     start_xy: Tuple[float, float],
     goal: int,
-    entry_radius: float = DEFAULT_ENTRY_RADIUS,
     *,
     dynamic_obstacles: Optional[Iterable[DynamicObstacle]] = None,
     goal_yaw: Optional[float] = None,
+    entry_penalty_factor: float = DEFAULT_ENTRY_PENALTY_FACTOR,
 ) -> Optional[FreeStartPlan]:
     """Plan a path from a continuous (x, y) start point to ``goal``.
 
-    The start point is connected only to line-of-sight reachable
-    waypoints whose straight-line distance is at most ``entry_radius``,
-    so the entry segment stays short and the bulk of the trip happens on
-    the corridor graph (straight + 90-degree turns). Among the
-    candidates inside the radius, A* picks the one that minimises the
-    total path length, not just the geometrically nearest one.
-
-    If no waypoint is reachable inside ``entry_radius`` (e.g. the user
-    clicked far from the corridor network), the planner falls back to
-    the single nearest line-of-sight reachable waypoint and sets
-    :attr:`FreeStartPlan.entry_radius_fallback` to ``True`` so the
-    caller can warn about the relaxed constraint.
+    The start point is seeded into A* with every line-of-sight
+    reachable waypoint (no artificial radius cap). Each candidate's
+    straight-line distance is multiplied by ``entry_penalty_factor``
+    to get its initial g-score, which softly biases A* toward
+    entering the corridor network through nearby waypoints instead of
+    taking long diagonals through open space. With the default factor
+    of 1.2, a far-away seed only wins if its corridor savings exceed
+    20% of the entry-distance difference - enough to suppress marginal
+    shortcuts while still allowing meaningful ones.
 
     ``dynamic_obstacles`` (optional) is a list of circular obstacles
     that block waypoints/edges they touch and that the entry segment
     must also clear. The start point itself must not be inside any
     dynamic obstacle disc.
 
-    Returns ``None`` if the start point is inside a static obstacle or a
-    dynamic obstacle, has no line-of-sight reachable waypoint at all, or
-    no path to the goal exists.
+    ``goal_yaw`` (optional) overrides the goal waypoint's declared
+    yaw. If both the parameter and the waypoint are ``None``, the
+    resulting plan has ``goal_yaw = None`` (no orientation constraint).
+
+    Returns ``None`` if the start point is inside a static obstacle or
+    a dynamic obstacle, has no line-of-sight reachable waypoint at
+    all, or no path to the goal exists.
     """
+    if entry_penalty_factor < 1.0:
+        raise ValueError("entry_penalty_factor must be >= 1.0")
+
     graph = buffet_map.graph
     static_env: StaticEnv = buffet_map.static_env
 
     if goal not in graph.waypoints:
         raise KeyError(f"Unknown goal waypoint id {goal}")
-    if entry_radius <= 0.0:
-        raise ValueError("entry_radius must be positive")
 
     dyn_list: List[DynamicObstacle] = (
         list(dynamic_obstacles) if dynamic_obstacles else []
@@ -288,9 +284,11 @@ def plan_path_from_point(
     if goal in blockage.waypoints:
         return None
 
-    seeds: Dict[int, float] = {}
-    nearest_id: Optional[int] = None
-    nearest_dist: float = math.inf
+    # Collect every line-of-sight reachable waypoint. ``actual_entry``
+    # stores the physical straight-line distance (what we report to
+    # the caller); ``penalized_seeds`` multiplies that by the penalty
+    # factor and is what A* actually uses as initial g-score.
+    actual_entry: Dict[int, float] = {}
     for wp in graph.waypoints.values():
         if wp.wp_id in blockage.waypoints:
             continue
@@ -303,25 +301,26 @@ def plan_path_from_point(
             for d in dyn_list
         ):
             continue
-        d_dist = math.hypot(sx - wp.x, sy - wp.y)
-        if d_dist < nearest_dist:
-            nearest_dist = d_dist
-            nearest_id = wp.wp_id
-        if d_dist <= entry_radius:
-            seeds[wp.wp_id] = d_dist
+        actual_entry[wp.wp_id] = math.hypot(sx - wp.x, sy - wp.y)
 
-    fallback = False
-    if not seeds:
-        if nearest_id is None:
-            return None
-        seeds[nearest_id] = nearest_dist
-        fallback = True
+    if not actual_entry:
+        return None
 
-    path, total_cost = _astar_multi_source(graph, seeds, goal, blockage)
+    penalized_seeds: Dict[int, float] = {
+        wp_id: d * entry_penalty_factor
+        for wp_id, d in actual_entry.items()
+    }
+
+    path, total_cost_penalized = _astar_multi_source(
+        graph, penalized_seeds, goal, blockage
+    )
     if path is None:
         return None
 
-    entry_distance = seeds[path[0]]
+    # Report actual (un-penalized) distances back to the caller.
+    entry_distance = actual_entry[path[0]]
+    waypoint_cost = total_cost_penalized - penalized_seeds[path[0]]
+
     # Resolve the required arrival yaw: explicit override wins over
     # the waypoint's declared yaw. None means "no constraint".
     effective_goal_yaw = (
@@ -331,9 +330,7 @@ def plan_path_from_point(
         start_xy=(sx, sy),
         waypoints=path,
         entry_distance=entry_distance,
-        waypoint_cost=total_cost - entry_distance,
-        entry_radius=entry_radius,
-        entry_radius_fallback=fallback,
+        waypoint_cost=waypoint_cost,
         goal_yaw=effective_goal_yaw,
     )
 

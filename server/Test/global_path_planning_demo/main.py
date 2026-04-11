@@ -32,22 +32,21 @@ from map_data import (
 )
 
 
-# Headless scenarios cover BOTH the large algorithm-test maps
-# (buffet_default / buffet_small) and the realistic-scale map
-# (buffet_realistic, ~2 m x 1.6 m). Scenarios whose labels do not
-# exist in the currently-loaded map are skipped gracefully so the
-# same file works for every --map value.
+# Headless scenarios target the real-scale maps (buffet_sim and
+# buffet_realistic). Labels that do not exist in the currently-loaded
+# map are skipped gracefully so the same file works for every
+# ``--map`` value.
 _HEADLESS_SCENARIOS: List[Tuple[str, str]] = [
-    # Large test hall (buffet_default).
-    ("Entrance", "Kitchen"),
-    ("Kitchen", "A3-S"),
-    ("CS-Left", "Return"),
-    ("Entrance", "B2-N"),
-    ("Return", "CS-Right"),
-    # Realistic 2 m x 1.6 m buffet.
+    # Shared between buffet_sim and buffet_realistic.
     ("Charging", "Kitchen"),
-    ("Charging", "Table"),
     ("Kitchen", "Return"),
+    ("Charging", "Return"),
+    # buffet_sim only (real SLAM map has these extra service points).
+    ("Entrance", "Kitchen"),
+    ("Entrance", "Table-N"),
+    ("Table-S", "Kitchen"),
+    # buffet_realistic only (ring map has a Table label).
+    ("Charging", "Table"),
     ("Table", "Return"),
 ]
 
@@ -55,17 +54,15 @@ _HEADLESS_SCENARIOS: List[Tuple[str, str]] = [
 # Free-start (x, y) -> goal label scenarios. The start is an arbitrary
 # point in a corridor, not aligned with any waypoint.
 _FREE_START_SCENARIOS: List[Tuple[Tuple[float, float], str]] = [
-    # Large test hall.
-    ((10.4, 0.6), "Kitchen"),
-    ((8.5, 6.0), "Return"),
-    ((1.7, 11.4), "A3-S"),
-    ((17.2, 9.8), "Entrance"),
-    # Previously degenerated into a long diagonal entry; should now
-    # snap to the nearest corridor waypoint and follow the grid.
-    ((19.0, 10.2), "Kitchen"),
-    # Realistic 2 m x 1.6 m buffet. Free start in the bottom-right
-    # corner, somewhere between the station and the wall.
+    # buffet_sim: middle-right area (the earlier U-turn bug case;
+    # after dropping the entry-radius cap, A* picks the nearest
+    # total-optimal entry instead of the nearest raw entry).
+    ((1.27, -0.56), "Charging"),
+    # buffet_sim: top of the left column, goal = Return.
+    ((0.00, -0.20), "Return"),
+    # buffet_realistic: bottom-right area, goal = Kitchen.
     ((1.55, 0.40), "Kitchen"),
+    # buffet_realistic: bottom-left area, goal = Return.
     ((0.55, 0.40), "Return"),
 ]
 
@@ -77,52 +74,40 @@ _FREE_START_SCENARIOS: List[Tuple[Tuple[float, float], str]] = [
 _DYNAMIC_SCENARIOS: List[
     Tuple[str, str, str, List[Tuple[float, float, float]]]
 ] = [
+    # buffet_sim: block the middle column bridge so A* must re-route
+    # via the top corridor.
     (
-        "R1 parked at junction (7,6) blocks the central north-south "
-        "corridor through column x=7",
+        "R1 parked at Table-N (0.84, -0.566) blocks the mid-right "
+        "bridge; A* reroutes via the top corridor",
         "Entrance",
         "Kitchen",
-        [(7.0, 6.0, DEFAULT_DYNAMIC_RADIUS)],
+        [(0.84, -0.566, DEFAULT_DYNAMIC_RADIUS)],
     ),
+    # buffet_sim: block the goal (Kitchen) directly.
     (
-        "R1 stopped on edge (13,1)->(13,6); A* should find an "
-        "alternative column",
-        "Entrance",
-        "Return",
-        [(13.0, 3.5, DEFAULT_DYNAMIC_RADIUS)],
-    ),
-    (
-        "Two robots block both shortcuts (7,6) and (13,6); only the "
-        "outer columns x=1 and x=18 remain",
+        "R1 sits on the goal Kitchen - planner must report no path",
         "Entrance",
         "Kitchen",
-        [
-            (7.0, 6.0, DEFAULT_DYNAMIC_RADIUS),
-            (13.0, 6.0, DEFAULT_DYNAMIC_RADIUS),
-        ],
+        [(1.50, 0.05, DEFAULT_DYNAMIC_RADIUS)],
     ),
+    # buffet_realistic: block the mid-left junction so A* must go
+    # through the right side.
     (
-        "R1 sits exactly on the goal Kitchen - planner must report no "
-        "path",
-        "Entrance",
-        "Kitchen",
-        [(4.0, 12.0, DEFAULT_DYNAMIC_RADIUS)],
-    ),
-    # Realistic 2 m x 1.6 m buffet scenarios (radii scaled down).
-    (
-        "Realistic: another pinky-pro (R1) parked at the (0.40, 0.80) "
-        "mid-left junction forces A* through the right side",
+        "Realistic: R1 parked at the (0.40, 0.80) mid-left junction "
+        "forces A* through the right side",
         "Charging",
         "Kitchen",
-        [(0.40, 0.80, 0.25)],
+        [(0.40, 0.80, DEFAULT_DYNAMIC_RADIUS)],
     ),
+    # buffet_realistic: big detour when the direct Kitchen<->Table
+    # edge is blocked.
     (
         "Realistic: R1 sits between Kitchen and Table on the top row, "
         "blocking the direct 0.6 m edge so A* must detour all the way "
         "around the serving station",
         "Kitchen",
         "Table",
-        [(1.30, 1.25, 0.25)],
+        [(1.30, 1.25, DEFAULT_DYNAMIC_RADIUS)],
     ),
 ]
 
@@ -132,33 +117,25 @@ _DYNAMIC_SCENARIOS: List[
 _DYNAMIC_FREE_SCENARIOS: List[
     Tuple[str, Tuple[float, float], str, List[Tuple[float, float, float]]]
 ] = [
+    # buffet_sim: the user's original U-turn case. Without any dyn
+    # obstacles, A* correctly picks Table-N as the entry (multi-source
+    # wins). With R1 on Table-N, the entry must fall back to
+    # (1.5,-0.566) and the route takes the right side + top corridor.
     (
-        "Free start (11.0, 0.5) -> Kitchen with R1 sitting on the "
-        "preferred entry waypoint (10,1); A* must pick a different "
-        "in-radius entry",
-        (11.0, 0.5),
-        "Kitchen",
-        [(10.0, 1.0, DEFAULT_DYNAMIC_RADIUS)],
+        "Free start (1.27, -0.56) -> Charging with R1 on Table-N; A* "
+        "re-selects entry waypoint and routes via right column",
+        (1.27, -0.56),
+        "Charging",
+        [(0.84, -0.566, DEFAULT_DYNAMIC_RADIUS)],
     ),
-    (
-        "Free start (19.0, 10.2) -> Kitchen with R1 blocking the entry "
-        "waypoint (18,12)",
-        (19.0, 10.2),
-        "Kitchen",
-        [(18.0, 12.0, DEFAULT_DYNAMIC_RADIUS)],
-    ),
-    # Realistic 2 m x 1.6 m buffet: free start in the bottom corridor
-    # with another pinky-pro (R1) sitting on the Charging waypoint. The
-    # start is deliberately outside R1's disc (distance 0.35 m > 0.25 m
-    # radius) so the planner is reachable and must pick a different
-    # in-radius entry.
+    # buffet_realistic: the earlier case that exercises in-radius
+    # multi-source optimality.
     (
         "Realistic: free start (0.75, 0.35) -> Kitchen with R1 on the "
-        "Charging waypoint (0.40, 0.35); A* should enter via (1.0, "
-        "0.35) instead",
+        "Charging waypoint (0.40, 0.35)",
         (0.75, 0.35),
         "Kitchen",
-        [(0.40, 0.35, 0.25)],
+        [(0.40, 0.35, DEFAULT_DYNAMIC_RADIUS)],
     ),
 ]
 
@@ -204,25 +181,16 @@ def _print_free_scenario(
             f"skipped ({exc})"
         )
         return
-    plan = plan_path_from_point(
-        buffet_map,
-        start_xy,
-        goal,
-        entry_radius=buffet_map.defaults.entry_radius,
-    )
+    plan = plan_path_from_point(buffet_map, start_xy, goal)
     print(f"\n[free-start] ({sx:.2f}, {sy:.2f}) -> {goal_label}")
     if plan is None:
         print("  no path found (start unreachable or inside obstacle)")
         return
     entry_wp = graph.waypoints[plan.entry_wp_id]
     entry_label = entry_wp.label or f"({entry_wp.x:g},{entry_wp.y:g})"
-    fallback_note = (
-        "  [radius fallback]" if plan.entry_radius_fallback else ""
-    )
     print(
         f"  entry waypoint = {entry_label} "
-        f"(distance {plan.entry_distance:.2f} m, "
-        f"radius {plan.entry_radius:.1f} m){fallback_note}"
+        f"(distance {plan.entry_distance:.2f} m)"
     )
     print(
         f"  total cost = {plan.total_cost:.2f} m "
@@ -335,12 +303,7 @@ def _print_dynamic_free_scenario(
     )
     print(f"  obstacles: {obs_desc}")
 
-    base = plan_path_from_point(
-        buffet_map,
-        start_xy,
-        goal,
-        entry_radius=buffet_map.defaults.entry_radius,
-    )
+    base = plan_path_from_point(buffet_map, start_xy, goal)
     if base is None:
         print("  baseline (no dyn): no path")
     else:
@@ -355,7 +318,6 @@ def _print_dynamic_free_scenario(
         buffet_map,
         start_xy,
         goal,
-        entry_radius=buffet_map.defaults.entry_radius,
         dynamic_obstacles=dyn,
     )
     if plan is None:
@@ -507,8 +469,7 @@ def main() -> None:
         f"{edge_count} edges."
     )
     print(
-        f"  defaults: entry_radius={d.entry_radius:g} m, "
-        f"dynamic_radius={d.dynamic_radius:g} m, "
+        f"  defaults: dynamic_radius={d.dynamic_radius:g} m, "
         f"inflation_radius={d.inflation_radius:g} m"
     )
     _print_bottleneck_summary(buffet_map)

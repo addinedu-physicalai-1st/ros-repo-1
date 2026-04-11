@@ -26,7 +26,6 @@ occupied_thresh: 0.65
 free_thresh: 0.196
 
 defaults:
-  entry_radius: 0.40       # m, roughly waypoint spacing / 2
   dynamic_radius: 0.12     # m, another pinky-pro + small margin
   inflation_radius: 0.09   # m, pinky-pro inscribed radius (0.06) + padding (0.03)
 

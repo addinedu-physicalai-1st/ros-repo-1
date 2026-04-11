@@ -2,12 +2,10 @@
 
 뷔페 환경에서 동작하는 pinky pro 로봇용 **웨이포인트 기반 Global Path Planning** 방식의 구현 검증을 위한 독립 기술 데모 프로그램입니다. 본 프로그램은 메인 ROS 프로젝트와 분리된 순수 Python 데모이며, 알고리즘 동작과 시각적 결과 확인만을 목적으로 합니다.
 
-실제 운용 스케일은 **약 2.0 m × 1.6 m**, pinky-pro는 **12 × 12 cm 정사각 footprint**(`pinky_navigation/params/nav2_params.yaml` 기준) 입니다. 즉 맵 가로세로가 로봇 폭의 약 13~16배에 불과한 매우 좁은 환경입니다. 본 데모의 기본 검증 대상은 다음 두 샘플입니다:
+실제 운용 스케일은 **약 2.0 m × 1.6 m**, pinky-pro는 **12 × 12 cm 정사각 footprint**(`pinky_navigation/params/nav2_params.yaml` 기준) 입니다. 즉 맵 가로세로가 로봇 폭의 약 13~16배에 불과한 매우 좁은 환경입니다. 본 데모의 두 샘플 맵 모두 이 스케일을 그대로 반영합니다:
 
-- [maps/buffet_sim.yaml](maps/buffet_sim.yaml) + [maps/map4.pgm](maps/map4.pgm) — 실제 SLAM 스캔 (`device/pinky_pro_robot/map4.pgm`의 사본). 여러 뷔페 스테이션이 있는 복잡한 U자형 구조.
-- [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml) + [maps/buffet_realistic.pgm](maps/buffet_realistic.pgm) — 같은 스케일의 단순화된 합성 맵. 서빙 스테이션 1개만 있는 ring 구조로, 알고리즘 동작 검증이 용이함.
-
-더 큰 공간에서의 알고리즘 동작 검증용으로는 [maps/buffet_default.yaml](maps/buffet_default.yaml)(20 m × 15 m)도 함께 제공됩니다.
+- [maps/buffet_sim.yaml](maps/buffet_sim.yaml) + [maps/map4.pgm](maps/map4.pgm) — 실제 SLAM 스캔(`device/pinky_pro_robot/map4.pgm`의 사본). 여러 뷔페 스테이션이 있는 복잡한 구조. **기본 맵** (`python3 main.py` 인자 없이 실행 시 로드).
+- [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml) + [maps/buffet_realistic.pgm](maps/buffet_realistic.pgm) — 같은 스케일의 합성 맵. 서빙 스테이션 1개만 있는 ring 구조로, 알고리즘 자체 검증이 용이한 대조군.
 
 ## 배경
 
@@ -42,30 +40,24 @@ pip install -r requirements.txt
 ```bash
 cd server/Test/global_path_planning_demo
 
-# 실제 SLAM 맵 (buffet_sim, map4.pgm)으로 인터랙티브
-python3 main.py --map maps/buffet_sim.yaml
+# 기본: 실제 SLAM 맵 (buffet_sim, map4.pgm)으로 인터랙티브
+python3 main.py
 
 # 헤드리스로 SLAM 맵 검증
-python3 main.py --map maps/buffet_sim.yaml --headless
-
-# 합성 realistic 맵 (ring 구조)
-python3 main.py --map maps/buffet_realistic.yaml
-
-# 큰 알고리즘 테스트 맵(20 m x 15 m, 디폴트)
-python3 main.py
 python3 main.py --headless
 
-# 20 m x 15 m 맵의 Nav2 포맷 버전 (rect와 동일 결과, 포맷 회귀 검증용)
-python3 main.py --map maps/buffet_nav2.yaml --headless
+# 합성 realistic 맵 (ring 구조, 대조군)
+python3 main.py --map maps/buffet_realistic.yaml
+python3 main.py --map maps/buffet_realistic.yaml --headless
 ```
 
-`--map` 옵션을 생략하면 [maps/buffet_default.yaml](maps/buffet_default.yaml)을 로드합니다. 두 종류의 맵 파일 형식을 모두 지원하며 자동 감지됩니다 — 자세한 내용은 아래 [맵 파일](#맵-파일-yaml) 절 참조. 헤드리스 시나리오의 라벨이 사용자 정의 맵에 없으면 `[scenario] X -> Y: skipped (...)` 메시지로 우아하게 건너뜁니다.
+`--map` 옵션을 생략하면 [maps/buffet_sim.yaml](maps/buffet_sim.yaml)(실제 SLAM 맵)을 로드합니다. 헤드리스 시나리오의 라벨이 사용자 정의 맵에 없으면 `[scenario] X -> Y: skipped (...)` 메시지로 우아하게 건너뜁니다.
 
 ### 인터랙티브 조작
 
 | 입력 | 동작 |
 |---|---|
-| **좌클릭 1회** | START 자유 좌표 선택 — 클릭 위치를 그대로 시작점으로 사용. 웨이포인트로 스냅하지 않음. 시작점 주변 옅은 점선 원이 진입 반경(`entry_radius`, 기본 2.5 m)을 표시. 장애물 내부거나 맵 밖이면 거부 메시지 후 다시 클릭 대기 |
+| **좌클릭 1회** | START 자유 좌표 선택 — 클릭 위치를 그대로 시작점으로 사용. 웨이포인트로 스냅하지 않음. 장애물 내부거나 맵 밖이면 거부 메시지 후 다시 클릭 대기 |
 | **좌클릭 2회** | GOAL 웨이포인트 선택 (가장 가까운 웨이포인트로 스냅), A* 즉시 실행 후 경로 표시 |
 | **좌클릭 3회** | 새로운 쿼리 시작 (이전 선택 초기화) |
 | **우클릭** | 동적 장애물(다른 로봇 등) 추가 — 클릭 위치에 반경 0.6 m 원형 장애물을 떨어뜨림. start/goal이 이미 설정되어 있으면 즉시 재계획. 정적 장애물 내부 / 맵 밖 / 현재 시작점 위에는 거부 |
@@ -84,38 +76,34 @@ python3 main.py --map maps/buffet_nav2.yaml --headless
 | **rect** | `obstacles:` | 정수 셀 (1셀 = 1 m) | 사각형 리스트 | 알고리즘 테스트용 큰 공간, 빠른 프로토타이핑 |
 | **Nav2** | `image:` | 실수 미터 + 픽셀 | 점유 격자 (PGM) | **실제 SLAM 출력, 운영 환경** — realistic 맵은 이 포맷만 제공 |
 
-실제 운용 스케일(~2 m × 1.6 m)은 rect 포맷의 1 m 셀 해상도로는 표현하기 어렵기 때문에 **realistic 샘플은 Nav2 포맷만 제공**합니다. 본 프로젝트의 실제 SLAM 출력도 Nav2 포맷이므로 같은 로더·플래너로 직접 소비할 수 있습니다. rect 포맷은 20 m 이상의 큰 공간에서 알고리즘 자체를 검증할 때 유용합니다.
+실제 운용 맵이 전부 SLAM 출력(2 m × 1.6 m 수준의 작은 공간)이기 때문에 본 데모에서는 **Nav2 형식의 샘플만 제공**합니다. rect 형식 로더는 유지되어 있으므로, 필요하면 사용자가 손으로 rect YAML을 작성해 알고리즘을 테스트할 수 있습니다. 두 형식 모두 동일한 `BuffetMap` 객체로 로드되어 플래너/시각화는 차이를 보지 못합니다 (`StaticEnv` 추상화).
 
-두 형식 모두 동일한 `BuffetMap` 객체로 로드되어 플래너/시각화는 차이를 보지 못합니다 (`StaticEnv` 추상화). 따라서 알고리즘 검증은 rect로 빠르게 돌리고, 같은 맵을 Nav2 형식으로 변환하면 운영 환경과 동일한 데이터로 회귀 검증할 수 있습니다.
-
-### Rect 형식 스키마
+### Rect 형식 스키마 (옵션, 손-작성용)
 
 ```yaml
 name: "Map display name"          # 자유 형식 (선택)
 
 # Optional per-map defaults (all fields optional)
 defaults:
-  entry_radius: 2.5               # m, free-start entry cap
-  dynamic_radius: 0.6             # m, default dynamic-obs disc radius
-  inflation_radius: 0.0           # m, static-obstacle inflation
+  dynamic_radius: 0.12            # m, default dynamic-obs disc radius
+  inflation_radius: 0.09          # m, static-obstacle inflation
 
 size:
   width: 20                       # 정수, > 0
   height: 15                      # 정수, > 0
 
 obstacles:                        # 정적 사각 장애물 리스트
-  - {name: "Buffet A1", x_min: 2, y_min: 2, x_max: 6, y_max: 5}
+  - {name: "Table A", x_min: 2, y_min: 2, x_max: 6, y_max: 5}
   # x_min..x_max, y_min..y_max는 닫힌 구간 (포함). 모두 정수, 맵 내부.
 
 waypoints:                        # 그래프 노드 리스트, 인덱스가 곧 wp_id
-  - {x: 1,  y: 1,  label: "CS-Left"}
-  - {x: 7,  y: 1}                  # label 생략 == 이름 없는 교차점
-  - {x: 10, y: 1,  label: "Entrance"}
+  - {x: 1, y: 1, label: "CS-Left"}
+  - {x: 7, y: 1}                  # label 생략 == 이름 없는 교차점
   # 좌표는 정수 또는 실수, 맵 내부, 어느 장애물 안에도 들어가면 안 됨.
-  # 좌표 중복/라벨 중복 금지.
+  # 좌표/라벨 중복 금지. yaw(도)는 선택.
 ```
 
-샘플: [maps/buffet_default.yaml](maps/buffet_default.yaml), [maps/buffet_small.yaml](maps/buffet_small.yaml).
+Rect 포맷은 1 셀 = 1 m 해상도라 2 m × 1.6 m 실제 맵에는 너무 거칠지만, 큰 가상 공간에서 알고리즘 회귀 테스트 시에는 유용합니다.
 
 ### Nav2 형식 (PGM + 메타데이터 YAML)
 
@@ -134,13 +122,12 @@ free_thresh: 0.196
 # 본 데모/HQ Service만 사용하는 확장 키
 name: "Buffet floor 1"
 defaults:                          # per-map 디폴트 (선택)
-  entry_radius: 0.4                # m, 자유 시작점 진입 반경
-  dynamic_radius: 0.25             # m, 동적 장애물 디스크 반경
-  inflation_radius: 0.2            # m, 정적 장애물 inflation (로봇 반경 + 마진)
+  dynamic_radius: 0.12             # m, 동적 장애물 디스크 반경
+  inflation_radius: 0.09           # m, 정적 장애물 inflation (pinky-pro inscribed + padding)
 waypoints:                         # 월드 좌표(미터), 정수/실수 모두 OK
   - {x: 0.50, y: -0.80, label: "Entrance"}
-  - {x: 1.20, y: -0.30, label: "Table-1"}
-  - {x: 0.80,  y:  0.00}            # label 생략 == 교차점
+  - {x: 1.20, y: -0.30, label: "Table-1", yaw: 90}
+  - {x: 0.80, y:  0.00}             # label 생략 == 교차점
 ```
 
 PGM 처리 규칙 (Nav2 트리너리 모드 기준):
@@ -152,22 +139,21 @@ PGM 처리 규칙 (Nav2 트리너리 모드 기준):
 - 픽셀 → 월드: `x = origin_x + col * resolution`, `y = origin_y + row * resolution` (PGM의 row 0은 이미지 상단이지만 로딩 시 `flipud`로 뒤집어 row 0 = 월드 하단으로 정규화)
 
 샘플:
-- [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml) + [maps/buffet_realistic.pgm](maps/buffet_realistic.pgm) — **실제 운용 스케일** 2.0 m × 1.6 m, 40×32 픽셀, 서빙 스테이션 1개 + 8 웨이포인트 + 0.2 m inflation. 본 데모의 기본 검증 대상.
-- [maps/buffet_nav2.yaml](maps/buffet_nav2.yaml) + [maps/buffet_nav2.pgm](maps/buffet_nav2.pgm) — 큰 뷔페(`buffet_default.yaml`)를 0.05 m/px(400×300 픽셀)로 래스터화한 것. rect 형식과 **byte-identical** 결과를 만듭니다(같은 비용·같은 경로). `StaticEnv` 추상화가 두 표현 사이의 차이를 정확히 흡수한다는 회귀 검증용.
+- [maps/buffet_sim.yaml](maps/buffet_sim.yaml) + [maps/map4.pgm](maps/map4.pgm) — **기본 맵**, 실제 SLAM 스캔(`device/pinky_pro_robot/map4.pgm`에서 복사). 40×32 픽셀, 12 웨이포인트, 여러 뷔페 스테이션 + inflation 0.09 m.
+- [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml) + [maps/buffet_realistic.pgm](maps/buffet_realistic.pgm) — 같은 스케일의 합성 ring 맵 (단순 대조군), 40×32 픽셀, 8 웨이포인트, 중앙 서빙 스테이션 1개.
 
 ### 맵별 디폴트 (`defaults:` 블록)
 
-두 포맷 모두 **선택적 `defaults:` 블록**을 지원합니다. 이는 맵 크기에 맞는 적절한 파라미터를 맵 자체에 선언하기 위한 것으로, 운영자가 매번 CLI/코드에서 값을 넘기지 않아도 됩니다.
+두 포맷 모두 **선택적 `defaults:` 블록**을 지원합니다. 맵별 적절한 파라미터를 맵 자체에 선언해서, 운영자가 매번 CLI/코드에서 값을 넘기지 않아도 되게 합니다.
 
-- `entry_radius` (m): 자유 시작점에서 진입 웨이포인트까지 허용되는 최대 직선 거리. 맵이 작을수록 작게. 20 m 맵: 2.5, 2 m 맵: 0.4 정도.
-- `dynamic_radius` (m): 동적 장애물 디스크의 기본 반경. 실제 다른 pinky-pro 반경 + 마진. 큰 공간: 0.6, 작은 공간: 0.25 정도.
-- `inflation_radius` (m): 정적 장애물을 얼마나 부풀려 ego 로봇의 안전 마진을 확보할지. `로봇 반경 + 안전 버퍼`가 일반 공식.
+- `dynamic_radius` (m): 동적 장애물 디스크의 기본 반경. 실제 다른 pinky-pro 반경 + 마진 (기본 0.12 m).
+- `inflation_radius` (m): 정적 장애물을 얼마나 부풀려 ego 로봇의 안전 마진을 확보할지. pinky-pro의 `Nav2 inscribed(0.06) + padding(0.03) = 0.09 m` 가 기본값이자 권장값.
 
-생략하면 모듈 단위 디폴트로 폴백합니다. `BuffetMap.defaults`를 통해 플래너/시각화가 이 값을 읽습니다.
+생략하면 모듈 단위 디폴트(`DEFAULT_DYNAMIC_RADIUS`, `DEFAULT_INFLATION_RADIUS`)로 폴백합니다. `BuffetMap.defaults`를 통해 플래너/시각화가 이 값을 읽습니다.
 
 ### 정적 장애물 inflation
 
-`inflation_radius > 0`이면 로드 시점에 정적 장애물이 로봇 반경만큼 부풀려집니다. 이렇게 하면 "맵에는 통과 가능해 보이지만 실제로는 로봇 본체가 끼이는" 버그가 사라집니다. pinky-pro(반경 ~0.15 m)의 경우 **0.2 m** 내외가 적절합니다(반경 + 0.05 m 버퍼).
+`inflation_radius > 0`이면 로드 시점에 정적 장애물이 로봇 반경만큼 부풀려집니다. 이렇게 하면 "맵에는 통과 가능해 보이지만 실제로는 로봇 본체가 끼이는" 버그가 사라집니다. pinky-pro는 Nav2 설정 기준 **0.09 m** 가 정확한 값입니다 (footprint inscribed 0.06 + padding 0.03, `nav2_params.yaml` 기준).
 
 - **RectangleEnv**: 각 사각형의 시각적 footprint에서 점까지 거리가 `inflation_radius` 이하면 점유로 판정. 점→사각형 거리는 축별 max 차이로 계산(모서리는 Euclidean). 시각화에는 원본 사각형과 `inflation_radius` 만큼 확장된 반투명 빨간색 밴드가 함께 그려집니다.
 - **OccupancyGridEnv**: 로드 시점에 `ceil(inflation_radius/resolution)` 픽셀 반경의 원형 커널로 점유 마스크를 **disc dilation** 합니다(numpy만 사용, scipy 불필요). 시각화에는 원본 PGM이 배경으로 깔리고, 팽창된 영역(원본이 아닌 픽셀 중 점유가 된 것)이 반투명 빨간색 오버레이로 표시되어 "실제 벽"과 "로봇 반경이 만든 안전 영역"을 구분할 수 있습니다.
@@ -264,33 +250,53 @@ PGM 처리 규칙 (Nav2 트리너리 모드 기준):
 - **간선 비용**: 인접 웨이포인트 간 Euclidean 거리 (축 정렬이므로 Manhattan과 동일)
 - **휴리스틱**: 목표까지의 Manhattan 거리. 모든 간선이 축 정렬이라 admissible 하며 항상 최적 경로를 보장합니다.
 
-### 자유 시작점 처리 (반경 제한 multi-source A*)
+### 자유 시작점 처리 (multi-source A* + 진입 페널티)
 
-자유 좌표 `(sx, sy)`에서 출발할 때는 단순히 가장 가까운 웨이포인트로 스냅하지 않고, **진입 반경 내에서의 다중 시드 A***로 진입 웨이포인트를 최적화합니다.
+자유 좌표 `(sx, sy)`에서 출발할 때는 단순히 가장 가까운 웨이포인트로 스냅하지 않고, **진입 페널티가 있는 다중 시드 A***로 진입 웨이포인트를 최적화합니다.
 
-1. `(sx, sy)`가 장애물 내부면 거부.
-2. `(sx, sy)`에서 직선 시야(line-of-sight, 0.1m 간격 샘플링)로 도달 가능하면서 **`entry_radius` (기본 2.5 m) 이내**에 있는 모든 웨이포인트를 진입 후보로 수집.
-3. 각 후보에 `(sx, sy)`까지의 직선 거리(Euclidean)를 **초기 g-score**로 부여.
-4. 위 시드들을 모두 open list에 넣은 상태로 A*를 한 번만 실행 → A*가 자연스럽게 `entry_distance + corridor_cost`가 최소인 진입점을 선택.
-5. 반경 내에 단 하나의 후보도 없으면(예: 시작점이 통로 그래프와 멀리 떨어진 위치) **fallback**으로 가장 가까운 line-of-sight 도달 가능 웨이포인트 1개를 사용. 이 경우 결과의 `entry_radius_fallback` 플래그가 True가 되어 호출 측에서 경고할 수 있도록 함.
-6. 결과는 `FreeStartPlan(start_xy, waypoints, entry_distance, waypoint_cost, entry_radius, entry_radius_fallback)` 데이터 클래스로 반환.
+1. `(sx, sy)`가 정적/동적 장애물 내부면 거부.
+2. `(sx, sy)`에서 직선 시야(line-of-sight, 0.1 m 간격 샘플링)로 도달 가능한 **모든** 웨이포인트를 진입 후보로 수집.
+3. 각 후보에 `entry_distance × entry_penalty_factor` 를 **초기 g-score**로 부여 (기본 factor = **1.2**).
+4. 위 시드들을 모두 open list에 넣은 상태로 A*를 한 번만 실행 → A*가 `(entry × 1.2) + corridor`가 최소인 진입점을 선택.
+5. 결과는 **실제 거리**(페널티 없는 값)로 리포트: `FreeStartPlan(entry_distance, waypoint_cost, ...)`.
 
-#### 왜 진입 반경을 제한하는가
+#### 진입 페널티(`entry_penalty_factor`)의 역할
 
-반경 제한이 없으면, 시작점에서 목적지까지 직선이 line-of-sight로 뚫려 있을 때 A*가 **목적지 자체를 시드**로 잡고 격자를 무시한 채 길게 사선 주행하는 경로를 반환할 수 있습니다. 이는 본 프로젝트가 명시적으로 피하고자 하는 형태입니다.
+**물리적 해석**: entry segment 1 m는 corridor edge 1 m보다 약간 더 비쌉니다. 이유:
 
-- 본 프로젝트의 핵심 요구사항: "예측 가능한 직진 + 직각 회전"
-- 뷔페는 사람이 많은 공간 → 통로를 따라가는 동선이 안전하고 사람에게 예측 가능
-- Local Planner(DWB)는 Global Path가 알려진 통로를 따른다고 가정할 때 가장 안정적
-- 운영/검증 측면에서도 동선이 항상 "현재 위치 → 근처 웨이포인트 → 격자 경로 → 목적지" 한 가지 형태로 일관되는 것이 유리
+- Entry segment는 **free-space 직선** (corridor edge는 축 정렬된 known-safe 경로)
+- SLAM localization 오차에 대한 안전 마진이 corridor 대비 약간 약함
+- 경로 예측성 측면에서도 corridor 쪽이 더 명확함
 
-`entry_radius`(기본 2.5 m, 셀 약 2~3개)는 이 균형을 위한 값으로, 반경 안에서는 multi-source A* 최적화가 그대로 살아 있어 의미 있는 케이스에서는 여전히 최적 진입점을 골라줍니다.
+`entry_penalty_factor = 1.2`는 "entry 1 m는 corridor 1.2 m와 동일한 비용"이라는 soft bias입니다. Hard constraint가 아니라서, corridor savings가 충분히 크면 여전히 긴 entry가 선택됩니다.
 
-#### 진입점이 가장 가까운 웨이포인트가 아닌 케이스 (반경 내 최적화 예시)
+**공식**: far-away seed가 선택되려면 `corridor_savings > 0.2 × entry_difference` 가 성립해야 함.
 
-- `(8.50, 6.00) → Return`: 가장 가까운 웨이포인트는 1.5m 거리의 `A1-N/B1-S(7,6)`이지만, A*는 같은 거리의 `A2-N/B2-S(10,6)`을 선택 → 이후 통로 비용이 더 짧음 (총 12.50 m).
-- `(19.00, 10.20) → Kitchen`: 가장 가까운 웨이포인트는 1.02m 거리의 `(18,10)`이지만, A*는 2.06m 거리의 `(18,12)`를 선택 → `(18,10)` 진입 시 총 17.02 m vs `(18,12)` 진입 시 총 16.06 m.
-- `(10.40, 0.60) → Kitchen`: 반경 2.5 m 안에는 `Entrance(10,1)` 하나뿐이라 그것이 진입점 → 17.57 m. 반경 제한이 없을 때 가능한 17.42 m(`(7,1)` 진입) 대비 0.15 m 손실은 안전성/일관성 측면 이득에 비해 무시 가능.
+#### 두 대비 사례 (같은 맵에서)
+
+**사례 1: U턴 방지** — start `(1.27, -0.56)`, goal `Charging`
+
+| 진입 후보 | entry (m) | corridor (m) | total + 페널티 | 선택 |
+|---|---|---|---|---|
+| `(1.5, -0.566)` | 0.23 | 2.12 | 0.276 + 2.12 = 2.40 | |
+| **Table-N** | **0.43** | **1.46** | 0.516 + 1.46 = **1.98** | **✓** |
+
+차이: corridor savings가 0.66 m, entry 차이 × 0.2 = 0.04 m. 이득이 페널티를 크게 상회하므로 **Table-N (더 먼 진입점) 선택**이 옳음. 실제 경로 1.89 m (0.46 m 단축).
+
+**사례 2: 긴 대각선 억제** — start `(0.62, -0.70)`, goal `Kitchen`
+
+| 진입 후보 | entry (m) | corridor (m) | total + 페널티 | 선택 |
+|---|---|---|---|---|
+| `(1.5, -0.566)` | 0.89 | 0.62 | 1.068 + 0.62 = 1.69 | |
+| **Table-N** | **0.26** | **1.28** | 0.312 + 1.28 = **1.59** | **✓** |
+
+차이: corridor savings가 0.66 m, entry 차이 × 0.2 = 0.126 m. Corridor 이득이 있지만 **겨우 0.02 m** (1.3%)만 유의미. 페널티가 균형을 뒤집어 **Table-N (가까운 진입점) 선택**. 경로 1.53 m (0.02 m 손해, 대신 긴 diagonal 제거).
+
+**요약**:
+- corridor savings가 **충분히 클 때** (~20% 이상) → 먼 진입점 선택 (U턴 방지)
+- corridor savings가 **미미할 때** (~2% 이하) → 가까운 진입점 선택 (긴 diagonal 억제)
+
+`entry_penalty_factor` 값을 1.0으로 override하면 기존의 "pure cost" 동작으로 돌아가고, 더 크게 (예: 1.5) 하면 corridor 선호가 더 강해집니다. `plan_path_from_point(..., entry_penalty_factor=1.5)`로 호출 시점에 오버라이드 가능.
 
 ### Goal Pose (도착 방향) 지원
 
@@ -451,14 +457,6 @@ Loaded buffet map 'Buffet SLAM map (map4)' from maps/buffet_sim.yaml: 2x1.6 m, .
 
 → Ring 구조는 완벽히 2-connected이므로 bottleneck이 전혀 없음.
 
-`buffet_default.yaml` (20×15 m 큰 테스트 맵):
-
-```
-  bottlenecks: none (graph is fully 2-connected; no single waypoint or edge can disconnect it)
-```
-
-→ 27개 웨이포인트 37개 간선의 격자 그래프도 2-connected.
-
 #### HQ Service 정책 활용
 
 HQ Service가 이 정보를 다음과 같이 활용할 수 있습니다:
@@ -548,14 +546,10 @@ global_path_planning_demo/
 ├── astar_planner.py   # 웨이포인트 그래프 위의 A* 구현
 ├── visualizer.py      # matplotlib 인터랙티브 시각화
 ├── maps/
-│   ├── buffet_sim.yaml        # Nav2 형식, 실제 SLAM 스캔 기반 U자 맵
+│   ├── buffet_sim.yaml        # 기본 맵. Nav2 형식, 실제 SLAM 스캔
 │   ├── map4.pgm               # 위 YAML이 참조, device/pinky_pro_robot에서 복사
-│   ├── buffet_realistic.yaml  # Nav2 형식, 2.0 x 1.6 m 합성 ring 맵
-│   ├── buffet_realistic.pgm   # 위 YAML이 가리키는 PGM (40x32 px)
-│   ├── buffet_default.yaml    # rect 형식, 20x15 m 알고리즘 테스트용
-│   ├── buffet_small.yaml      # rect 형식, 12x10 m 작은 변형
-│   ├── buffet_nav2.yaml       # Nav2 형식, buffet_default를 0.05 m/px로 래스터화
-│   └── buffet_nav2.pgm        # 위 YAML이 가리키는 PGM 점유 격자 (400x300)
+│   ├── buffet_realistic.yaml  # 대조군. Nav2 형식, 2.0 x 1.6 m 합성 ring 맵
+│   └── buffet_realistic.pgm   # 위 YAML이 가리키는 PGM (40x32 px)
 ├── requirements.txt
 └── README.md
 ```
@@ -564,7 +558,7 @@ global_path_planning_demo/
 
 - `map_data.py`
   - `Waypoint`(실수 좌표), `Obstacle`, `WaypointGraph`, `BuffetMap`, `DynamicObstacle`, `MapDefaults` 데이터 클래스. `BuffetMap`은 `static_env`, `graph`, `origin_x/y`, `width_m`, `height_m`, `name`, `defaults` 필드와 `is_in_bounds(x, y)` 메서드.
-  - `MapDefaults`: `entry_radius`, `dynamic_radius`, `inflation_radius` — per-map 디폴트. YAML `defaults:` 블록에서 읽음, 누락 필드는 전역 디폴트로 폴백.
+  - `MapDefaults`: `dynamic_radius`, `inflation_radius` — per-map 디폴트. YAML `defaults:` 블록에서 읽음, 누락 필드는 전역 디폴트로 폴백.
   - `StaticEnv` (ABC) + 두 구현:
     - `RectangleEnv` — `Obstacle` 사각형 리스트. `contains_xy`는 점→사각형 거리가 `inflation_radius` 이하인지로 판정, `is_segment_clear`는 0.1 m 간격 샘플링. `draw_on`은 원본 사각형 + `inflation_radius` 확장된 반투명 빨간색 밴드.
     - `OccupancyGridEnv` — Nav2 점유 격자. 로드 시점에 `ceil(inflation_radius / resolution)` 픽셀 반경으로 점유 마스크를 disc dilation (`_dilate_mask_disc`, numpy only). `contains_xy`는 월드→픽셀 변환 후 단일 셀 lookup, `is_segment_clear`는 셀 절반 크기 간격 샘플링. `draw_on`은 원본 PGM을 배경으로 깔고 팽창 영역을 반투명 빨간색 오버레이.
@@ -575,20 +569,18 @@ global_path_planning_demo/
   - 그래프 빌드 헬퍼 `_connect_neighbors`: 같은 행/열의 인접 쌍을 `static_env.is_segment_clear`로 검사해서 자동 연결 (rect/occgrid 동일 코드 경로).
   - 동적 장애물 기하 헬퍼: `circle_contains_point`, `circle_intersects_segment` (segment의 디스크 중심 최근접점을 [0,1] 클램프 + 거리 비교).
 - `astar_planner.py`
-  - `DEFAULT_ENTRY_RADIUS`: 자유 시작점에서 진입 웨이포인트까지 허용되는 최대 직선 거리(기본 2.5 m).
   - `plan_path(buffet_map, start, goal, *, dynamic_obstacles=None) -> (path, cost)`: 웨이포인트 ID → 웨이포인트 ID 단일 소스 A*. 경로가 없으면 `(None, inf)`.
-  - `plan_path_from_point(buffet_map, start_xy, goal, entry_radius=2.5, *, dynamic_obstacles=None) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 반경 제한 multi-source A*. `entry_radius` 안에 line-of-sight 도달 가능 웨이포인트들만 진입 후보로 시드해 그 중 최적 진입점을 선택. 반경 안에 후보가 없으면 가장 가까운 reachable 웨이포인트로 fallback. line-of-sight 검사는 `buffet_map.static_env.is_segment_clear`를 사용하므로 rect/occgrid 모두 동일하게 동작.
+  - `plan_path_from_point(buffet_map, start_xy, goal, *, dynamic_obstacles=None, goal_yaw=None, entry_penalty_factor=1.2) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 multi-source A*. 모든 line-of-sight reachable 웨이포인트를 진입 후보로 시드하되, 초기 g-score에 `entry_penalty_factor`를 곱해 **긴 대각선 진입에 soft penalty**를 부여 (기본 1.2 = "entry 1 m는 corridor 1.2 m 비용"). 반환되는 `entry_distance` / `waypoint_cost`는 페널티를 제외한 실제 거리.
   - 두 함수 모두 `BuffetMap`을 통째로 받음 → 내부에서 `buffet_map.graph` / `buffet_map.static_env`에 접근. 정적 장애물 표현(rect 또는 occgrid)에 대한 의존이 시그니처에서 사라져 호출 측이 깔끔.
   - `dynamic_obstacles` 키워드 인자: 호출 시점의 차단된 웨이포인트/간선 집합을 미리 계산(`_compute_blockage`)해서 A* expansion에서 스킵.
   - 내부적으로 둘 다 `_astar_multi_source(graph, seeds_dict, goal, blockage)`를 호출하므로 단일/다중 소스 + 정적/동적 장애물 모두 동일 코드 경로.
 - `visualizer.py`
-  - `PathPlanningVisualizer`: 정적 요소(맵 배경, 벽 외곽선, 웨이포인트, 간선)와 동적 요소(start 자유 좌표 마커 + 진입 반경 점선 원, goal 웨이포인트 마커, 동적 장애물 빨간 원, 계산된 경로)를 그리고 마우스/키 이벤트를 처리.
+  - `PathPlanningVisualizer`: 정적 요소(맵 배경, 벽 외곽선, 웨이포인트, 간선, cut-vertex/bridge 빨간 표시)와 동적 요소(start 자유 좌표 마커, goal 웨이포인트 마커 + yaw 화살표, 동적 장애물 빨간 원, 계산된 경로)를 그리고 마우스/키 이벤트를 처리.
   - **맵 배경은 `buffet_map.static_env.draw_on(ax)`에 위임** → rect 형식이면 회색 사각형 + 라벨, Nav2 형식이면 PGM 이미지를 `imshow`로 그림. visualizer 본체는 어느 형식인지 알 필요 없음.
-  - 그림 비율은 `buffet_map.width_m` / `height_m` 비율에 맞춰 자동 조정 → 다양한 크기/원점의 맵도 정상 렌더링.
+  - 그림 비율은 `buffet_map.width_m` / `height_m` 비율에 맞춰 자동 조정.
   - 좌클릭: 자유 좌표 start → goal 웨이포인트 (맵 밖/장애물 내부면 거부, goal만 스냅).
   - 우클릭: 클릭 위치에 동적 장애물(`DynamicObstacle`) 추가, start/goal이 이미 있으면 즉시 재계획.
   - `c` 키: 모든 동적 장애물 삭제 + 재계획. `r` 키: start/goal 선택만 리셋(동적 장애물 유지).
-  - `entry_radius` fallback이 발생한 경우 타이틀에 `[radius fallback]` 표시 + 콘솔에도 경고 출력.
 - `main.py`
   - CLI 파싱 (`--map PATH`, `--headless`) → 맵 로딩 → 인터랙티브 또는 헤드리스 실행 분기. 맵 로딩 실패 시 `stderr`에 명확한 에러 메시지를 출력하고 `exit 1`. 헤드리스 시나리오에서 사용자 정의 맵에 없는 라벨은 우아하게 스킵. 헤드리스 모드는 다음 4개 섹션을 출력:
     1. `Waypoint -> Waypoint` 기본 시나리오
@@ -599,77 +591,73 @@ global_path_planning_demo/
 ## 헤드리스 검증 결과
 
 ```
-Loaded buffet test map: 27 waypoints, 37 edges, 8 obstacles.
-Running headless A* scenarios on the buffet test map.
+Loaded buffet map 'Buffet SLAM map (map4)' from maps/buffet_sim.yaml:
+  2x1.6 m, occupancy grid 40x32 px @ 0.05 m/px, 12 waypoints, 13 edges.
+  defaults: dynamic_radius=0.12 m, inflation_radius=0.09 m
+  bottlenecks: 2 cut vertex(s), 2 bridge(s)
+    #1 (0,-0.766): removal isolates {Entrance} (remaining component has 10 wps)
+    #9 (1.5,-0.566): removal isolates {Return} (remaining component has 10 wps)
+    bridge #0-#1: Entrance <-> (0,-0.766)
+    bridge #8-#9: Return <-> (1.5,-0.566)
 
 --- Waypoint -> Waypoint ---
 
+[scenario] Charging -> Kitchen
+  cost = 1.50 m, 3 waypoints
+  path: Charging -> (0.84,0.05) -> Kitchen
+
+[scenario] Kitchen -> Return
+  cost = 0.95 m, 4 waypoints
+  path: Kitchen -> (1.5,-0.2) -> (1.5,-0.566) -> Return
+
+[scenario] Charging -> Return
+  cost = 2.45 m, 5 waypoints
+  path: Charging -> (0.84,0.05) -> Table-N -> (1.5,-0.566) -> Return
+
 [scenario] Entrance -> Kitchen
-  cost = 17.00 m, 6 waypoints
-  path: Entrance -> (7,1) -> (7,6) -> (7,10) -> B1-N -> Kitchen
+  cost = 2.45 m, 6 waypoints
+  path: Entrance -> (0,-0.766) -> Table-S -> Table-N -> (0.84,0.05) -> Kitchen
 
-[scenario] Kitchen -> A3-S
-  cost = 22.00 m, 7 waypoints
-  path: Kitchen -> (7,12) -> (13,12) -> (13,10) -> (13,6) -> (13,1) -> A3-S
+[scenario] Entrance -> Table-N
+  cost = 1.17 m, 4 waypoints
+  path: Entrance -> (0,-0.766) -> Table-S -> Table-N
 
-[scenario] CS-Left -> Return
-  cost = 25.00 m, 8 waypoints
-  path: CS-Left -> A1-S -> (7,1) -> (7,6) -> (7,10) -> (7,12) -> (13,12) -> Return
-
-[scenario] Entrance -> B2-N
-  cost = 15.00 m, 5 waypoints
-  path: Entrance -> (7,1) -> (7,6) -> (7,10) -> B2-N
-
-[scenario] Return -> CS-Right
-  cost = 14.00 m, 5 waypoints
-  path: Return -> (18,12) -> (18,10) -> (18,6) -> CS-Right
+[scenario] Table-S -> Kitchen
+  cost = 1.48 m, 4 waypoints
+  path: Table-S -> Table-N -> (0.84,0.05) -> Kitchen
 
 --- Free start point -> Waypoint ---
 
-[free-start] (10.40, 0.60) -> Kitchen
-  entry waypoint = Entrance (distance 0.57 m, radius 2.5 m)
-  total cost = 17.57 m (6 waypoints)
-  path: (10.40,0.60) -> Entrance -> (7,1) -> (7,6) -> (7,10) -> B1-N -> Kitchen
+[free-start] (1.27, -0.56) -> Charging
+  entry waypoint = Table-N (distance 0.43 m)
+  total cost = 1.89 m (3 waypoints)
+  goal yaw   = 180 deg (robot must arrive facing this direction)
+  path: (1.27,-0.56) -> Table-N -> (0.84,0.05) -> Charging
 
-[free-start] (8.50, 6.00) -> Return
-  entry waypoint = A2-N/B2-S (distance 1.50 m, radius 2.5 m)
-  total cost = 12.50 m (5 waypoints)
-  path: (8.50,6.00) -> A2-N/B2-S -> (13,6) -> (13,10) -> B3-N -> Return
-
-[free-start] (1.70, 11.40) -> A3-S
-  entry waypoint = Kitchen (distance 2.38 m, radius 2.5 m)
-  total cost = 24.38 m (7 waypoints)
-  path: (1.70,11.40) -> Kitchen -> (7,12) -> (13,12) -> (13,10) -> (13,6) -> (13,1) -> A3-S
-
-[free-start] (17.20, 9.80) -> Entrance
-  entry waypoint = B3-N (distance 2.21 m, radius 2.5 m)
-  total cost = 16.21 m (5 waypoints)
-  path: (17.20,9.80) -> B3-N -> (13,10) -> (13,6) -> (13,1) -> Entrance
-
-[free-start] (19.00, 10.20) -> Kitchen
-  entry waypoint = (18,12) (distance 2.06 m, radius 2.5 m)
-  total cost = 16.06 m (5 waypoints)
-  path: (19.00,10.20) -> (18,12) -> Return -> (13,12) -> (7,12) -> Kitchen
+[free-start] (0.00, -0.20) -> Return
+  entry waypoint = (0,-0.766) (distance 0.57 m)
+  total cost = 2.60 m (5 waypoints)
+  goal yaw   = 0 deg (robot must arrive facing this direction)
+  path: (0.00,-0.20) -> (0,-0.766) -> Table-S -> Table-N -> (1.5,-0.566) -> Return
 ```
 
-**Waypoint → Waypoint**: 각 시나리오의 비용이 start/goal의 Manhattan 거리와 정확히 일치하므로, A*가 최적 경로를 반환하고 있음을 확인할 수 있습니다. 모든 경로가 직진과 직각 회전만으로 구성되어 의도한 주행 형태를 잘 만들어냄을 보여줍니다.
+**Waypoint → Waypoint**: 격자 edge만으로 구성된 쿨한 corridor 경로. `Entrance → Kitchen` 2.45 m 는 Entrance → 좌측 column 진입 → Table-S → Table-N (중간 column) → 상단 corridor → Kitchen 순서로 움직입니다. 모두 직진과 직각 회전만으로 이루어져 있습니다.
 
-**Free start → Waypoint**: 모든 시나리오가 진입 반경 2.5 m 안의 웨이포인트로 들어간 뒤 격자를 따라 이동합니다. 특히 주목할 점:
-- 시나리오 2 `(8.50, 6.00) → Return`은 가장 가까운 웨이포인트(`(7,6)`, 1.5 m) 대신 같은 거리의 `(10,6)`을 진입점으로 선택해 후속 통로 비용을 줄입니다 (총 12.50 m). 반경 안에서의 multi-source 최적화가 살아 있음을 보여줍니다.
-- 시나리오 5 `(19.00, 10.20) → Kitchen`은 반경 제한 없이 multi-source A*만 돌리면 18 m 이상의 사선 한 줄이 나오던 케이스입니다. 이제는 `(18,12)`로 진입한 뒤 격자(`Return → (13,12) → (7,12) → Kitchen`)를 따라 16.06 m로 이동 — 동선이 통로 안에 머무르므로 사람과의 상호작용이 훨씬 예측 가능합니다.
+**Free start → Waypoint**:
+- `(1.27, -0.56) → Charging`: 가장 가까운 웨이포인트는 `(1.5, -0.566)` at 0.23 m지만, A*는 **Table-N at 0.43 m** 을 진입점으로 선택 → 총 1.89 m. 단순 snap-to-nearest 플래너였다면 (1.5,-0.566)로 들어가 U턴해 2.35 m가 됐을 것. Multi-source A*가 **진입 거리보다 전체 비용을 최적화**한다는 직접 증거입니다.
+- 두 케이스 모두 `goal yaw`가 함께 출력되어, 로봇이 도착 시 어느 방향을 봐야 하는지를 HQ Service / Nav2 follow_path가 받아쓸 수 있습니다.
 
 ## 본 프로젝트로 옮길 때 고려할 점
 
 본 데모는 다음과 같은 부분이 단순화되어 있습니다. 실제 ROS 통합 시 검토가 필요합니다.
 
-- ~~맵 정의가 코드에 하드코딩되어 있음~~ → **YAML 외부 파일 로딩 지원** (`maps/buffet_default.yaml`, `--map` CLI 옵션). rect YAML과 Nav2 PGM+YAML 두 형식 모두 동일 인터페이스(`StaticEnv`)로 처리 → SLAM이 만든 실제 맵을 그대로 사용 가능. 실제 운용 스케일(2.0 m × 1.6 m) 샘플인 [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml)도 동일 파이프라인으로 로드.
-- ~~정적 장애물 inflation 미반영~~ → **`inflation_radius` per-map 설정 지원**. RectangleEnv는 점→사각형 거리 기반 확장, OccupancyGridEnv는 disc dilation. 시각화에도 inflation 영역이 반투명 빨간색으로 표시됨.
-- ~~그래프 topology 약점 분석 부재~~ → **cut vertex / bridge 자동 검출**. 로드 시점에 Tarjan 알고리즘으로 `BuffetMap.cut_vertices` / `BuffetMap.bridges`에 캐시. 시각화에 자동 표시되고 HQ Service 멀티 로봇 정책의 직접 입력으로 사용 가능.
-- ~~Goal pose / 도착 자세 미반영~~ → **웨이포인트에 선택적 yaw 선언 + `FreeStartPlan.goal_yaw` pass-through**. 서비스 웨이포인트(Kitchen, Table, Return, Charging 등)는 도착 방향을 도 단위로 선언하고, 플래너가 이를 플랜 결과에 실어 내보내며, 시각화에도 화살표로 명시적으로 표시됨.
-- 웨이포인트 좌표가 정수 격자 → 실제로는 SLAM 맵 좌표계의 float 위치로 운용
-- 동적 장애물은 quasi-static 스냅샷 + 재계획 모델 → 본 데모는 실제 시간 경과를 시뮬레이션하지 않음 (우클릭으로 추가/`c`로 삭제 시점에만 재계획). 실제 운용에서는 일정 주기(예: 0.5~1초)로 관제 서버가 plan을 호출하고, 미세한 회피는 DWB 등 Local Planner에 위임
-- 단일 로봇 가정 → 멀티 로봇 운용 시 충돌/대기 정책 별도 설계 필요
-- HQ Service에서 task와 함께 웨이포인트 시퀀스를 내려주는 인터페이스가 별도로 필요
-- 자유 시작점의 line-of-sight 검사가 0.1m 샘플링 기반 → 실제 운용에서는 정확한 segment-vs-rectangle 교차 또는 inflated costmap 기반 판정으로 교체 권장
-- 자유 시작점에서 진입 웨이포인트까지의 구간은 직선으로 가정 → 실제로는 Local Planner가 처리하는 구간이며, costmap의 동적 장애물에 따라 경로가 달라질 수 있음
-- `entry_radius`(기본 2.5 m)는 데모 맵의 통로 폭/웨이포인트 간격에 맞춰 손으로 정한 값 → 실제 환경에서는 통로 폭, 로봇 반경, 웨이포인트 밀도, Local Planner의 회복 거리 등을 고려해 재조정 필요
+- ~~맵 정의가 코드에 하드코딩되어 있음~~ → **YAML 외부 파일 로딩 지원** (`--map` CLI 옵션). SLAM이 만든 실제 맵(Nav2 PGM+YAML)을 그대로 사용 가능.
+- ~~정적 장애물 inflation 미반영~~ → **`inflation_radius` per-map 설정 지원**. OccupancyGridEnv는 disc dilation으로 로드 시점에 점유 마스크를 팽창. 기본값 0.09 m = Nav2의 footprint inscribed + padding.
+- ~~그래프 topology 약점 분석 부재~~ → **cut vertex / bridge 자동 검출**. 로드 시점에 Tarjan 알고리즘으로 캐시. HQ Service 멀티 로봇 정책의 직접 입력으로 사용 가능.
+- ~~Goal pose / 도착 자세 미반영~~ → **웨이포인트에 선택적 yaw 선언 + `FreeStartPlan.goal_yaw` pass-through**. 서비스 웨이포인트는 도착 방향을 도 단위로 선언.
+- ~~pinky-pro 치수 가정 부정확~~ → URDF + Nav2 설정 실측 값 반영 (**0.09 m** inflation, **0.12 m** 정사각 footprint).
+- ~~`entry_radius` 반경 캡의 역효과~~ → 캡 제거 + **`entry_penalty_factor` (1.2) soft bias** 도입. 하드 캡은 맵 사이즈에 민감해서 U턴을 유발했는데, soft penalty는 "corridor savings가 유의미한 경우에만 먼 진입점을 택함"을 수학적으로 보장.
+- 동적 장애물은 quasi-static 스냅샷 + 재계획 모델 → 본 데모는 실제 시간 경과를 시뮬레이션하지 않음 (우클릭으로 추가/`c`로 삭제 시점에만 재계획). 실제 운용에서는 일정 주기(예: 0.5~1초)로 HQ Service가 plan을 호출하고, 미세한 회피는 DWB 등 Local Planner에 위임.
+- 단일 로봇 가정 → 멀티 로봇 운용 시 **HQ Service 레벨 serialization + area lockout** 정책 필요 (플래너 자체는 `dynamic_obstacles` 인자로 필요한 인터페이스를 이미 갖추고 있음).
+- ROS 2 패키지 래퍼 없음 → HQ Service가 RPC로 호출할 수 있도록 `PlanRoute.srv` 형태 노드로 감싸는 작업이 남아있음.
+- 자유 시작점의 line-of-sight 검사가 0.1 m 샘플링 기반 → 실제 운용에서는 정확한 픽셀 ray-cast 또는 inflated costmap 기반 판정으로 교체 고려.

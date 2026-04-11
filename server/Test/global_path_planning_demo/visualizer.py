@@ -42,18 +42,12 @@ class PathPlanningVisualizer:
     def __init__(
         self,
         buffet_map: BuffetMap,
-        entry_radius: Optional[float] = None,
         dynamic_radius: Optional[float] = None,
     ) -> None:
         self.buffet_map = buffet_map
         self.graph = buffet_map.graph
-        # Pick up per-map defaults from the loaded YAML unless the
-        # caller explicitly overrode them.
-        self.entry_radius = (
-            entry_radius
-            if entry_radius is not None
-            else buffet_map.defaults.entry_radius
-        )
+        # Pick up per-map default from the loaded YAML unless the
+        # caller explicitly overrode it.
         self.dynamic_radius = (
             dynamic_radius
             if dynamic_radius is not None
@@ -230,17 +224,6 @@ class PathPlanningVisualizer:
     def _draw_selection(self) -> None:
         if self.start_xy is not None:
             sx, sy = self.start_xy
-            radius_circle = mpatches.Circle(
-                (sx, sy),
-                self.entry_radius,
-                fill=False,
-                edgecolor="#2ca02c",
-                linestyle="--",
-                linewidth=1.2,
-                alpha=0.6,
-                zorder=4,
-            )
-            self.ax.add_patch(radius_circle)
             self.ax.plot(
                 sx,
                 sy,
@@ -306,10 +289,7 @@ class PathPlanningVisualizer:
 
     def _draw_title(self) -> None:
         if self.start_xy is None:
-            status = (
-                "Click anywhere on the map to choose the START point "
-                f"(entry radius = {self.entry_radius:.1f} m)"
-            )
+            status = "Click anywhere on the map to choose the START point"
         elif self.goal_id is None:
             status = "Click on the map to choose the GOAL waypoint"
         elif self.plan is None:
@@ -318,15 +298,12 @@ class PathPlanningVisualizer:
                 "(start may be unreachable from any waypoint)"
             )
         else:
-            base = (
+            status = (
                 f"Path found: {len(self.plan.waypoints)} waypoints, "
                 f"entry={self.plan.entry_distance:.2f} m + "
                 f"corridor={self.plan.waypoint_cost:.2f} m, "
                 f"total={self.plan.total_cost:.2f} m"
             )
-            if self.plan.entry_radius_fallback:
-                base += "  [radius fallback]"
-            status = base
         n_dyn = len(self.dynamic_obstacles)
         dyn_note = (
             f"  |  dynamic obstacles: {n_dyn}" if n_dyn else ""
@@ -468,7 +445,6 @@ class PathPlanningVisualizer:
             self.buffet_map,
             self.start_xy,
             self.goal_id,
-            entry_radius=self.entry_radius,
             dynamic_obstacles=self.dynamic_obstacles,
         )
         self.plan = plan
@@ -476,11 +452,6 @@ class PathPlanningVisualizer:
         if plan is None:
             print("[demo] no path found")
             return
-        if plan.entry_radius_fallback:
-            print(
-                f"[demo] no waypoint within {self.entry_radius:.1f} m, "
-                "fell back to nearest reachable waypoint"
-            )
         labels = [self._describe(i) for i in plan.waypoints]
         sx, sy = plan.start_xy
         print(
