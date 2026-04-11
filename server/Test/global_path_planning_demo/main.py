@@ -37,6 +37,9 @@ _FREE_START_SCENARIOS: List[Tuple[Tuple[float, float], str]] = [
     ((8.5, 6.0), "Return"),
     ((1.7, 11.4), "A3-S"),
     ((17.2, 9.8), "Entrance"),
+    # Previously degenerated into a long diagonal entry; should now
+    # snap to the nearest corridor waypoint and follow the grid.
+    ((19.0, 10.2), "Kitchen"),
 ]
 
 
@@ -76,9 +79,13 @@ def _print_free_scenario(
         return
     entry_wp = graph.waypoints[plan.entry_wp_id]
     entry_label = entry_wp.label or f"({entry_wp.x},{entry_wp.y})"
+    fallback_note = (
+        "  [radius fallback]" if plan.entry_radius_fallback else ""
+    )
     print(
         f"  entry waypoint = {entry_label} "
-        f"(distance {plan.entry_distance:.2f} m)"
+        f"(distance {plan.entry_distance:.2f} m, "
+        f"radius {plan.entry_radius:.1f} m){fallback_note}"
     )
     print(
         f"  total cost = {plan.total_cost:.2f} m "

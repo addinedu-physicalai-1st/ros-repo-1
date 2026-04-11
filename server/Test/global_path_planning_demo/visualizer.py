@@ -21,7 +21,11 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from matplotlib.backend_bases import KeyEvent, MouseEvent
 
-from astar_planner import FreeStartPlan, plan_path_from_point
+from astar_planner import (
+    DEFAULT_ENTRY_RADIUS,
+    FreeStartPlan,
+    plan_path_from_point,
+)
 from map_data import (
     MAP_HEIGHT,
     MAP_WIDTH,
@@ -34,9 +38,14 @@ from map_data import (
 class PathPlanningVisualizer:
     """Interactive demo: free start point + waypoint goal -> A* path."""
 
-    def __init__(self, buffet_map: BuffetMap) -> None:
+    def __init__(
+        self,
+        buffet_map: BuffetMap,
+        entry_radius: float = DEFAULT_ENTRY_RADIUS,
+    ) -> None:
         self.buffet_map = buffet_map
         self.graph = buffet_map.graph
+        self.entry_radius = entry_radius
 
         self.start_xy: Optional[Tuple[float, float]] = None
         self.goal_id: Optional[int] = None
@@ -150,6 +159,17 @@ class PathPlanningVisualizer:
     def _draw_selection(self) -> None:
         if self.start_xy is not None:
             sx, sy = self.start_xy
+            radius_circle = mpatches.Circle(
+                (sx, sy),
+                self.entry_radius,
+                fill=False,
+                edgecolor="#2ca02c",
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.6,
+                zorder=4,
+            )
+            self.ax.add_patch(radius_circle)
             self.ax.plot(
                 sx,
                 sy,
@@ -190,7 +210,10 @@ class PathPlanningVisualizer:
 
     def _draw_title(self) -> None:
         if self.start_xy is None:
-            status = "Click anywhere on the map to choose the START point"
+            status = (
+                "Click anywhere on the map to choose the START point "
+                f"(entry radius = {self.entry_radius:.1f} m)"
+            )
         elif self.goal_id is None:
             status = "Click on the map to choose the GOAL waypoint"
         elif self.plan is None:
@@ -199,12 +222,15 @@ class PathPlanningVisualizer:
                 "(start may be unreachable from any waypoint)"
             )
         else:
-            status = (
+            base = (
                 f"Path found: {len(self.plan.waypoints)} waypoints, "
                 f"entry={self.plan.entry_distance:.2f} m + "
                 f"corridor={self.plan.waypoint_cost:.2f} m, "
                 f"total={self.plan.total_cost:.2f} m"
             )
+            if self.plan.entry_radius_fallback:
+                base += "  [radius fallback]"
+            status = base
         self.ax.set_title(
             "Waypoint-based A* Global Path Planner - Buffet Demo\n"
             f"{status}\n"
@@ -277,12 +303,18 @@ class PathPlanningVisualizer:
             self.start_xy,
             self.goal_id,
             self.buffet_map.obstacles,
+            entry_radius=self.entry_radius,
         )
         self.plan = plan
         self.plan_failed = plan is None
         if plan is None:
             print("[demo] no path found")
             return
+        if plan.entry_radius_fallback:
+            print(
+                f"[demo] no waypoint within {self.entry_radius:.1f} m, "
+                "fell back to nearest reachable waypoint"
+            )
         labels = [self._describe(i) for i in plan.waypoints]
         sx, sy = plan.start_xy
         print(

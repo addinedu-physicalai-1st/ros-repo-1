@@ -44,7 +44,7 @@ python3 main.py --headless
 
 | 입력 | 동작 |
 |---|---|
-| 클릭 1회 | **START 자유 좌표 선택** — 클릭 위치를 그대로 시작점으로 사용. 웨이포인트로 스냅하지 않음. 장애물 내부거나 맵 밖이면 거부 메시지 후 다시 클릭 대기 |
+| 클릭 1회 | **START 자유 좌표 선택** — 클릭 위치를 그대로 시작점으로 사용. 웨이포인트로 스냅하지 않음. 시작점 주변 옅은 점선 원이 진입 반경(`entry_radius`, 기본 2.5 m)을 표시. 장애물 내부거나 맵 밖이면 거부 메시지 후 다시 클릭 대기 |
 | 클릭 2회 | GOAL 웨이포인트 선택 (가장 가까운 웨이포인트로 스냅), A* 즉시 실행 후 경로 표시 |
 | 클릭 3회 | 새로운 쿼리 시작 (이전 선택 초기화) |
 | `r` | 현재 선택 리셋 |
@@ -75,17 +75,33 @@ python3 main.py --headless
 - **간선 비용**: 인접 웨이포인트 간 Euclidean 거리 (축 정렬이므로 Manhattan과 동일)
 - **휴리스틱**: 목표까지의 Manhattan 거리. 모든 간선이 축 정렬이라 admissible 하며 항상 최적 경로를 보장합니다.
 
-### 자유 시작점 처리 (multi-source A*)
+### 자유 시작점 처리 (반경 제한 multi-source A*)
 
-자유 좌표 `(sx, sy)`에서 출발할 때는 단순히 가장 가까운 웨이포인트로 스냅하지 않고, **다중 시드 A***로 진입 웨이포인트 자체를 최적화합니다.
+자유 좌표 `(sx, sy)`에서 출발할 때는 단순히 가장 가까운 웨이포인트로 스냅하지 않고, **진입 반경 내에서의 다중 시드 A***로 진입 웨이포인트를 최적화합니다.
 
 1. `(sx, sy)`가 장애물 내부면 거부.
-2. `(sx, sy)`에서 직선 시야(line-of-sight, 0.1m 간격 샘플링)로 도달 가능한 모든 웨이포인트를 진입 후보로 수집.
+2. `(sx, sy)`에서 직선 시야(line-of-sight, 0.1m 간격 샘플링)로 도달 가능하면서 **`entry_radius` (기본 2.5 m) 이내**에 있는 모든 웨이포인트를 진입 후보로 수집.
 3. 각 후보에 `(sx, sy)`까지의 직선 거리(Euclidean)를 **초기 g-score**로 부여.
 4. 위 시드들을 모두 open list에 넣은 상태로 A*를 한 번만 실행 → A*가 자연스럽게 `entry_distance + corridor_cost`가 최소인 진입점을 선택.
-5. 결과는 `FreeStartPlan(start_xy, waypoints, entry_distance, waypoint_cost, total_cost)` 데이터 클래스로 반환.
+5. 반경 내에 단 하나의 후보도 없으면(예: 시작점이 통로 그래프와 멀리 떨어진 위치) **fallback**으로 가장 가까운 line-of-sight 도달 가능 웨이포인트 1개를 사용. 이 경우 결과의 `entry_radius_fallback` 플래그가 True가 되어 호출 측에서 경고할 수 있도록 함.
+6. 결과는 `FreeStartPlan(start_xy, waypoints, entry_distance, waypoint_cost, entry_radius, entry_radius_fallback)` 데이터 클래스로 반환.
 
-이렇게 하면 "가장 가까운 웨이포인트가 곧 최적 진입점"이 아닌 케이스에서도 진짜 최단 경로를 만들 수 있습니다. 예: 자유 시작점 `(10.40, 0.60)`에서 Kitchen으로 갈 때, 가장 가까운 웨이포인트는 0.57m 거리의 Entrance지만, Entrance에서는 A2 테이블에 막혀 어차피 `(7,1)`로 우회해야 하므로 처음부터 3.42m 떨어진 `(7,1)`로 진입하는 것이 총 비용이 더 짧습니다 (17.42 m vs 17.57 m). multi-source A*는 이런 트레이드오프를 자동으로 풀어냅니다.
+#### 왜 진입 반경을 제한하는가
+
+반경 제한이 없으면, 시작점에서 목적지까지 직선이 line-of-sight로 뚫려 있을 때 A*가 **목적지 자체를 시드**로 잡고 격자를 무시한 채 길게 사선 주행하는 경로를 반환할 수 있습니다. 이는 본 프로젝트가 명시적으로 피하고자 하는 형태입니다.
+
+- 본 프로젝트의 핵심 요구사항: "예측 가능한 직진 + 직각 회전"
+- 뷔페는 사람이 많은 공간 → 통로를 따라가는 동선이 안전하고 사람에게 예측 가능
+- Local Planner(DWB)는 Global Path가 알려진 통로를 따른다고 가정할 때 가장 안정적
+- 운영/검증 측면에서도 동선이 항상 "현재 위치 → 근처 웨이포인트 → 격자 경로 → 목적지" 한 가지 형태로 일관되는 것이 유리
+
+`entry_radius`(기본 2.5 m, 셀 약 2~3개)는 이 균형을 위한 값으로, 반경 안에서는 multi-source A* 최적화가 그대로 살아 있어 의미 있는 케이스에서는 여전히 최적 진입점을 골라줍니다.
+
+#### 진입점이 가장 가까운 웨이포인트가 아닌 케이스 (반경 내 최적화 예시)
+
+- `(8.50, 6.00) → Return`: 가장 가까운 웨이포인트는 1.5m 거리의 `A1-N/B1-S(7,6)`이지만, A*는 같은 거리의 `A2-N/B2-S(10,6)`을 선택 → 이후 통로 비용이 더 짧음 (총 12.50 m).
+- `(19.00, 10.20) → Kitchen`: 가장 가까운 웨이포인트는 1.02m 거리의 `(18,10)`이지만, A*는 2.06m 거리의 `(18,12)`를 선택 → `(18,10)` 진입 시 총 17.02 m vs `(18,12)` 진입 시 총 16.06 m.
+- `(10.40, 0.60) → Kitchen`: 반경 2.5 m 안에는 `Entrance(10,1)` 하나뿐이라 그것이 진입점 → 17.57 m. 반경 제한이 없을 때 가능한 17.42 m(`(7,1)` 진입) 대비 0.15 m 손실은 안전성/일관성 측면 이득에 비해 무시 가능.
 
 ## 파일 구조
 
@@ -106,12 +122,14 @@ global_path_planning_demo/
   - `build_buffet_map()`: 정적 뷔페 맵을 생성. 손으로 정의한 웨이포인트와 장애물 목록으로부터 같은 행/열에서 장애물에 가로막히지 않는 인접 쌍을 자동 연결합니다.
   - 자유 좌표 검사 헬퍼: `is_inside_any_obstacle`, `is_in_map_bounds`, `is_line_clear` (0.1m 간격 샘플링).
 - `astar_planner.py`
+  - `DEFAULT_ENTRY_RADIUS`: 자유 시작점에서 진입 웨이포인트까지 허용되는 최대 직선 거리(기본 2.5 m).
   - `plan_path(graph, start, goal) -> (path, cost)`: 웨이포인트 ID → 웨이포인트 ID 단일 소스 A*. 경로가 없으면 `(None, inf)`.
-  - `plan_path_from_point(graph, start_xy, goal, obstacles) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 다중 시드 A*. 도달 가능한 모든 웨이포인트를 진입 후보로 시드해 최적 진입점 + 격자 경로를 한 번에 계산.
+  - `plan_path_from_point(graph, start_xy, goal, obstacles, entry_radius=2.5) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 반경 제한 multi-source A*. `entry_radius` 안에 line-of-sight 도달 가능 웨이포인트들만 진입 후보로 시드해 그 중 최적 진입점을 선택. 반경 안에 후보가 없으면 가장 가까운 reachable 웨이포인트로 fallback (`FreeStartPlan.entry_radius_fallback = True`).
   - 내부적으로 둘 다 `_astar_multi_source(graph, seeds_dict, goal)`를 호출하므로 단일/다중 소스 모두 동일 코드 경로를 사용.
 - `visualizer.py`
-  - `PathPlanningVisualizer`: 정적 요소(벽, 장애물, 웨이포인트, 간선)와 동적 요소(start 자유 좌표 마커, goal 웨이포인트 마커, 계산된 경로)를 그리고 클릭/키 이벤트를 처리.
+  - `PathPlanningVisualizer`: 정적 요소(벽, 장애물, 웨이포인트, 간선)와 동적 요소(start 자유 좌표 마커 + 진입 반경 점선 원, goal 웨이포인트 마커, 계산된 경로)를 그리고 클릭/키 이벤트를 처리.
   - 첫 클릭은 자유 좌표로 처리(맵 밖/장애물 내부면 거부), 두 번째 클릭만 가장 가까운 웨이포인트로 스냅.
+  - `entry_radius` fallback이 발생한 경우 타이틀에 `[radius fallback]` 표시 + 콘솔에도 경고 출력.
 - `main.py`
   - CLI 파싱 → 맵 빌드 → 인터랙티브 또는 헤드리스 실행 분기. 헤드리스 모드는 `Waypoint -> Waypoint`와 `Free start point -> Waypoint` 두 섹션을 모두 출력.
 
@@ -146,29 +164,36 @@ Running headless A* scenarios on the buffet test map.
 --- Free start point -> Waypoint ---
 
 [free-start] (10.40, 0.60) -> Kitchen
-  entry waypoint = (7,1) (distance 3.42 m)
-  total cost = 17.42 m (5 waypoints)
-  path: (10.40,0.60) -> (7,1) -> (7,6) -> (7,10) -> B1-N -> Kitchen
+  entry waypoint = Entrance (distance 0.57 m, radius 2.5 m)
+  total cost = 17.57 m (6 waypoints)
+  path: (10.40,0.60) -> Entrance -> (7,1) -> (7,6) -> (7,10) -> B1-N -> Kitchen
 
 [free-start] (8.50, 6.00) -> Return
-  entry waypoint = (13,6) (distance 4.50 m)
-  total cost = 12.50 m (4 waypoints)
-  path: (8.50,6.00) -> (13,6) -> (13,10) -> B3-N -> Return
+  entry waypoint = A2-N/B2-S (distance 1.50 m, radius 2.5 m)
+  total cost = 12.50 m (5 waypoints)
+  path: (8.50,6.00) -> A2-N/B2-S -> (13,6) -> (13,10) -> B3-N -> Return
 
 [free-start] (1.70, 11.40) -> A3-S
-  entry waypoint = (13,10) (distance 11.39 m)
-  total cost = 22.39 m (4 waypoints)
-  path: (1.70,11.40) -> (13,10) -> (13,6) -> (13,1) -> A3-S
+  entry waypoint = Kitchen (distance 2.38 m, radius 2.5 m)
+  total cost = 24.38 m (7 waypoints)
+  path: (1.70,11.40) -> Kitchen -> (7,12) -> (13,12) -> (13,10) -> (13,6) -> (13,1) -> A3-S
 
 [free-start] (17.20, 9.80) -> Entrance
-  entry waypoint = (13,10) (distance 4.20 m)
-  total cost = 16.20 m (4 waypoints)
-  path: (17.20,9.80) -> (13,10) -> (13,6) -> (13,1) -> Entrance
+  entry waypoint = B3-N (distance 2.21 m, radius 2.5 m)
+  total cost = 16.21 m (5 waypoints)
+  path: (17.20,9.80) -> B3-N -> (13,10) -> (13,6) -> (13,1) -> Entrance
+
+[free-start] (19.00, 10.20) -> Kitchen
+  entry waypoint = (18,12) (distance 2.06 m, radius 2.5 m)
+  total cost = 16.06 m (5 waypoints)
+  path: (19.00,10.20) -> (18,12) -> Return -> (13,12) -> (7,12) -> Kitchen
 ```
 
 **Waypoint → Waypoint**: 각 시나리오의 비용이 start/goal의 Manhattan 거리와 정확히 일치하므로, A*가 최적 경로를 반환하고 있음을 확인할 수 있습니다. 모든 경로가 직진과 직각 회전만으로 구성되어 의도한 주행 형태를 잘 만들어냄을 보여줍니다.
 
-**Free start → Waypoint**: 시나리오 1, 3, 4는 진입 웨이포인트가 가장 가까운 웨이포인트가 아닌 케이스입니다. 예를 들어 시나리오 3 `(1.70, 11.40) → A3-S`는 진입 거리만 11.39 m에 달하지만 총 22.39 m로, 더 가까운 좌측 웨이포인트로 진입했을 때의 25 m 이상 우회 경로보다 짧습니다. multi-source A*가 단순한 snap-to-nearest보다 뚜렷이 우수함을 확인할 수 있습니다.
+**Free start → Waypoint**: 모든 시나리오가 진입 반경 2.5 m 안의 웨이포인트로 들어간 뒤 격자를 따라 이동합니다. 특히 주목할 점:
+- 시나리오 2 `(8.50, 6.00) → Return`은 가장 가까운 웨이포인트(`(7,6)`, 1.5 m) 대신 같은 거리의 `(10,6)`을 진입점으로 선택해 후속 통로 비용을 줄입니다 (총 12.50 m). 반경 안에서의 multi-source 최적화가 살아 있음을 보여줍니다.
+- 시나리오 5 `(19.00, 10.20) → Kitchen`은 반경 제한 없이 multi-source A*만 돌리면 18 m 이상의 사선 한 줄이 나오던 케이스입니다. 이제는 `(18,12)`로 진입한 뒤 격자(`Return → (13,12) → (7,12) → Kitchen`)를 따라 16.06 m로 이동 — 동선이 통로 안에 머무르므로 사람과의 상호작용이 훨씬 예측 가능합니다.
 
 ## 본 프로젝트로 옮길 때 고려할 점
 
@@ -181,3 +206,4 @@ Running headless A* scenarios on the buffet test map.
 - HQ Service에서 task와 함께 웨이포인트 시퀀스를 내려주는 인터페이스가 별도로 필요
 - 자유 시작점의 line-of-sight 검사가 0.1m 샘플링 기반 → 실제 운용에서는 정확한 segment-vs-rectangle 교차 또는 inflated costmap 기반 판정으로 교체 권장
 - 자유 시작점에서 진입 웨이포인트까지의 구간은 직선으로 가정 → 실제로는 Local Planner가 처리하는 구간이며, costmap의 동적 장애물에 따라 경로가 달라질 수 있음
+- `entry_radius`(기본 2.5 m)는 데모 맵의 통로 폭/웨이포인트 간격에 맞춰 손으로 정한 값 → 실제 환경에서는 통로 폭, 로봇 반경, 웨이포인트 밀도, Local Planner의 회복 거리 등을 고려해 재조정 필요

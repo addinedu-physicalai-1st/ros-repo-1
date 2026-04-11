@@ -27,6 +27,14 @@ from map_data import (
 )
 
 
+# Maximum allowed straight-line distance from a free start point to its
+# entry waypoint (in metres). The cap forces the global path to enter the
+# corridor network through a nearby waypoint instead of running long
+# diagonals across open space, which keeps the resulting motion close to
+# the project's "straight + 90-degree turns" constraint.
+DEFAULT_ENTRY_RADIUS: float = 2.5
+
+
 def _euclidean(graph: WaypointGraph, a: int, b: int) -> float:
     wa = graph.waypoints[a]
     wb = graph.waypoints[b]
@@ -118,13 +126,19 @@ class FreeStartPlan:
     ``waypoints`` is the waypoint id sequence from the chosen entry node
     to the goal. ``entry_distance`` is the straight-line distance from
     the user-provided ``start_xy`` to ``waypoints[0]``. ``waypoint_cost``
-    is the cost of the waypoint chain itself.
+    is the cost of the waypoint chain itself. ``entry_radius`` is the
+    radius that was used to filter entry candidates, and
+    ``entry_radius_fallback`` is True if no waypoint was reachable inside
+    that radius and the planner had to relax the constraint and fall
+    back to the single nearest reachable waypoint.
     """
 
     start_xy: Tuple[float, float]
     waypoints: List[int]
     entry_distance: float
     waypoint_cost: float
+    entry_radius: float
+    entry_radius_fallback: bool = False
 
     @property
     def entry_wp_id(self) -> int:
@@ -140,20 +154,31 @@ def plan_path_from_point(
     start_xy: Tuple[float, float],
     goal: int,
     obstacles: Iterable[Obstacle],
+    entry_radius: float = DEFAULT_ENTRY_RADIUS,
 ) -> Optional[FreeStartPlan]:
     """Plan a path from a continuous (x, y) start point to ``goal``.
 
-    The start point is connected to every waypoint that is reachable in
-    a straight line (no obstacle in between). Each candidate is seeded
-    into A* with its straight-line distance as the initial cost, so the
-    search picks the entry waypoint that minimises the total path
-    length, not just the nearest one.
+    The start point is connected only to line-of-sight reachable
+    waypoints whose straight-line distance is at most ``entry_radius``,
+    so the entry segment stays short and the bulk of the trip happens on
+    the corridor graph (straight + 90-degree turns). Among the
+    candidates inside the radius, A* picks the one that minimises the
+    total path length, not just the geometrically nearest one.
+
+    If no waypoint is reachable inside ``entry_radius`` (e.g. the user
+    clicked far from the corridor network), the planner falls back to
+    the single nearest line-of-sight reachable waypoint and sets
+    :attr:`FreeStartPlan.entry_radius_fallback` to ``True`` so the
+    caller can warn about the relaxed constraint.
 
     Returns ``None`` if the start point is inside an obstacle, has no
-    line-of-sight reachable waypoint, or no path to the goal exists.
+    line-of-sight reachable waypoint at all, or no path to the goal
+    exists.
     """
     if goal not in graph.waypoints:
         raise KeyError(f"Unknown goal waypoint id {goal}")
+    if entry_radius <= 0.0:
+        raise ValueError("entry_radius must be positive")
 
     obstacles = list(obstacles)
     sx, sy = start_xy
@@ -161,13 +186,24 @@ def plan_path_from_point(
         return None
 
     seeds: Dict[int, float] = {}
+    nearest_id: Optional[int] = None
+    nearest_dist: float = math.inf
     for wp in graph.waypoints.values():
         if not is_line_clear(sx, sy, wp.x, wp.y, obstacles):
             continue
-        seeds[wp.wp_id] = math.hypot(sx - wp.x, sy - wp.y)
+        d = math.hypot(sx - wp.x, sy - wp.y)
+        if d < nearest_dist:
+            nearest_dist = d
+            nearest_id = wp.wp_id
+        if d <= entry_radius:
+            seeds[wp.wp_id] = d
 
+    fallback = False
     if not seeds:
-        return None
+        if nearest_id is None:
+            return None
+        seeds[nearest_id] = nearest_dist
+        fallback = True
 
     path, total_cost = _astar_multi_source(graph, seeds, goal)
     if path is None:
@@ -179,6 +215,8 @@ def plan_path_from_point(
         waypoints=path,
         entry_distance=entry_distance,
         waypoint_cost=total_cost - entry_distance,
+        entry_radius=entry_radius,
+        entry_radius_fallback=fallback,
     )
 
 
