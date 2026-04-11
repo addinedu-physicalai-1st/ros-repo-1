@@ -41,6 +41,7 @@ from std_msgs.msg import Bool
 CMD_VEL_RAW_TOPIC = 'cmd_vel_raw'
 CHILD_DETECTED_TOPIC = 'child_detected'
 CMD_VEL_TOPIC = 'cmd_vel'
+SAFETY_STOP_EVENT_TOPIC = 'safety_stop_event'
 
 # ── Tuneable constants ─────────────────────────────────────────────────────────
 PUBLISH_RATE_HZ = 10.0          # Timer rate for safety-stop heartbeat
@@ -50,6 +51,13 @@ CHILD_DETECTED_TIMEOUT_S = 1.0  # Max seconds between /child_detected messages
 def _zero_twist() -> Twist:
     """Return a Twist message with all fields set to zero."""
     return Twist()  # All fields default to 0.0
+
+
+def _bool_msg(value: bool) -> Bool:
+    """Return std_msgs/Bool initialized with value."""
+    msg = Bool()
+    msg.data = value
+    return msg
 
 
 class SafetyLayerNode(Node):
@@ -82,6 +90,8 @@ class SafetyLayerNode(Node):
 
         # ── Publisher ──────────────────────────────────────────────────────────
         self.cmd_vel_pub = self.create_publisher(Twist, CMD_VEL_TOPIC, 10)
+
+        self.safety_stop_event_pub = self.create_publisher(Bool, SAFETY_STOP_EVENT_TOPIC, 10)
 
         # ── Subscribers ───────────────────────────────────────────────────────
         self.cmd_vel_raw_sub = self.create_subscription(
@@ -158,6 +168,7 @@ class SafetyLayerNode(Node):
                 throttle_duration_sec=5.0
             )
             self.cmd_vel_pub.publish(_zero_twist())
+            self.safety_stop_event_pub.publish(_bool_msg(True))
             return
 
         elapsed = (now - self.last_child_msg_time).nanoseconds / 1e9
@@ -169,6 +180,7 @@ class SafetyLayerNode(Node):
                 throttle_duration_sec=1.0
             )
             self.cmd_vel_pub.publish(_zero_twist())
+            self.safety_stop_event_pub.publish(_bool_msg(True))
             return
 
         # ── Condition 2: child detected ────────────────────────────────────────
@@ -178,10 +190,12 @@ class SafetyLayerNode(Node):
                 throttle_duration_sec=1.0
             )
             self.cmd_vel_pub.publish(_zero_twist())
+            self.safety_stop_event_pub.publish(_bool_msg(True))
             return
 
         # ── Condition 3: normal operation ──────────────────────────────────────
         self.cmd_vel_pub.publish(self.latest_cmd_vel_raw)
+        self.safety_stop_event_pub.publish(_bool_msg(False))
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

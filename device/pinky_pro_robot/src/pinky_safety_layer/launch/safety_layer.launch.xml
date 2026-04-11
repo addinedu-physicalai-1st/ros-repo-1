@@ -28,7 +28,7 @@
     <arg name="use_sim_time" default="False"/>
 
     <!-- Path to the YOLO weights file. Override at launch time as needed. -->
-    <arg name="model_path" default="child_detection_model.pt"/>
+    <arg name="model_path" default="best.pt"/>
 
     <!-- YOLO confidence threshold (0.0 – 1.0). -->
     <arg name="confidence" default="0.5"/>
@@ -38,6 +38,11 @@
 
     <!-- 초당 캡처 및 추론 횟수. 높을수록 CPU 부하 증가. -->
     <arg name="capture_rate_hz" default="10.0"/>
+
+    <!-- ── Publish_Camera ───────────────────────────────────────────────── -->
+    <node pkg="pinky_camera" exec="camera_node" name="camera_node"
+          output="screen">
+    </node>
 
     <!-- ── Child detection ───────────────────────────────────────────────── -->
     <!--
@@ -89,9 +94,9 @@
     </node>
 
     <!-- ── Robot base controller ─────────────────────────────────────────── -->
-    <node pkg="pinky_bringup" exec="bringup" name="pinky_bringup">
+    <!-- <node pkg="pinky_bringup" exec="bringup" name="pinky_bringup">
         <param name="use_sim_time" value="$(var use_sim_time)"/>
-    </node>
+    </node> -->
 
     <!-- ── Navigation / teleop (examples) ───────────────────────────────── -->
     <!--

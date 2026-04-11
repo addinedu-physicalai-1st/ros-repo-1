@@ -17,26 +17,22 @@
 """
 Child Detection Node for Pinky Pro robot.
 
-카메라 이미지를 ROS 토픽으로 주고받지 않고 OpenCV VideoCapture로
-로컬에서 직접 읽어 YOLO 추론을 수행하고, 검출 결과만 /child_detected
-Bool 토픽으로 퍼블리시합니다.
+/image (sensor_msgs/CompressedImage) 토픽을 구독하고 YOLO 추론을 수행해
+검출 결과만 /child_detected Bool 토픽으로 퍼블리시합니다.
 
-네트워크 트래픽
---------------
-/image_raw 토픽을 사용하면 30 fps × ~2 MB/frame = ~60 MB/s 가 ROS
-미들웨어를 통해 전송됩니다.  VideoCapture를 사용하면 이미지 데이터는
-노드 프로세스 안에서만 처리되므로 네트워크 트래픽이 전혀 발생하지
-않습니다.  퍼블리시되는 것은 Bool 하나(수 바이트)뿐입니다.
+cv2.VideoCapture 를 제거하고 pinky_camera 패키지가 퍼블리시하는
+/image CompressedImage 토픽을 구독하도록 리팩터링되었습니다.
+여러 노드가 동일 토픽을 공유하므로 카메라 접근 충돌이 발생하지 않습니다.
 
 Architecture
 ------------
-  camera hardware
-       │  (V4L2 / USB, /dev/videoX)
+  pinky_camera node
+       │  /image (CompressedImage, JPEG q=90)
        ▼
-  cv2.VideoCapture   ←── 타이머가 직접 호출
+  _image_callback   ←── 구독 콜백 (디코딩 후 self.frame 저장)
        │
        ▼
-  YOLO inference
+  _detect (timer)   ←── 추론 타이머 (YOLO inference)
        │
        ▼
   /child_detected (std_msgs/Bool)
@@ -46,49 +42,54 @@ Architecture
 
 Fail-safe
 ---------
-cap.read() 실패 혹은 캡처 타이머가 한 번도 성공하지 못한 채
-CAMERA_TIMEOUT_S 초가 지나면 child_detected = True 를 퍼블리시해
-로봇을 정지시킵니다.
+CAMERA_TIMEOUT_S 초 동안 /image 메시지가 수신되지 않으면
+child_detected = True 를 퍼블리시해 로봇을 정지시킵니다.
 
 ROS Parameters
 --------------
-camera_index      (int,    default 0)    – VideoCapture 인덱스 (/dev/video0)
-capture_rate_hz   (float,  default 10.0) – 초당 캡처·추론 횟수
-model_path        (string, default 'child_detection_model.pt')
+capture_rate_hz   (float,  default 10.0) – 초당 추론 횟수
+model_path        (string, default './best.pt')
 confidence        (float,  default 0.5)
-child_class_names (list,   default ['child', 'person_child'])
+child_class_names (list,   default ['kid'])
 """
 
 import os
 
 import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import CompressedImage  # [CHANGED] VideoCapture → 토픽 구독
 from std_msgs.msg import Bool
 from ultralytics import YOLO
 
-# ── Topic ──────────────────────────────────────────────────────────────────────
+# ── Topics ─────────────────────────────────────────────────────────────────────
+IMAGE_TOPIC = '/image'             # [CHANGED] 카메라 입력 소스
 CHILD_DETECTED_TOPIC = 'child_detected'
 
 # ── Default constants ──────────────────────────────────────────────────────────
-DEFAULT_CAMERA_INDEX = 0
-DEFAULT_CAPTURE_RATE_HZ = 10.0
-DEFAULT_MODEL_PATH = 'child_detection_model.pt'
+DEFAULT_CAPTURE_RATE_HZ = 10.0    # 추론 타이머 주기 (Hz)
+DEFAULT_MODEL_PATH = './best.pt'
 DEFAULT_CONFIDENCE = 0.5
-DEFAULT_CHILD_CLASS_NAMES = ['child', 'person_child']
+DEFAULT_CHILD_CLASS_NAMES = ['kid']
 
-# 이 시간 동안 성공적인 프레임 캡처가 없으면 fail-safe 발동
+# 이 시간 동안 /image 메시지가 없으면 fail-safe 발동
 CAMERA_TIMEOUT_S = 1.0
 
 
 class ChildDetectionNode(Node):
     """
-    OpenCV VideoCapture 기반 YOLO 아동 감지 노드.
+    /image CompressedImage 기반 YOLO 아동 감지 노드.
+
+    Subscribes
+    ----------
+    /image  (sensor_msgs/CompressedImage)
+        pinky_camera 가 퍼블리시하는 JPEG 압축 이미지
 
     Publishes
     ---------
     /child_detected  (std_msgs/Bool)
-        True  : 현재 프레임에서 아동이 감지됨 → safety_layer가 로봇 정지
+        True  : 현재 프레임에서 아동이 감지됨 → safety_layer 가 로봇 정지
         False : 아동 미감지 → 정상 주행 허용
     """
 
@@ -96,16 +97,12 @@ class ChildDetectionNode(Node):
         super().__init__('child_detection_node')
 
         # ── ROS parameters ─────────────────────────────────────────────────────
-        self.declare_parameter('camera_index', DEFAULT_CAMERA_INDEX)
+        # [CHANGED] camera_index 파라미터 제거 — 더 이상 VideoCapture 불필요
         self.declare_parameter('capture_rate_hz', DEFAULT_CAPTURE_RATE_HZ)
         self.declare_parameter('model_path', DEFAULT_MODEL_PATH)
         self.declare_parameter('confidence', DEFAULT_CONFIDENCE)
         self.declare_parameter('child_class_names', DEFAULT_CHILD_CLASS_NAMES)
 
-        camera_index: int = (
-            self.get_parameter('camera_index')
-            .get_parameter_value().integer_value
-        )
         capture_rate_hz: float = (
             self.get_parameter('capture_rate_hz')
             .get_parameter_value().double_value
@@ -125,21 +122,6 @@ class ChildDetectionNode(Node):
             .get_parameter_value().string_array_value
         }
 
-        # ── OpenCV VideoCapture ────────────────────────────────────────────────
-        self.get_logger().info(f'Opening camera index {camera_index} ...')
-        self.cap = cv2.VideoCapture(camera_index)
-
-        if not self.cap.isOpened():
-            # 카메라를 열지 못해도 노드는 계속 실행됩니다.
-            # watchdog이 timeout을 감지해 로봇을 안전하게 정지시킵니다.
-            self.get_logger().error(
-                f'Failed to open camera index {camera_index}. '
-                'The watchdog will keep the robot stopped until the '
-                'camera becomes available.'
-            )
-        else:
-            self.get_logger().info(f'Camera {camera_index} opened successfully.')
-
         # ── YOLO model ─────────────────────────────────────────────────────────
         self.get_logger().info(f'Loading YOLO model from: {model_path}')
         if not os.path.isfile(model_path):
@@ -152,57 +134,89 @@ class ChildDetectionNode(Node):
         self.get_logger().info('YOLO model loaded.')
 
         # ── Internal state ─────────────────────────────────────────────────────
-        # 마지막으로 프레임 캡처에 성공한 시각.  None = 아직 한 번도 성공 못 함.
-        self.last_frame_time = None  # rclpy.time.Time | None
+        # [CHANGED] self.cap → self.frame: 최신 디코딩 프레임을 보관합니다.
+        # 구독 콜백이 갱신하고, 추론 타이머가 읽습니다.
+        self.frame = None             # np.ndarray | None
+
+        # 마지막으로 /image 메시지가 수신된 시각. None = 아직 한 번도 없음.
+        self.last_frame_time = None   # rclpy.time.Time | None
 
         # ── Publisher ──────────────────────────────────────────────────────────
         self.child_detected_pub = self.create_publisher(Bool, CHILD_DETECTED_TOPIC, 10)
 
-        # ── Capture timer ──────────────────────────────────────────────────────
-        # 이 타이머가 프레임 읽기 + YOLO 추론 + 퍼블리시를 모두 담당합니다.
-        # rclpy.spin() 안에서 싱글스레드로 동작하므로 별도 스레드가 필요 없습니다.
-        self.capture_timer = self.create_timer(
+        # ── [CHANGED] /image 구독 ──────────────────────────────────────────────
+        # VideoCapture.read() 루프를 제거하고 토픽 구독으로 대체합니다.
+        # 콜백은 디코딩만 수행하고 즉시 반환해 스핀을 블로킹하지 않습니다.
+        self.create_subscription(
+            CompressedImage,
+            IMAGE_TOPIC,
+            self._image_callback,
+            10,
+        )
+
+        # ── [CHANGED] 추론 타이머 ──────────────────────────────────────────────
+        # 과거의 capture 타이머와 역할이 같지만, 이제는 카메라를 직접 읽지 않고
+        # self.frame 에 저장된 최신 프레임을 가져다 YOLO 추론만 수행합니다.
+        self.inference_timer = self.create_timer(
             1.0 / capture_rate_hz,
-            self._capture_and_detect
+            self._detect,
         )
 
         # ── Watchdog timer ─────────────────────────────────────────────────────
-        # 캡처 실패가 지속될 때 fail-safe 퍼블리시를 보장합니다.
+        # /image 메시지가 끊겼을 때 fail-safe 퍼블리시를 보장합니다.
         self.watchdog_timer = self.create_timer(
             CAMERA_TIMEOUT_S / 2.0,
-            self._watchdog_callback
+            self._watchdog_callback,
         )
 
         self.get_logger().info('ChildDetectionNode started.')
-        self.get_logger().info(f'  Camera index         : {camera_index}')
-        self.get_logger().info(f'  Capture rate         : {capture_rate_hz} Hz')
+        self.get_logger().info(f'  Subscribing          : {IMAGE_TOPIC}')
+        self.get_logger().info(f'  Inference rate       : {capture_rate_hz} Hz')
         self.get_logger().info(f'  Publishing           : {CHILD_DETECTED_TOPIC}')
         self.get_logger().info(f'  Confidence threshold : {self.confidence}')
         self.get_logger().info(f'  Child class names    : {sorted(self.child_class_names)}')
         self.get_logger().info(f'  Camera timeout       : {CAMERA_TIMEOUT_S} s')
 
-    # ── Capture & detect (main loop) ───────────────────────────────────────────
+    # ── [CHANGED] /image subscription callback ────────────────────────────────
 
-    def _capture_and_detect(self):
+    def _image_callback(self, msg: CompressedImage):
         """
-        타이머 콜백: 프레임을 읽고 YOLO 추론 후 결과를 퍼블리시합니다.
+        CompressedImage 메시지를 수신해 OpenCV BGR 프레임으로 디코딩합니다.
 
-        cap.read() 실패 시에는 last_frame_time을 갱신하지 않아
-        watchdog이 timeout을 감지할 수 있도록 합니다.
+        무거운 YOLO 추론은 이 콜백에서 수행하지 않습니다.
+        디코딩된 프레임을 self.frame 에 저장하고 즉시 반환합니다.
         """
-        ret, frame = self.cap.read()
+        # CompressedImage.data → numpy 배열 → BGR 프레임
+        np_arr = np.frombuffer(msg.data, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        if not ret or frame is None:
+        if frame is None:
             self.get_logger().warn(
-                'Failed to capture frame from camera.',
-                throttle_duration_sec=1.0
+                'Failed to decode CompressedImage.',
+                throttle_duration_sec=1.0,
             )
-            # 프레임 획득 실패 → 이번 사이클은 건너뜀
-            # watchdog이 timeout을 처리합니다.
             return
 
-        # 캡처 성공 → 타임스탬프 갱신
+        # 최신 프레임과 수신 시각 갱신
+        self.frame = frame
         self.last_frame_time = self.get_clock().now()
+
+    # ── [CHANGED] Inference timer (replaces _capture_and_detect) ──────────────
+
+    def _detect(self):
+        """
+        추론 타이머 콜백: self.frame 에서 YOLO 추론 후 결과를 퍼블리시합니다.
+
+        self.frame 이 None 이면 (아직 메시지 미수신) 이번 사이클은 건너뜁니다.
+        watchdog 이 timeout 을 처리합니다.
+        """
+        if self.frame is None:
+            # 아직 첫 프레임이 도착하지 않음 — watchdog 이 처리
+            return
+
+        # 콜백과의 경쟁 조건을 최소화하기 위해 레퍼런스를 로컬 변수로 복사합니다.
+        # (GIL 하에서 단순 대입은 원자적이므로 별도 락 불필요)
+        frame = self.frame
 
         # ── YOLO inference ─────────────────────────────────────────────────────
         try:
@@ -210,7 +224,7 @@ class ChildDetectionNode(Node):
         except Exception as exc:
             self.get_logger().error(
                 f'YOLO inference failed: {exc}',
-                throttle_duration_sec=2.0
+                throttle_duration_sec=2.0,
             )
             return
 
@@ -223,23 +237,22 @@ class ChildDetectionNode(Node):
         if child_present:
             self.get_logger().warn(
                 'Child detected in frame!',
-                throttle_duration_sec=1.0
+                throttle_duration_sec=1.0,
             )
 
     # ── Watchdog callback ──────────────────────────────────────────────────────
 
     def _watchdog_callback(self):
         """
-        카메라 스트림이 멈췄을 때 fail-safe로 child_detected=True를 퍼블리시합니다.
+        /image 스트림이 멈췄을 때 fail-safe 로 child_detected=True 를 퍼블리시합니다.
 
-        _capture_and_detect가 cap.read() 실패를 계속하면 last_frame_time이
-        갱신되지 않고 이 watchdog이 timeout을 감지해 로봇을 정지시킵니다.
+        last_frame_time 이 갱신되지 않으면 timeout 을 감지해 로봇을 정지시킵니다.
         """
         if self.last_frame_time is None:
             self.get_logger().warn(
-                'No frame captured yet — '
+                'No image received yet — '
                 'publishing child_detected=True as a precaution.',
-                throttle_duration_sec=5.0
+                throttle_duration_sec=5.0,
             )
             self._publish(True)
             return
@@ -247,10 +260,10 @@ class ChildDetectionNode(Node):
         elapsed = (self.get_clock().now() - self.last_frame_time).nanoseconds / 1e9
         if elapsed > CAMERA_TIMEOUT_S:
             self.get_logger().warn(
-                f'Camera silent for {elapsed:.1f} s '
+                f'/image silent for {elapsed:.1f} s '
                 f'(timeout={CAMERA_TIMEOUT_S} s) — '
                 'publishing child_detected=True (fail-safe stop).',
-                throttle_duration_sec=1.0
+                throttle_duration_sec=1.0,
             )
             self._publish(True)
 
@@ -258,7 +271,7 @@ class ChildDetectionNode(Node):
 
     def _child_in_results(self, results) -> bool:
         """
-        YOLO 결과에서 아동 클래스가 하나라도 있으면 True를 반환합니다.
+        YOLO 결과에서 아동 클래스가 하나라도 있으면 True 를 반환합니다.
 
         Parameters
         ----------
@@ -279,7 +292,7 @@ class ChildDetectionNode(Node):
         return False
 
     def _publish(self, detected: bool):
-        """Bool 메시지를 /child_detected에 퍼블리시합니다."""
+        """Bool 메시지를 /child_detected 에 퍼블리시합니다."""
         msg = Bool()
         msg.data = detected
         self.child_detected_pub.publish(msg)
@@ -287,10 +300,8 @@ class ChildDetectionNode(Node):
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
     def destroy_node(self):
-        """노드 종료 시 카메라 핸들을 해제합니다."""
-        if self.cap.isOpened():
-            self.cap.release()
-            self.get_logger().info('Camera released.')
+        """노드 종료 시 정리합니다."""
+        # [CHANGED] cv2.VideoCapture 핸들 해제 코드 제거 — 더 이상 카메라를 직접 열지 않음
         super().destroy_node()
 
 
