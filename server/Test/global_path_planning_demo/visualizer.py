@@ -145,10 +145,14 @@ class PathPlanningVisualizer:
 
     def _draw_waypoints(self) -> None:
         cut_vertices = self.buffet_map.cut_vertices
-        # Label offset scales with map size so small maps still get a
-        # readable offset and large maps don't over-space labels.
+        # Label offset and yaw-arrow length scale with map size so
+        # small maps still get a readable annotation and large maps
+        # don't over-space labels/arrows.
         lbl_off = max(
             0.03, min(0.25, self.buffet_map.width_m * 0.02)
+        )
+        yaw_arrow_len = max(
+            0.08, min(1.0, self.buffet_map.width_m * 0.05)
         )
         for wp in self.graph.waypoints.values():
             if wp.wp_id in cut_vertices:
@@ -173,6 +177,22 @@ class PathPlanningVisualizer:
                 markeredgecolor="white",
                 zorder=3,
             )
+            # Yaw arrow: small arrow showing the required arrival
+            # heading. Only drawn for waypoints that declared a yaw.
+            if wp.yaw is not None:
+                dx = math.cos(wp.yaw) * yaw_arrow_len
+                dy = math.sin(wp.yaw) * yaw_arrow_len
+                self.ax.annotate(
+                    "",
+                    xy=(wp.x + dx, wp.y + dy),
+                    xytext=(wp.x, wp.y),
+                    arrowprops=dict(
+                        arrowstyle="->",
+                        color="#1f77b4",
+                        lw=1.6,
+                    ),
+                    zorder=3.5,
+                )
             if wp.label:
                 self.ax.text(
                     wp.x + lbl_off,
@@ -243,6 +263,31 @@ class PathPlanningVisualizer:
                 linestyle="none",
                 zorder=5,
             )
+            # If a plan has been computed and the goal has a required
+            # yaw, draw a prominent red arrow showing the arrival
+            # orientation - this is what the local planner must reach.
+            goal_yaw = None
+            if self.plan is not None and self.plan.goal_yaw is not None:
+                goal_yaw = self.plan.goal_yaw
+            elif wp.yaw is not None:
+                goal_yaw = wp.yaw
+            if goal_yaw is not None:
+                arrow_len = max(
+                    0.15, min(1.5, self.buffet_map.width_m * 0.08)
+                )
+                dx = math.cos(goal_yaw) * arrow_len
+                dy = math.sin(goal_yaw) * arrow_len
+                self.ax.annotate(
+                    "",
+                    xy=(wp.x + dx, wp.y + dy),
+                    xytext=(wp.x, wp.y),
+                    arrowprops=dict(
+                        arrowstyle="->",
+                        color="#d62728",
+                        lw=2.5,
+                    ),
+                    zorder=5.1,
+                )
 
     def _draw_path(self) -> None:
         if self.plan is None:

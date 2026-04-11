@@ -292,6 +292,108 @@ PGM 처리 규칙 (Nav2 트리너리 모드 기준):
 - `(19.00, 10.20) → Kitchen`: 가장 가까운 웨이포인트는 1.02m 거리의 `(18,10)`이지만, A*는 2.06m 거리의 `(18,12)`를 선택 → `(18,10)` 진입 시 총 17.02 m vs `(18,12)` 진입 시 총 16.06 m.
 - `(10.40, 0.60) → Kitchen`: 반경 2.5 m 안에는 `Entrance(10,1)` 하나뿐이라 그것이 진입점 → 17.57 m. 반경 제한이 없을 때 가능한 17.42 m(`(7,1)` 진입) 대비 0.15 m 손실은 안전성/일관성 측면 이득에 비해 무시 가능.
 
+### Goal Pose (도착 방향) 지원
+
+좁은 운용 공간에서는 "Kitchen 도착" 만으로는 부족합니다. 실제 서비스를 수행하려면 **주방 카운터를 보고 서 있어야** 음식 픽업이 가능하고, **테이블 정면을 향해 있어야** 서빙이 가능합니다. 이를 위해 각 서비스 웨이포인트에 **선택적 yaw**(도착 방향)을 선언할 수 있습니다.
+
+#### 스키마
+
+`waypoints:` 항목에 `yaw` 키를 추가합니다(단위: **도**, 편의상 하드코딩된 라디안보다 사람이 읽기 쉬움. 로더가 라디안으로 변환).
+
+```yaml
+waypoints:
+  - {x: 1.50, y: +0.050, label: "Kitchen", yaw: 90}     # 카운터 북쪽 바라봄
+  - {x: 1.50, y: -0.900, label: "Return", yaw: 0}       # 반납구 동쪽 바라봄
+  - {x: 0.00, y: +0.050, label: "Charging", yaw: 180}   # 서쪽 벽에 도킹
+  - {x: 0.84, y: -0.766, label: "Table-S", yaw: -90}    # 남쪽 고객 바라봄
+  - {x: 0.00, y: -0.766}                                 # junction, yaw 생략
+```
+
+**표준 수학 관례** (ROS [REP 103](https://www.ros.org/reps/rep-0103.html)와 일치):
+
+- `0°` = +x (east) 방향
+- `90°` = +y (north) 방향 — 렌더 화면의 "위"
+- `180°` = -x (west) 방향
+- `-90°` (또는 `270°`) = -y (south) 방향 — 렌더 화면의 "아래"
+
+yaw를 생략한 웨이포인트(교차점 등)는 도착 자세 제약이 없습니다. 로컬 플래너(DWB)가 자연스러운 각도로 통과합니다.
+
+#### API
+
+```python
+from map_data import Waypoint
+
+wp = graph.waypoints[goal_id]
+wp.yaw                # float (radians) or None
+```
+
+```python
+from astar_planner import plan_path_from_point
+
+plan = plan_path_from_point(
+    buffet_map, start_xy, goal_id,
+    goal_yaw=math.radians(45),   # optional override of waypoint default
+)
+plan.goal_yaw         # radians or None
+# 결정 규칙: 인자 goal_yaw가 주어지면 그것을 사용,
+# 아니면 goal 웨이포인트의 yaw를, 둘 다 없으면 None.
+```
+
+`goal_yaw`는 본 글로벌 플래너가 경로 비용에 직접 반영하지 않습니다 (A* 상태 공간이 `(x, y, θ)`까지 확장되지 않음). 대신 **pass-through** 방식으로 플랜 결과에 실어서 내보냅니다. 실제 도착 자세 정렬은 Nav2 `follow_path` action 또는 DWB가 마지막 rotation-in-place로 처리합니다. 이는 Nav2의 표준 플래너(NavFn)도 동일한 방식으로 동작합니다.
+
+#### 시각화
+
+`PathPlanningVisualizer`는 자동으로:
+
+- **yaw를 가진 웨이포인트**: 웨이포인트에서 해당 방향으로 작은 파란 화살표
+- **goal waypoint의 yaw**: 빨간 X 마커에서 해당 방향으로 큰 빨간 화살표 (도착 시 로봇이 어디를 봐야 하는지 명확히 표시)
+- 화살표 길이는 맵 크기에 비례해 자동 조정 (2 m 맵: 0.1 m, 20 m 맵: 1 m)
+
+#### 헤드리스 출력
+
+자유 시작점 시나리오에서 `goal_yaw`가 있으면 함께 출력:
+
+```
+[free-start] (0.00, -0.90) -> Kitchen
+  entry waypoint = (0,-0.766) (distance 0.13 m, radius 0.35 m)
+  total cost = 2.45 m (5 waypoints)
+  goal yaw   = 90 deg (robot must arrive facing this direction)
+  path: (0.00,-0.90) -> (0,-0.766) -> Table-S -> Table-N -> (0.84,0.05) -> Kitchen
+```
+
+#### HQ Service / Nav2 통합
+
+HQ Service는 이 `goal_yaw` 값을 `nav_msgs/Path`의 마지막 `PoseStamped.orientation`에 quaternion으로 변환해 실어서 로봇에 내려보내면 됩니다. 로봇 측 `follow_path` action이 경로 실행 후 최종 자세 정렬까지 자동으로 처리합니다.
+
+```python
+# HQ side의 의사 코드
+from geometry_msgs.msg import Quaternion
+import math
+
+def yaw_to_quaternion(yaw):
+    return Quaternion(x=0, y=0, z=math.sin(yaw/2), w=math.cos(yaw/2))
+
+# ...plan path를 받은 후
+if plan.goal_yaw is not None:
+    last_pose = path_msg.poses[-1]
+    last_pose.pose.orientation = yaw_to_quaternion(plan.goal_yaw)
+```
+
+#### 현재 샘플 맵의 yaw 선언
+
+**`buffet_sim.yaml`** (실제 SLAM 맵, 실제 운용 의미를 반영):
+
+| 웨이포인트 | yaw | 의미 |
+|---|---|---|
+| Entrance | 90° | 방 안쪽(+y)을 보고 진입 |
+| Charging | 180° | 서쪽 벽에 도킹 |
+| Table-S | -90° | 남쪽 customer 쪽을 보고 서빙 |
+| Table-N | 90° | 북쪽 customer 쪽을 보고 서빙 |
+| Kitchen | 90° | 북쪽 카운터 쪽을 보고 픽업 |
+| Return | 0° | 동쪽 반납구를 보고 접근 |
+
+실제 운용 시에는 물리적 카운터/테이블 배치에 맞춰 조정이 필요합니다 (본 데모의 값은 예시).
+
 ### 그래프 bottleneck 분석 (cut vertex / bridge)
 
 본 데모는 맵 로드 시점에 웨이포인트 그래프의 **cut vertex**(articulation point)와 **bridge**를 자동으로 계산해 `BuffetMap`에 저장합니다. HQ Service 멀티 로봇 정책의 직접 입력으로 활용하기 위함입니다.
@@ -563,6 +665,7 @@ Running headless A* scenarios on the buffet test map.
 - ~~맵 정의가 코드에 하드코딩되어 있음~~ → **YAML 외부 파일 로딩 지원** (`maps/buffet_default.yaml`, `--map` CLI 옵션). rect YAML과 Nav2 PGM+YAML 두 형식 모두 동일 인터페이스(`StaticEnv`)로 처리 → SLAM이 만든 실제 맵을 그대로 사용 가능. 실제 운용 스케일(2.0 m × 1.6 m) 샘플인 [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml)도 동일 파이프라인으로 로드.
 - ~~정적 장애물 inflation 미반영~~ → **`inflation_radius` per-map 설정 지원**. RectangleEnv는 점→사각형 거리 기반 확장, OccupancyGridEnv는 disc dilation. 시각화에도 inflation 영역이 반투명 빨간색으로 표시됨.
 - ~~그래프 topology 약점 분석 부재~~ → **cut vertex / bridge 자동 검출**. 로드 시점에 Tarjan 알고리즘으로 `BuffetMap.cut_vertices` / `BuffetMap.bridges`에 캐시. 시각화에 자동 표시되고 HQ Service 멀티 로봇 정책의 직접 입력으로 사용 가능.
+- ~~Goal pose / 도착 자세 미반영~~ → **웨이포인트에 선택적 yaw 선언 + `FreeStartPlan.goal_yaw` pass-through**. 서비스 웨이포인트(Kitchen, Table, Return, Charging 등)는 도착 방향을 도 단위로 선언하고, 플래너가 이를 플랜 결과에 실어 내보내며, 시각화에도 화살표로 명시적으로 표시됨.
 - 웨이포인트 좌표가 정수 격자 → 실제로는 SLAM 맵 좌표계의 float 위치로 운용
 - 동적 장애물은 quasi-static 스냅샷 + 재계획 모델 → 본 데모는 실제 시간 경과를 시뮬레이션하지 않음 (우클릭으로 추가/`c`로 삭제 시점에만 재계획). 실제 운용에서는 일정 주기(예: 0.5~1초)로 관제 서버가 plan을 호출하고, 미세한 회피는 DWB 등 Local Planner에 위임
 - 단일 로봇 가정 → 멀티 로봇 운용 시 충돌/대기 정책 별도 설계 필요

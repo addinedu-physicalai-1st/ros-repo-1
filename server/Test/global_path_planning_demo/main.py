@@ -228,6 +228,12 @@ def _print_free_scenario(
         f"  total cost = {plan.total_cost:.2f} m "
         f"({len(plan.waypoints)} waypoints)"
     )
+    if plan.goal_yaw is not None:
+        import math
+        print(
+            f"  goal yaw   = {math.degrees(plan.goal_yaw):.0f} deg "
+            "(robot must arrive facing this direction)"
+        )
     pretty = [f"({sx:.2f},{sy:.2f})"]
     for wp_id in plan.waypoints:
         wp = graph.waypoints[wp_id]

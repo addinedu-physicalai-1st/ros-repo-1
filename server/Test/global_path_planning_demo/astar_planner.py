@@ -207,6 +207,12 @@ class FreeStartPlan:
     ``entry_radius_fallback`` is True if no waypoint was reachable inside
     that radius and the planner had to relax the constraint and fall
     back to the single nearest reachable waypoint.
+
+    ``goal_yaw`` is the orientation (radians) the robot should hold
+    upon arriving at the goal, if one was declared. Pulled from the
+    goal waypoint's ``yaw`` attribute (or an explicit override passed
+    to :func:`plan_path_from_point`). ``None`` means no orientation
+    constraint.
     """
 
     start_xy: Tuple[float, float]
@@ -215,6 +221,7 @@ class FreeStartPlan:
     waypoint_cost: float
     entry_radius: float
     entry_radius_fallback: bool = False
+    goal_yaw: Optional[float] = None
 
     @property
     def entry_wp_id(self) -> int:
@@ -232,6 +239,7 @@ def plan_path_from_point(
     entry_radius: float = DEFAULT_ENTRY_RADIUS,
     *,
     dynamic_obstacles: Optional[Iterable[DynamicObstacle]] = None,
+    goal_yaw: Optional[float] = None,
 ) -> Optional[FreeStartPlan]:
     """Plan a path from a continuous (x, y) start point to ``goal``.
 
@@ -314,6 +322,11 @@ def plan_path_from_point(
         return None
 
     entry_distance = seeds[path[0]]
+    # Resolve the required arrival yaw: explicit override wins over
+    # the waypoint's declared yaw. None means "no constraint".
+    effective_goal_yaw = (
+        goal_yaw if goal_yaw is not None else graph.waypoints[goal].yaw
+    )
     return FreeStartPlan(
         start_xy=(sx, sy),
         waypoints=path,
@@ -321,6 +334,7 @@ def plan_path_from_point(
         waypoint_cost=total_cost - entry_distance,
         entry_radius=entry_radius,
         entry_radius_fallback=fallback,
+        goal_yaw=effective_goal_yaw,
     )
 
 

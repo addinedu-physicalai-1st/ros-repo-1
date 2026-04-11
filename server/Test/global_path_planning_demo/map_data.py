@@ -107,12 +107,21 @@ DEFAULT_SEGMENT_SAMPLE_STEP: float = 0.1
 
 @dataclass(frozen=True)
 class Waypoint:
-    """A node in the waypoint graph (world-frame coordinates, metres)."""
+    """A node in the waypoint graph (world-frame coordinates, metres).
+
+    ``yaw`` (radians) is optional. When set, it specifies the required
+    heading the robot must hold upon arriving at this waypoint -
+    useful for service positions like "facing the kitchen counter" or
+    "facing the table to serve". When ``None``, no orientation
+    constraint is imposed; the local planner handles final alignment
+    as it sees fit.
+    """
 
     wp_id: int
     x: float
     y: float
     label: str = ""
+    yaw: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -813,6 +822,13 @@ def _parse_waypoint_entries(
         label = entry.get("label", "") or ""
         if not isinstance(label, str):
             raise ValueError(f"map: {section}.label must be a string")
+        # Optional yaw field. YAML specifies degrees for readability;
+        # we convert to radians here. None means "no orientation
+        # constraint at this waypoint".
+        yaw: Optional[float] = None
+        if "yaw" in entry and entry["yaw"] is not None:
+            yaw_deg = _require_number(section, "yaw", entry["yaw"])
+            yaw = math.radians(yaw_deg)
         if not (x_min <= x <= x_max and y_min <= y <= y_max):
             raise ValueError(
                 f"map: {section} ({x},{y}) is outside the map "
@@ -835,7 +851,7 @@ def _parse_waypoint_entries(
                     f"{seen_labels[label]}"
                 )
             seen_labels[label] = i
-        waypoints.append(Waypoint(wp_id=i, x=x, y=y, label=label))
+        waypoints.append(Waypoint(wp_id=i, x=x, y=y, label=label, yaw=yaw))
     return waypoints
 
 

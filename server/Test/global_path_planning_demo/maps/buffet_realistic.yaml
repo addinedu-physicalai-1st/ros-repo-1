@@ -30,15 +30,21 @@ defaults:
   dynamic_radius: 0.12     # m, another pinky-pro + small margin
   inflation_radius: 0.09   # m, pinky-pro inscribed radius (0.06) + padding (0.03)
 
+# Yaw conventions (standard math / REP 103):
+#   0   = facing +x (east)
+#   90  = facing +y (north)  - "up" on the rendered map
+#  -90  = facing -y (south)
+#  180  = facing -x (west)
+
 waypoints:
   # Bottom row (between wall and serving station's south edge).
-  - {x: 0.40, y: 0.35, label: "Charging"}
+  - {x: 0.40, y: 0.35, label: "Charging", yaw: 180}   # faces west wall
   - {x: 1.00, y: 0.35}
   - {x: 1.60, y: 0.35}
   # Mid column junctions (flanking the station).
   - {x: 0.40, y: 0.80}
   - {x: 1.60, y: 0.80}
   # Top row (between serving station's north edge and wall).
-  - {x: 0.40, y: 1.25, label: "Return"}
-  - {x: 1.00, y: 1.25, label: "Kitchen"}
-  - {x: 1.60, y: 1.25, label: "Table"}
+  - {x: 0.40, y: 1.25, label: "Return", yaw: 180}     # drops dishes west
+  - {x: 1.00, y: 1.25, label: "Kitchen", yaw: 90}     # pickup from north
+  - {x: 1.60, y: 1.25, label: "Table", yaw: -90}      # serves customer south

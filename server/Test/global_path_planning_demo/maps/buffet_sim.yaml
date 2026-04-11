@@ -42,22 +42,33 @@ defaults:
   dynamic_radius: 0.12     # m; another pinky-pro + small margin
   inflation_radius: 0.09   # m; matches Nav2 inscribed + padding
 
+# Yaw conventions (standard math / REP 103):
+#   0   = facing +x (east)
+#   90  = facing +y (north) - "up" on the rendered map
+#  -90  = facing -y (south) - "down"
+#  180  = facing -x (west)
+#
+# Yaw is optional. Only declare it where the physical task needs a
+# specific arrival orientation (facing a counter, facing a customer,
+# etc.). Junction waypoints leave yaw unset so the local planner is
+# free to arrive from any direction.
+
 waypoints:
   # ---- Left vertical corridor (x = 0.00, col 5) ----
-  - {x: 0.00, y: -0.900, label: "Entrance"}
+  - {x: 0.00, y: -0.900, label: "Entrance", yaw: 90}   # faces into the room
   - {x: 0.00, y: -0.766}                 # r9 bridge to middle column
   - {x: 0.00, y: -0.500}
   - {x: 0.00, y: -0.200}
-  - {x: 0.00, y: +0.050, label: "Charging"}
+  - {x: 0.00, y: +0.050, label: "Charging", yaw: 180}  # faces west wall (docked)
 
   # ---- Middle vertical corridor (x = 0.84, col 22) ----
   # The cleanest vertical free strip inside the central obstacle band.
-  - {x: 0.84, y: -0.766, label: "Table-S"}   # south service point
-  - {x: 0.84, y: -0.566, label: "Table-N"}   # north service point
-  - {x: 0.84, y: +0.050}                      # top corridor middle
+  - {x: 0.84, y: -0.766, label: "Table-S", yaw: -90}   # serves customer south
+  - {x: 0.84, y: -0.566, label: "Table-N", yaw: 90}    # serves customer north
+  - {x: 0.84, y: +0.050}                                # top corridor middle
 
   # ---- Right vertical corridor (x = 1.50, col 35) ----
-  - {x: 1.50, y: -0.900, label: "Return"}
+  - {x: 1.50, y: -0.900, label: "Return", yaw: 0}       # drops dishes east
   - {x: 1.50, y: -0.566}                  # r13 bridge to middle column
   - {x: 1.50, y: -0.200}
-  - {x: 1.50, y: +0.050, label: "Kitchen"}
+  - {x: 1.50, y: +0.050, label: "Kitchen", yaw: 90}     # pickup from counter
