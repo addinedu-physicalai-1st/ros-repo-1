@@ -1,0 +1,321 @@
+syntax = "proto3";
+
+package robotcafe.db.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Magic on wire (outside protobuf): TCP 0xAABBCCDD, UDP 0xDDCCBBAA — see framing docs.
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  PENDING                 = 1;
+  IN_PROGRESS             = 2;
+  COMPLETED               = 3;
+  FAILED                  = 4;
+  CANCELLED               = 5;
+}
+
+enum StepStatus {
+  STEP_STATUS_UNSPECIFIED = 0;
+  STEP_PENDING            = 1;
+  STEP_IN_PROGRESS        = 2;
+  STEP_COMPLETED          = 3;
+  STEP_FAILED             = 4;
+}
+
+enum CommandStatus {
+  CMD_STATUS_UNSPECIFIED = 0;
+  SENT                   = 1;
+  ACKED                  = 2;
+  CMD_FAILED             = 3;
+}
+
+enum RobotStatus {
+  ROBOT_STATUS_UNSPECIFIED = 0;
+  IDLE                     = 1;
+  MOVING                   = 2;
+  ARRIVED                  = 3;
+  CHARGING                 = 4;
+  ERROR                    = 5;
+  OFFLINE                  = 6;
+}
+
+enum TaskType {
+  TASK_TYPE_UNSPECIFIED  = 0;
+  KIOSK_TO_TABLE         = 1;
+  TABLE_TO_TOILET        = 2;
+  TABLE_TO_DISPLAY       = 3;
+  DISH_PICKUP            = 4;
+  ROBOT_SWAP             = 5;
+  ESCORT_SERVICE         = 6;
+  RETURN_TO_DOCK         = 7;
+}
+
+enum TaskPriority {
+  PRIORITY_UNSPECIFIED = 0;
+  LOW                  = 1;
+  NORMAL               = 2;
+  HIGH                 = 3;
+  URGENT               = 4;
+}
+
+enum UserRole {
+  ROLE_UNSPECIFIED = 0;
+  CUSTOMER         = 1;
+  STAFF_KITCHEN    = 2;
+  STAFF_FLOOR      = 3;
+  ADMIN            = 4;
+}
+
+enum ZoneType {
+  ZONE_UNSPECIFIED = 0;
+  ZONE_TABLE       = 1;
+  ZONE_KITCHEN     = 2;
+  ZONE_TOILET      = 3;
+  ZONE_DISPLAY     = 4;
+  ZONE_DOCK        = 5;
+  ZONE_CORRIDOR    = 6;
+}
+
+enum ErrorCode {
+  ERR_NONE          = 0;
+  ERR_NETWORK       = 101;
+  ERR_NAV_FAILED    = 201;
+  ERR_OBSTACLE      = 202;
+  ERR_TIMEOUT       = 203;
+  ERR_GOAL_REJECTED = 204;
+  ERR_LOW_BATTERY   = 301;
+  ERR_HARDWARE      = 401;
+  ERR_UNKNOWN       = 999;
+}
+
+enum FsmState {
+  FSM_UNSPECIFIED      = 0;
+  FSM_IDLE             = 1;
+  FSM_LOAD_WAYPOINTS   = 2;
+  FSM_MOVING_TO_WP     = 3;
+  FSM_WAYPOINT_REACHED = 4;
+  FSM_ARRIVED          = 5;
+  FSM_RETURNING        = 6;
+  FSM_NAV_FAILED       = 7;
+  FSM_RESOLVE_DEST     = 8;
+}
+
+// Note: value 4 cannot be named FAILED — conflicts with TaskStatus.FAILED in same package (protoc).
+enum AckStatus {
+  ACK_UNSPECIFIED = 0;
+  ACCEPTED        = 1;
+  REJECTED        = 2;
+  EXECUTED        = 3;
+  ACK_FAILED      = 4;
+}
+
+message Robot {
+  string robot_id    = 1;
+  string model       = 2;
+  RobotStatus status = 3;
+  int32  battery_last = 4;
+  google.protobuf.Timestamp last_seen = 5;
+  string current_task_id = 6;
+  FsmState fsm_state     = 7;
+}
+
+message Place {
+  string   place_id  = 1;
+  string   name      = 2;
+  double   x         = 3;
+  double   y         = 4;
+  double   theta     = 5;
+  ZoneType zone      = 6;
+  repeated Waypoint waypoints = 7;
+  double   max_speed = 8;
+}
+
+message Waypoint {
+  int32  seq   = 1;
+  string label = 2;
+  double x     = 3;
+  double y     = 4;
+  double theta = 5;
+}
+
+message Task {
+  string       task_id      = 1;
+  string       requester_id = 2;
+  TaskType     task_type    = 3;
+  string       dest_id      = 4;
+  TaskStatus   status       = 5;
+  TaskPriority priority     = 6;
+  string       robot_id     = 7;
+  google.protobuf.Timestamp created_at   = 8;
+  google.protobuf.Timestamp updated_at   = 9;
+  google.protobuf.Timestamp completed_at = 10;
+  repeated TaskStep steps   = 11;
+}
+
+message TaskStep {
+  string     task_id   = 1;
+  int32      step_num  = 2;
+  string     step_name = 3;
+  StepStatus status    = 4;
+  string     dest_id   = 5;
+  google.protobuf.Timestamp started_at   = 6;
+  google.protobuf.Timestamp completed_at = 7;
+  ErrorCode  error_code = 8;
+  string     error_msg  = 9;
+}
+
+enum CommandType {
+  CMD_UNSPECIFIED  = 0;
+  MOVE_TO          = 1;
+  CANCEL           = 2;
+  RESET            = 3;
+  RETURN_DOCK      = 4;
+  EMERGENCY_STOP   = 5;
+}
+
+message Command {
+  string      cmd_id    = 1;
+  string      task_id   = 2;
+  string      robot_id  = 3;
+  CommandType command   = 4;
+  string      target_id = 5;
+  CommandStatus status  = 6;
+  google.protobuf.Timestamp sent_at  = 7;
+  google.protobuf.Timestamp acked_at = 8;
+}
+
+message Heartbeat {
+  string robot_id = 1;
+  uint64 timestamp = 2;
+}
+
+message CommandAck {
+  string    cmd_id   = 1;
+  string    robot_id = 2;
+  AckStatus status   = 3;
+  ErrorCode reason   = 4;
+  google.protobuf.Timestamp acked_at = 5;
+}
+
+message StatusReport {
+  string    robot_id     = 1;
+  RobotStatus robot_status = 2;
+  FsmState  fsm_state    = 3;
+  string    current_task = 4;
+  int32     battery      = 5;
+  ErrorCode last_error   = 6;
+  google.protobuf.Timestamp reported_at = 7;
+}
+
+// Wire: after TCP_MAGIC (4 BE bytes), serialize this message only (no magic field).
+message TcpPacket {
+  uint32 seq      = 1;
+  string robot_id = 2;
+  oneof payload {
+    Command      cmd_payload    = 3;
+    CommandAck   ack_payload    = 4;
+    StatusReport status_payload = 5;
+    Heartbeat    heartbeat      = 6;
+  }
+}
+
+message TelemetryPose {
+  string robot_id  = 1;
+  uint32 seq       = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  double x         = 4;
+  double y         = 5;
+  double theta     = 6;
+  double linear_x  = 7;
+  double angular_z = 8;
+}
+
+message TelemetryState {
+  string   robot_id       = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  int32    battery_percent = 3;
+  RobotStatus current_state = 4;
+  FsmState current_fsm    = 5;
+  string   current_step   = 6;
+  string   task_id        = 7;
+}
+
+// Wire: after UDP_MAGIC (4 BE bytes), serialize this message only (no magic field).
+message UdpTelemetryPacket {
+  string robot_id = 1;
+  oneof telemetry {
+    TelemetryPose  pose  = 2;
+    TelemetryState state = 3;
+  }
+}
+
+message RobotError {
+  string    robot_id  = 1;
+  string    task_id   = 2;
+  ErrorCode error_code = 3;
+  string    message   = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+}
+
+message User {
+  string   user_id = 1;
+  string   prefix  = 2;
+  UserRole role    = 3;
+  string   name    = 4;
+}
+
+message SystemConfig {
+  string key   = 1;
+  string value = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message CreateTaskRequest {
+  string       requester_id = 1;
+  TaskType     task_type    = 2;
+  string       dest_id      = 3;
+  TaskPriority priority     = 4;
+}
+
+message CreateTaskResponse {
+  string     task_id    = 1;
+  TaskStatus status     = 2;
+  string     robot_id   = 3;
+  string     message    = 4;
+}
+
+message GetTaskResponse {
+  Task task = 1;
+}
+
+message GetPoseResponse {
+  TelemetryPose latest_pose = 1;
+}
+
+message SendCommandRequest {
+  string      robot_id  = 1;
+  string      task_id   = 2;
+  CommandType command   = 3;
+  string      target_id = 4;
+}
+
+message SendCommandResponse {
+  string        cmd_id  = 1;
+  CommandStatus status  = 2;
+}
+
+message ListRobotsResponse {
+  repeated Robot robots = 1;
+}
+
+message ListTasksRequest {
+  TaskStatus status   = 1;
+  int32      limit    = 2;
+  int32      offset   = 3;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  int32         total = 2;
+}

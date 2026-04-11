@@ -1,0 +1,1 @@
+"""robotcafe.db namespace."""

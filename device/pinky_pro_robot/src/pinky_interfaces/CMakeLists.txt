@@ -14,6 +14,8 @@ find_package(rosidl_default_generators REQUIRED)
 
 set(
   MSG_FILES
+  "msg/RobotCommand.msg"
+  "msg/RobotTaskStatus.msg"
 )
 
 set(
