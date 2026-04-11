@@ -44,10 +44,12 @@ from pathlib import Path
 from typing import (
     Any,
     Dict,
+    FrozenSet,
     Iterable,
     List,
     Mapping,
     Optional,
+    Set,
     Tuple,
     Union,
 )
@@ -169,6 +171,96 @@ class WaypointGraph:
             if wp.label == label:
                 return wp.wp_id
         raise KeyError(f"No waypoint with label {label!r}")
+
+
+# ---------------------------------------------------------------------------
+# Graph topology analysis: cut vertices and bridges (Tarjan)
+# ---------------------------------------------------------------------------
+
+
+def find_cut_vertices_and_bridges(
+    graph: WaypointGraph,
+) -> Tuple[Set[int], Set[FrozenSet[int]]]:
+    """Find articulation points and bridges in the waypoint graph.
+
+    Returns ``(cut_vertices, bridges)`` where:
+
+    * ``cut_vertices`` is the set of waypoint ids whose removal would
+      split the graph into additional connected components. Parking a
+      robot on a cut vertex disconnects the map.
+    * ``bridges`` is the set of edges (as ``frozenset({a, b})``) whose
+      removal disconnects the graph.
+
+    Implemented with the standard single-pass Tarjan DFS
+    (O(V + E)). On the demo's 12-waypoint / 13-edge graph this runs in
+    microseconds, so we recompute eagerly at map load time.
+    """
+    cut_vertices: Set[int] = set()
+    bridges: Set[FrozenSet[int]] = set()
+
+    disc: Dict[int, int] = {}
+    low: Dict[int, int] = {}
+    parent: Dict[int, Optional[int]] = {}
+    timer = 0
+
+    def dfs(u: int) -> None:
+        nonlocal timer
+        disc[u] = low[u] = timer
+        timer += 1
+        children = 0
+        for v in graph.neighbors(u):
+            if v not in disc:
+                parent[v] = u
+                children += 1
+                dfs(v)
+                low[u] = min(low[u], low[v])
+                if low[v] > disc[u]:
+                    bridges.add(frozenset((u, v)))
+                if parent[u] is not None and low[v] >= disc[u]:
+                    cut_vertices.add(u)
+            elif v != parent.get(u):
+                low[u] = min(low[u], disc[v])
+        if parent[u] is None and children > 1:
+            cut_vertices.add(u)
+
+    for wp_id in graph.waypoints:
+        if wp_id not in disc:
+            parent[wp_id] = None
+            dfs(wp_id)
+
+    return cut_vertices, bridges
+
+
+def components_after_removing(
+    graph: WaypointGraph, removed: int
+) -> List[Set[int]]:
+    """List connected components of the graph after removing ``removed``.
+
+    The removed waypoint itself is not included in any of the returned
+    components. Used by HQ-level policy: "if I park Robot A at
+    waypoint X, which other waypoints become unreachable?"
+    """
+    if removed not in graph.waypoints:
+        raise KeyError(f"Unknown waypoint id {removed}")
+    visited: Set[int] = {removed}
+    components: List[Set[int]] = []
+    for wp_id in graph.waypoints:
+        if wp_id in visited:
+            continue
+        comp: Set[int] = set()
+        stack = [wp_id]
+        while stack:
+            u = stack.pop()
+            if u in visited:
+                continue
+            visited.add(u)
+            comp.add(u)
+            for v in graph.neighbors(u):
+                if v == removed or v in visited:
+                    continue
+                stack.append(v)
+        components.append(comp)
+    return components
 
 
 @dataclass
@@ -514,12 +606,41 @@ class BuffetMap:
     # Optional: original obstacle list for the rect format. Kept around
     # so callers that want to inspect named regions still can.
     rect_obstacles: Optional[List[Obstacle]] = None
+    # Topology analysis results, computed once in __post_init__.
+    # cut_vertices : waypoint ids whose removal disconnects the graph
+    # bridges      : edges (as frozensets of two ids) whose removal
+    #                disconnects the graph
+    cut_vertices: Set[int] = field(default_factory=set)
+    bridges: Set[FrozenSet[int]] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        # Compute bottleneck information once per map load. Cheap on
+        # the demo's small graphs (microseconds).
+        if self.graph.waypoints and not self.cut_vertices and not self.bridges:
+            cv, br = find_cut_vertices_and_bridges(self.graph)
+            self.cut_vertices = cv
+            self.bridges = br
 
     def is_in_bounds(self, x: float, y: float) -> bool:
         return (
             self.origin_x <= x <= self.origin_x + self.width_m
             and self.origin_y <= y <= self.origin_y + self.height_m
         )
+
+    def is_cut_vertex(self, wp_id: int) -> bool:
+        return wp_id in self.cut_vertices
+
+    def is_bridge(self, a: int, b: int) -> bool:
+        return frozenset((a, b)) in self.bridges
+
+    def components_after_removing(
+        self, wp_id: int
+    ) -> List[Set[int]]:
+        """Return connected components of the graph after removing
+        ``wp_id``. Used by HQ Service multi-robot policy to check what
+        regions become unreachable if a robot parks on ``wp_id``.
+        """
+        return components_after_removing(self.graph, wp_id)
 
 
 # ---------------------------------------------------------------------------

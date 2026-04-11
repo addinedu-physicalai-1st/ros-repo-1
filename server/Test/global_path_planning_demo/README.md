@@ -292,6 +292,86 @@ PGM 처리 규칙 (Nav2 트리너리 모드 기준):
 - `(19.00, 10.20) → Kitchen`: 가장 가까운 웨이포인트는 1.02m 거리의 `(18,10)`이지만, A*는 2.06m 거리의 `(18,12)`를 선택 → `(18,10)` 진입 시 총 17.02 m vs `(18,12)` 진입 시 총 16.06 m.
 - `(10.40, 0.60) → Kitchen`: 반경 2.5 m 안에는 `Entrance(10,1)` 하나뿐이라 그것이 진입점 → 17.57 m. 반경 제한이 없을 때 가능한 17.42 m(`(7,1)` 진입) 대비 0.15 m 손실은 안전성/일관성 측면 이득에 비해 무시 가능.
 
+### 그래프 bottleneck 분석 (cut vertex / bridge)
+
+본 데모는 맵 로드 시점에 웨이포인트 그래프의 **cut vertex**(articulation point)와 **bridge**를 자동으로 계산해 `BuffetMap`에 저장합니다. HQ Service 멀티 로봇 정책의 직접 입력으로 활용하기 위함입니다.
+
+- **Cut vertex**: 그 웨이포인트를 제거하면 그래프가 2개 이상 컴포넌트로 분리되는 지점. 즉 로봇이 거기 멈춰있으면 맵의 일부가 접근 불가능해짐.
+- **Bridge**: 그 간선을 제거하면 그래프가 분리되는 통로 구간. 해당 구간이 차단되면 로봇이 반대편으로 갈 수 없음.
+
+알고리즘은 **Tarjan의 DFS 기반 articulation point / bridge 탐색** (시간 복잡도 O(V+E))이고, 본 데모 규모의 그래프(12~27개 웨이포인트)에서는 마이크로초 단위로 실행됩니다. 로드 시점에 한 번 계산되어 `BuffetMap.cut_vertices` / `BuffetMap.bridges` 필드에 캐시됩니다.
+
+#### API
+
+```python
+from map_data import load_buffet_map
+
+m = load_buffet_map("maps/buffet_sim.yaml")
+
+m.cut_vertices             # Set[int] — 위험한 웨이포인트 id
+m.bridges                  # Set[FrozenSet[int]] — 위험한 간선 (양 끝 id)
+m.is_cut_vertex(wp_id)     # bool
+m.is_bridge(a, b)          # bool
+m.components_after_removing(wp_id) -> List[Set[int]]
+#   wp_id를 제거한 뒤의 연결 컴포넌트들. HQ가 "이 로봇을 여기 멈추면
+#   어느 영역이 고립되는지" 확인할 때 사용.
+```
+
+#### 시각화
+
+`PathPlanningVisualizer`는 자동으로:
+
+- Cut vertex 웨이포인트 주변에 **빨간 hollow ring** 표시
+- Bridge 간선을 **빨간 점선**으로 표시
+- 타이틀에 `bottlenecks: N cut-vertex(s), M bridge(s) (red)` 요약 표시
+
+#### 헤드리스 로드 출력 예시
+
+`buffet_sim.yaml` (map4의 U자 그래프 + 중간 column):
+
+```
+Loaded buffet map 'Buffet SLAM map (map4)' from maps/buffet_sim.yaml: 2x1.6 m, ...
+  defaults: entry_radius=0.35 m, dynamic_radius=0.12 m, inflation_radius=0.09 m
+  bottlenecks: 2 cut vertex(s), 2 bridge(s)
+    #1 (0,-0.766): removal isolates {Entrance} (remaining component has 10 wps)
+    #9 (1.5,-0.566): removal isolates {Return} (remaining component has 10 wps)
+    bridge #0-#1: Entrance <-> (0,-0.766)
+    bridge #8-#9: Return <-> (1.5,-0.566)
+```
+
+→ `#1`에 로봇이 멈추면 `Entrance` 한 곳만 고립되고 나머지 10개 웨이포인트는 서로 도달 가능. 이 2개 cut vertex는 모두 **leaf 서비스 노드의 유일한 진출입 지점**이라는 특징이 있습니다. 즉 map4에는 "내부 bottleneck"은 없고 leaf gate만 있다는 의미 — 중간 column을 추가한 덕분에 맵이 매우 건강한 2-connected 구조를 가짐이 확인됩니다.
+
+`buffet_realistic.yaml` (합성 ring 맵):
+
+```
+  bottlenecks: none (graph is fully 2-connected; no single waypoint or edge can disconnect it)
+```
+
+→ Ring 구조는 완벽히 2-connected이므로 bottleneck이 전혀 없음.
+
+`buffet_default.yaml` (20×15 m 큰 테스트 맵):
+
+```
+  bottlenecks: none (graph is fully 2-connected; no single waypoint or edge can disconnect it)
+```
+
+→ 27개 웨이포인트 37개 간선의 격자 그래프도 2-connected.
+
+#### HQ Service 정책 활용
+
+HQ Service가 이 정보를 다음과 같이 활용할 수 있습니다:
+
+1. **"Cut vertex에는 로봇을 주차/충전/대기시키지 않음"** — `m.cut_vertices` 조회만으로 정책화 가능
+2. **"Bridge 구간 점유 시 반대편 목적지 task 배정 유예"** — 예: `Entrance <-> #1` bridge를 지나가는 로봇이 있으면, 같은 시간에 Entrance 방향 task를 다른 로봇에 배정하지 않음
+3. **"새 task 배정 전 도달 가능성 사전 체크"** — `components_after_removing(other_robot_wp)` 호출해서 "지금 다른 로봇 위치를 고려하면 이 목적지에 도달 가능한지" 판단
+4. **"맵 품질 평가 지표"** — cut vertex 개수가 많다 = 맵이 취약. 적을수록 redundancy가 높음. 지난 수정에서 `buffet_sim`에 중간 column을 추가해 내부 cut vertex를 모두 제거하고 leaf gate만 남긴 것이 이 지표의 직접 개선 사례.
+
+#### 한계
+
+- **정적 분석**: 그래프 topology만 봄. 동적 장애물(움직이는 로봇, 사람)은 `dynamic_obstacles`로 따로 처리.
+- **1-connectivity만 다룸**: "노드 1개 또는 간선 1개 제거" 영향만 계산. "2개 동시 제거"까지 가려면 k-connectivity 분석(비싼 계산)이 필요.
+- **기하학적 협소는 별개**: "Cut vertex는 아니지만 두 로봇이 동시에 지나가기엔 좁음"은 이 분석이 잡아내지 못함. 본 프로젝트의 2×1.6 m 공간에서는 애초에 모든 통로가 단일 로봇만 허용하므로 area lockout 정책으로 해결.
+
 ### 동적 장애물 처리 (quasi-static + 재계획)
 
 다른 로봇이 통로에 정차해 있거나 잠시 멈춰 있는 상황을 시뮬레이션하기 위해 원형 동적 장애물을 지원합니다. 시간에 따른 미래 궤적 예측(time-expanded ST-A*) 방식이 아닌, **plan 호출 시점에 "지금 그 자리에 있는 벽"으로 취급**하고 상황이 바뀌면 다시 plan을 호출하는 quasi-static 방식입니다 (Nav2 등 거의 모든 프로덕션 시스템이 채택).
@@ -482,6 +562,7 @@ Running headless A* scenarios on the buffet test map.
 
 - ~~맵 정의가 코드에 하드코딩되어 있음~~ → **YAML 외부 파일 로딩 지원** (`maps/buffet_default.yaml`, `--map` CLI 옵션). rect YAML과 Nav2 PGM+YAML 두 형식 모두 동일 인터페이스(`StaticEnv`)로 처리 → SLAM이 만든 실제 맵을 그대로 사용 가능. 실제 운용 스케일(2.0 m × 1.6 m) 샘플인 [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml)도 동일 파이프라인으로 로드.
 - ~~정적 장애물 inflation 미반영~~ → **`inflation_radius` per-map 설정 지원**. RectangleEnv는 점→사각형 거리 기반 확장, OccupancyGridEnv는 disc dilation. 시각화에도 inflation 영역이 반투명 빨간색으로 표시됨.
+- ~~그래프 topology 약점 분석 부재~~ → **cut vertex / bridge 자동 검출**. 로드 시점에 Tarjan 알고리즘으로 `BuffetMap.cut_vertices` / `BuffetMap.bridges`에 캐시. 시각화에 자동 표시되고 HQ Service 멀티 로봇 정책의 직접 입력으로 사용 가능.
 - 웨이포인트 좌표가 정수 격자 → 실제로는 SLAM 맵 좌표계의 float 위치로 운용
 - 동적 장애물은 quasi-static 스냅샷 + 재계획 모델 → 본 데모는 실제 시간 경과를 시뮬레이션하지 않음 (우클릭으로 추가/`c`로 삭제 시점에만 재계획). 실제 운용에서는 일정 주기(예: 0.5~1초)로 관제 서버가 plan을 호출하고, 미세한 회피는 DWB 등 Local Planner에 위임
 - 단일 로봇 가정 → 멀티 로봇 운용 시 충돌/대기 정책 별도 설계 필요

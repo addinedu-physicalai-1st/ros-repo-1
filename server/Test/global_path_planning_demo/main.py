@@ -383,6 +383,55 @@ def _run_headless(buffet_map: BuffetMap) -> None:
         _print_dynamic_free_scenario(buffet_map, desc, sxy, gl, obs)
 
 
+def _describe_waypoint(buffet_map: BuffetMap, wp_id: int) -> str:
+    wp = buffet_map.graph.waypoints[wp_id]
+    return wp.label or f"({wp.x:g},{wp.y:g})"
+
+
+def _print_bottleneck_summary(buffet_map: BuffetMap) -> None:
+    """Print the cut-vertex / bridge analysis for the loaded map.
+
+    This info is also available via ``BuffetMap.cut_vertices`` and
+    ``BuffetMap.bridges`` for downstream HQ Service policy.
+    """
+    cv = buffet_map.cut_vertices
+    br = buffet_map.bridges
+    if not cv and not br:
+        print(
+            "  bottlenecks: none (graph is fully 2-connected; no single "
+            "waypoint or edge can disconnect it)"
+        )
+        return
+    print(
+        f"  bottlenecks: {len(cv)} cut vertex(s), {len(br)} bridge(s)"
+    )
+    for cv_id in sorted(cv):
+        label = _describe_waypoint(buffet_map, cv_id)
+        comps = buffet_map.components_after_removing(cv_id)
+        comps_sorted = sorted(comps, key=len)
+        # Describe every component EXCEPT the largest remainder.
+        isolated_parts = []
+        for comp in comps_sorted[:-1]:
+            comp_labels = sorted(_describe_waypoint(buffet_map, i) for i in comp)
+            if len(comp_labels) <= 3:
+                isolated_parts.append("{" + ", ".join(comp_labels) + "}")
+            else:
+                isolated_parts.append(
+                    "{" + ", ".join(comp_labels[:3]) + f", +{len(comp_labels)-3} more" + "}"
+                )
+        largest = comps_sorted[-1]
+        print(
+            f"    #{cv_id} {label}: removal isolates "
+            f"{' and '.join(isolated_parts)} "
+            f"(remaining component has {len(largest)} wps)"
+        )
+    for bridge in sorted(br, key=sorted):
+        ids = sorted(bridge)
+        a_lbl = _describe_waypoint(buffet_map, ids[0])
+        b_lbl = _describe_waypoint(buffet_map, ids[1])
+        print(f"    bridge #{ids[0]}-#{ids[1]}: {a_lbl} <-> {b_lbl}")
+
+
 def _run_interactive(buffet_map: BuffetMap) -> None:
     try:
         from visualizer import PathPlanningVisualizer
@@ -456,6 +505,7 @@ def main() -> None:
         f"dynamic_radius={d.dynamic_radius:g} m, "
         f"inflation_radius={d.inflation_radius:g} m"
     )
+    _print_bottleneck_summary(buffet_map)
 
     if args.headless:
         _run_headless(buffet_map)

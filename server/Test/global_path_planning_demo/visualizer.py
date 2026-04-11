@@ -122,6 +122,7 @@ class PathPlanningVisualizer:
         self.ax.add_patch(wall)
 
     def _draw_edges(self) -> None:
+        bridges = self.buffet_map.bridges
         seen = set()
         for wp_id, neighbors in self.graph.adjacency.items():
             for nb in neighbors:
@@ -131,17 +132,38 @@ class PathPlanningVisualizer:
                 seen.add(key)
                 a = self.graph.waypoints[wp_id]
                 b = self.graph.waypoints[nb]
+                is_bridge = frozenset(key) in bridges
                 self.ax.plot(
                     [a.x, b.x],
                     [a.y, b.y],
-                    color="#7aa6c2",
-                    linewidth=1.4,
-                    alpha=0.7,
+                    color="#c8342a" if is_bridge else "#7aa6c2",
+                    linewidth=2.0 if is_bridge else 1.4,
+                    linestyle="--" if is_bridge else "-",
+                    alpha=0.85 if is_bridge else 0.7,
                     zorder=1,
                 )
 
     def _draw_waypoints(self) -> None:
+        cut_vertices = self.buffet_map.cut_vertices
+        # Label offset scales with map size so small maps still get a
+        # readable offset and large maps don't over-space labels.
+        lbl_off = max(
+            0.03, min(0.25, self.buffet_map.width_m * 0.02)
+        )
         for wp in self.graph.waypoints.values():
+            if wp.wp_id in cut_vertices:
+                # Red hollow ring behind the waypoint disc, signalling
+                # "if a robot parks here, something else gets cut off".
+                self.ax.plot(
+                    wp.x,
+                    wp.y,
+                    marker="o",
+                    markersize=14,
+                    markerfacecolor="none",
+                    markeredgecolor="#c8342a",
+                    markeredgewidth=1.6,
+                    zorder=2.9,
+                )
             self.ax.plot(
                 wp.x,
                 wp.y,
@@ -153,8 +175,8 @@ class PathPlanningVisualizer:
             )
             if wp.label:
                 self.ax.text(
-                    wp.x + 0.25,
-                    wp.y + 0.25,
+                    wp.x + lbl_off,
+                    wp.y + lbl_off,
                     wp.label,
                     fontsize=7,
                     color="#102030",
@@ -264,10 +286,17 @@ class PathPlanningVisualizer:
         dyn_note = (
             f"  |  dynamic obstacles: {n_dyn}" if n_dyn else ""
         )
+        n_cv = len(self.buffet_map.cut_vertices)
+        n_br = len(self.buffet_map.bridges)
+        bottleneck_note = (
+            f"  |  bottlenecks: {n_cv} cut-vertex(s), {n_br} bridge(s) (red)"
+            if (n_cv or n_br)
+            else ""
+        )
         map_name = self.buffet_map.name or "Buffet Demo"
         self.ax.set_title(
             f"Waypoint-based A* Global Path Planner - {map_name}"
-            f"{dyn_note}\n"
+            f"{dyn_note}{bottleneck_note}\n"
             f"{status}\n"
             "[left] start/goal    [right] add dyn-obs    "
             "[r] reset    [c] clear dyn    [q] quit",
