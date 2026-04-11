@@ -1,10 +1,13 @@
 """Interactive matplotlib visualization for the path planning demo.
 
 Usage:
-    * Click anywhere on the map to set the START waypoint (the click is
-      snapped to the nearest waypoint).
-    * Click again to set the GOAL waypoint; A* runs immediately and the
-      planned path is drawn.
+    * Click anywhere inside the map (and outside an obstacle) to set the
+      START point. The click coordinate is used as-is - it does NOT snap
+      to a waypoint.
+    * Click again to set the GOAL waypoint (this click DOES snap to the
+      nearest waypoint, since goals in the buffet are well-defined
+      service locations). A* runs immediately and the planned path is
+      drawn from the free start point to the goal.
     * Click a third time to start a new query.
     * Press ``r`` to reset the current selection, ``q`` to quit.
 """
@@ -12,27 +15,33 @@ Usage:
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import Optional, Tuple
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from matplotlib.backend_bases import KeyEvent, MouseEvent
 
-from astar_planner import plan_path
-from map_data import MAP_HEIGHT, MAP_WIDTH, BuffetMap
+from astar_planner import FreeStartPlan, plan_path_from_point
+from map_data import (
+    MAP_HEIGHT,
+    MAP_WIDTH,
+    BuffetMap,
+    is_in_map_bounds,
+    is_inside_any_obstacle,
+)
 
 
 class PathPlanningVisualizer:
-    """Click two waypoints on the buffet map to plan an A* path."""
+    """Interactive demo: free start point + waypoint goal -> A* path."""
 
     def __init__(self, buffet_map: BuffetMap) -> None:
         self.buffet_map = buffet_map
         self.graph = buffet_map.graph
 
-        self.start_id: Optional[int] = None
+        self.start_xy: Optional[Tuple[float, float]] = None
         self.goal_id: Optional[int] = None
-        self.path: Optional[List[int]] = None
-        self.path_cost: float = 0.0
+        self.plan: Optional[FreeStartPlan] = None
+        self.plan_failed: bool = False
 
         self.fig, self.ax = plt.subplots(figsize=(11, 8.5))
         self.fig.canvas.mpl_connect("button_press_event", self._on_click)
@@ -57,8 +66,8 @@ class PathPlanningVisualizer:
         self._draw_obstacles()
         self._draw_edges()
         self._draw_waypoints()
-        self._draw_selection()
         self._draw_path()
+        self._draw_selection()
         self._draw_title()
 
         self.fig.canvas.draw_idle()
@@ -139,11 +148,11 @@ class PathPlanningVisualizer:
                 )
 
     def _draw_selection(self) -> None:
-        if self.start_id is not None:
-            wp = self.graph.waypoints[self.start_id]
+        if self.start_xy is not None:
+            sx, sy = self.start_xy
             self.ax.plot(
-                wp.x,
-                wp.y,
+                sx,
+                sy,
                 marker="*",
                 markersize=22,
                 color="#2ca02c",
@@ -165,10 +174,11 @@ class PathPlanningVisualizer:
             )
 
     def _draw_path(self) -> None:
-        if not self.path:
+        if self.plan is None:
             return
-        xs = [self.graph.waypoints[i].x for i in self.path]
-        ys = [self.graph.waypoints[i].y for i in self.path]
+        sx, sy = self.plan.start_xy
+        xs = [sx] + [self.graph.waypoints[i].x for i in self.plan.waypoints]
+        ys = [sy] + [self.graph.waypoints[i].y for i in self.plan.waypoints]
         self.ax.plot(
             xs,
             ys,
@@ -179,16 +189,21 @@ class PathPlanningVisualizer:
         )
 
     def _draw_title(self) -> None:
-        if self.start_id is None:
-            status = "Click on the map to choose the START waypoint"
+        if self.start_xy is None:
+            status = "Click anywhere on the map to choose the START point"
         elif self.goal_id is None:
             status = "Click on the map to choose the GOAL waypoint"
-        elif self.path is None:
-            status = "No path found between selected waypoints"
+        elif self.plan is None:
+            status = (
+                "No path found "
+                "(start may be unreachable from any waypoint)"
+            )
         else:
             status = (
-                f"Path found: {len(self.path)} waypoints, "
-                f"cost = {self.path_cost:.2f} m"
+                f"Path found: {len(self.plan.waypoints)} waypoints, "
+                f"entry={self.plan.entry_distance:.2f} m + "
+                f"corridor={self.plan.waypoint_cost:.2f} m, "
+                f"total={self.plan.total_cost:.2f} m"
             )
         self.ax.set_title(
             "Waypoint-based A* Global Path Planner - Buffet Demo\n"
@@ -206,25 +221,41 @@ class PathPlanningVisualizer:
             return
         if event.xdata is None or event.ydata is None:
             return
-        nearest = self._nearest_waypoint(event.xdata, event.ydata)
-        if nearest is None:
-            return
+        x, y = float(event.xdata), float(event.ydata)
 
-        if self.start_id is None or (
-            self.start_id is not None and self.goal_id is not None
-        ):
-            self._reset_selection()
-            self.start_id = nearest
-            print(f"[demo] start = {self._describe(nearest)}")
-        elif self.goal_id is None:
-            if nearest == self.start_id:
-                print("[demo] start and goal are identical, ignored")
-                return
-            self.goal_id = nearest
-            print(f"[demo] goal  = {self._describe(nearest)}")
-            self._plan()
+        # Click 3 (or any click after we already have a complete query):
+        # treat as a fresh start.
+        already_complete = (
+            self.start_xy is not None and self.goal_id is not None
+        )
+        if self.start_xy is None or already_complete:
+            self._set_start(x, y)
+        else:
+            self._set_goal(x, y)
 
         self._redraw()
+
+    def _set_start(self, x: float, y: float) -> None:
+        self._reset_selection()
+        if not is_in_map_bounds(x, y):
+            print(f"[demo] start ({x:.2f}, {y:.2f}) is out of map bounds")
+            return
+        if is_inside_any_obstacle(x, y, self.buffet_map.obstacles):
+            print(
+                f"[demo] start ({x:.2f}, {y:.2f}) is inside an obstacle, "
+                "click somewhere in a corridor"
+            )
+            return
+        self.start_xy = (x, y)
+        print(f"[demo] start = ({x:.2f}, {y:.2f})  (free point)")
+
+    def _set_goal(self, x: float, y: float) -> None:
+        nearest = self._nearest_waypoint(x, y)
+        if nearest is None:
+            return
+        self.goal_id = nearest
+        print(f"[demo] goal  = {self._describe(nearest)}  (snapped)")
+        self._plan()
 
     def _on_key(self, event: KeyEvent) -> None:
         if event.key == "r":
@@ -234,24 +265,33 @@ class PathPlanningVisualizer:
             plt.close(self.fig)
 
     def _reset_selection(self) -> None:
-        self.start_id = None
+        self.start_xy = None
         self.goal_id = None
-        self.path = None
-        self.path_cost = 0.0
+        self.plan = None
+        self.plan_failed = False
 
     def _plan(self) -> None:
-        assert self.start_id is not None and self.goal_id is not None
-        path, cost = plan_path(self.graph, self.start_id, self.goal_id)
-        self.path = path
-        self.path_cost = cost
-        if path is None:
+        assert self.start_xy is not None and self.goal_id is not None
+        plan = plan_path_from_point(
+            self.graph,
+            self.start_xy,
+            self.goal_id,
+            self.buffet_map.obstacles,
+        )
+        self.plan = plan
+        self.plan_failed = plan is None
+        if plan is None:
             print("[demo] no path found")
-        else:
-            labels = [self._describe(i) for i in path]
-            print(
-                f"[demo] path ({len(path)} wps, {cost:.2f} m): "
-                + " -> ".join(labels)
-            )
+            return
+        labels = [self._describe(i) for i in plan.waypoints]
+        sx, sy = plan.start_xy
+        print(
+            f"[demo] path ({len(plan.waypoints)} wps, "
+            f"entry={plan.entry_distance:.2f} m + "
+            f"corridor={plan.waypoint_cost:.2f} m = "
+            f"{plan.total_cost:.2f} m): "
+            f"({sx:.2f},{sy:.2f}) -> " + " -> ".join(labels)
+        )
 
     def _nearest_waypoint(self, x: float, y: float) -> Optional[int]:
         best_id: Optional[int] = None

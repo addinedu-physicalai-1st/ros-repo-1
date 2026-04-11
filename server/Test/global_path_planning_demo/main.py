@@ -17,7 +17,7 @@ import argparse
 import sys
 from typing import List, Tuple
 
-from astar_planner import plan_path
+from astar_planner import plan_path, plan_path_from_point
 from map_data import BuffetMap, build_buffet_map
 
 
@@ -27,6 +27,16 @@ _HEADLESS_SCENARIOS: List[Tuple[str, str]] = [
     ("CS-Left", "Return"),
     ("Entrance", "B2-N"),
     ("Return", "CS-Right"),
+]
+
+
+# Free-start (x, y) -> goal label scenarios. The start is an arbitrary
+# point in a corridor, not aligned with any waypoint.
+_FREE_START_SCENARIOS: List[Tuple[Tuple[float, float], str]] = [
+    ((10.4, 0.6), "Kitchen"),
+    ((8.5, 6.0), "Return"),
+    ((1.7, 11.4), "A3-S"),
+    ((17.2, 9.8), "Entrance"),
 ]
 
 
@@ -49,10 +59,46 @@ def _print_scenario(
     print("  path: " + " -> ".join(pretty))
 
 
+def _print_free_scenario(
+    buffet_map: BuffetMap,
+    start_xy: Tuple[float, float],
+    goal_label: str,
+) -> None:
+    graph = buffet_map.graph
+    goal = graph.find_by_label(goal_label)
+    plan = plan_path_from_point(
+        graph, start_xy, goal, buffet_map.obstacles
+    )
+    sx, sy = start_xy
+    print(f"\n[free-start] ({sx:.2f}, {sy:.2f}) -> {goal_label}")
+    if plan is None:
+        print("  no path found (start unreachable or inside obstacle)")
+        return
+    entry_wp = graph.waypoints[plan.entry_wp_id]
+    entry_label = entry_wp.label or f"({entry_wp.x},{entry_wp.y})"
+    print(
+        f"  entry waypoint = {entry_label} "
+        f"(distance {plan.entry_distance:.2f} m)"
+    )
+    print(
+        f"  total cost = {plan.total_cost:.2f} m "
+        f"({len(plan.waypoints)} waypoints)"
+    )
+    pretty = [f"({sx:.2f},{sy:.2f})"]
+    for wp_id in plan.waypoints:
+        wp = graph.waypoints[wp_id]
+        pretty.append(wp.label or f"({wp.x},{wp.y})")
+    print("  path: " + " -> ".join(pretty))
+
+
 def _run_headless(buffet_map: BuffetMap) -> None:
     print("Running headless A* scenarios on the buffet test map.")
+    print("\n--- Waypoint -> Waypoint ---")
     for start_label, goal_label in _HEADLESS_SCENARIOS:
         _print_scenario(buffet_map, start_label, goal_label)
+    print("\n--- Free start point -> Waypoint ---")
+    for start_xy, goal_label in _FREE_START_SCENARIOS:
+        _print_free_scenario(buffet_map, start_xy, goal_label)
 
 
 def _run_interactive(buffet_map: BuffetMap) -> None:

@@ -12,9 +12,10 @@ motion the project wants for the pinky-pro robots, while still letting
 the planner pick the shortest sequence of corridor segments.
 """
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 
 # Map size in cells (1 cell == 1 m).
@@ -54,6 +55,18 @@ class Obstacle:
         return (
             self.x_min <= x <= self.x_max
             and self.y_min <= y <= self.y_max
+        )
+
+    def contains_xy(self, x: float, y: float) -> bool:
+        """Visual containment check for a continuous (float) point.
+
+        Each integer cell is treated as a 1m x 1m square centred on its
+        integer coordinates, so the visual footprint of the obstacle is
+        ``[x_min - 0.5, x_max + 0.5] x [y_min - 0.5, y_max + 0.5]``.
+        """
+        return (
+            self.x_min - 0.5 <= x <= self.x_max + 0.5
+            and self.y_min - 0.5 <= y <= self.y_max + 0.5
         )
 
 
@@ -193,6 +206,51 @@ def _connect_neighbors(
         for a, b in zip(col, col[1:]):
             if not _segment_blocked(a, b, obstacles):
                 graph.connect(a.wp_id, b.wp_id)
+
+
+def is_inside_any_obstacle(
+    x: float, y: float, obstacles: Iterable[Obstacle]
+) -> bool:
+    """True if the continuous point (x, y) lies inside any obstacle."""
+    return any(o.contains_xy(x, y) for o in obstacles)
+
+
+def is_in_map_bounds(x: float, y: float) -> bool:
+    """True if the continuous point lies inside the outer wall."""
+    return (
+        -0.5 <= x <= MAP_WIDTH - 0.5
+        and -0.5 <= y <= MAP_HEIGHT - 0.5
+    )
+
+
+def is_line_clear(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    obstacles: Iterable[Obstacle],
+    step: float = 0.1,
+) -> bool:
+    """Sample-based line-of-sight check between two continuous points.
+
+    The segment is sampled every ``step`` metres; if any sample lies
+    inside an obstacle, the segment is reported as blocked. ``step``
+    is small enough (10 cm) for the demo's 1 m grid.
+    """
+    obstacles = list(obstacles)
+    dx = x2 - x1
+    dy = y2 - y1
+    length = math.hypot(dx, dy)
+    if length == 0.0:
+        return not is_inside_any_obstacle(x1, y1, obstacles)
+    samples = max(2, int(math.ceil(length / step)) + 1)
+    for i in range(samples):
+        t = i / (samples - 1)
+        x = x1 + t * dx
+        y = y1 + t * dy
+        if is_inside_any_obstacle(x, y, obstacles):
+            return False
+    return True
 
 
 def build_buffet_map() -> BuffetMap:
