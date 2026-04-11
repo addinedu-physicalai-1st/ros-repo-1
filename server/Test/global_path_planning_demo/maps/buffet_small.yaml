@@ -1,0 +1,36 @@
+# A smaller buffet variant for testing custom map loading.
+# 12 x 10 m, single row of buffet stations, no return area.
+
+name: "Buffet small variant"
+
+# 12 x 10 m is still a large algorithm-test scale, so override the
+# pinky-pro-scaled module defaults.
+defaults:
+  entry_radius: 2.0
+  dynamic_radius: 0.6
+  inflation_radius: 0.0
+
+size:
+  width: 12
+  height: 10
+
+obstacles:
+  - {name: "Buffet S1", x_min: 2,  y_min: 4, x_max: 4,  y_max: 6}
+  - {name: "Buffet S2", x_min: 7,  y_min: 4, x_max: 9,  y_max: 6}
+  - {name: "Kitchen",   x_min: 1,  y_min: 8, x_max: 4,  y_max: 8}
+
+waypoints:
+  - {x: 1,  y: 1, label: "CS"}
+  - {x: 5,  y: 1, label: "Entrance"}
+  - {x: 10, y: 1, label: "Table-South"}
+
+  - {x: 1,  y: 3}
+  - {x: 5,  y: 3}
+  - {x: 10, y: 3}
+
+  - {x: 1,  y: 7}
+  - {x: 5,  y: 7}
+  - {x: 10, y: 7}
+
+  - {x: 5,  y: 8, label: "Kitchen"}
+  - {x: 10, y: 8, label: "Table-North"}

@@ -1,0 +1,83 @@
+# Default buffet test map for the global path planning demo.
+#
+# Schema
+# ------
+# name        : free-form display name
+# size        : map size in cells (1 cell == 1 m in this demo)
+#   width     : integer, must be > 0
+#   height    : integer, must be > 0
+# obstacles[] : axis-aligned rectangular static obstacles
+#   name      : free-form name (rendered on the map)
+#   x_min, y_min, x_max, y_max : inclusive integer cell range,
+#                                must lie inside [0, width-1] x [0, height-1]
+#                                and satisfy x_min <= x_max, y_min <= y_max
+# waypoints[] : graph nodes, integer (x, y); waypoint id == list index
+#   x, y      : integer cell coordinates inside the map, must NOT lie
+#               inside any obstacle
+#   label     : optional free-form name; labels must be unique. Empty
+#               or omitted == anonymous junction.
+#
+# Edges between waypoints are NOT listed: they are auto-built at load
+# time by connecting each pair of consecutive waypoints on the same row
+# or column whose connecting axis-aligned segment is clear of obstacles.
+
+name: "Buffet default test map"
+
+# Per-map defaults. This is a LARGE (20 x 15 m) algorithm-test map, so
+# the values are intentionally much bigger than the pinky-pro-scaled
+# module defaults. Inflation is kept off so the hand-placed waypoints
+# that sit right against obstacle walls remain valid.
+defaults:
+  entry_radius: 2.5       # free-start entry cap (m)
+  dynamic_radius: 0.6     # default dynamic-obstacle disc radius (m)
+  inflation_radius: 0.0   # static-obstacle inflation (m); 0 = no inflation
+
+size:
+  width: 20
+  height: 15
+
+obstacles:
+  - {name: "Buffet A1", x_min: 2,  y_min: 2,  x_max: 6,  y_max: 5}
+  - {name: "Buffet A2", x_min: 8,  y_min: 2,  x_max: 12, y_max: 5}
+  - {name: "Buffet A3", x_min: 14, y_min: 2,  x_max: 17, y_max: 5}
+  - {name: "Buffet B1", x_min: 2,  y_min: 7,  x_max: 6,  y_max: 9}
+  - {name: "Buffet B2", x_min: 8,  y_min: 7,  x_max: 12, y_max: 9}
+  - {name: "Buffet B3", x_min: 14, y_min: 7,  x_max: 17, y_max: 9}
+  - {name: "Kitchen",   x_min: 2,  y_min: 13, x_max: 7,  y_max: 14}
+  - {name: "Return",    x_min: 12, y_min: 13, x_max: 18, y_max: 14}
+
+waypoints:
+  # South corridor (entrance side).
+  - {x: 1,  y: 1,  label: "CS-Left"}
+  - {x: 4,  y: 1,  label: "A1-S"}
+  - {x: 7,  y: 1}
+  - {x: 10, y: 1,  label: "Entrance"}
+  - {x: 13, y: 1}
+  - {x: 15, y: 1,  label: "A3-S"}
+  - {x: 18, y: 1,  label: "CS-Right"}
+
+  # Mid corridor between buffet row A and row B.
+  - {x: 1,  y: 6}
+  - {x: 4,  y: 6,  label: "A1-N/B1-S"}
+  - {x: 7,  y: 6}
+  - {x: 10, y: 6,  label: "A2-N/B2-S"}
+  - {x: 13, y: 6}
+  - {x: 15, y: 6,  label: "A3-N/B3-S"}
+  - {x: 18, y: 6}
+
+  # Mid corridor north of buffet row B.
+  - {x: 1,  y: 10}
+  - {x: 4,  y: 10, label: "B1-N"}
+  - {x: 7,  y: 10}
+  - {x: 10, y: 10, label: "B2-N"}
+  - {x: 13, y: 10}
+  - {x: 15, y: 10, label: "B3-N"}
+  - {x: 18, y: 10}
+
+  # Top corridor in front of kitchen / return area.
+  - {x: 1,  y: 12}
+  - {x: 4,  y: 12, label: "Kitchen"}
+  - {x: 7,  y: 12}
+  - {x: 13, y: 12}
+  - {x: 15, y: 12, label: "Return"}
+  - {x: 18, y: 12}

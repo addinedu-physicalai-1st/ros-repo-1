@@ -1,0 +1,44 @@
+# Realistic-scale buffet map (2.0 m x 1.6 m) - matches the actual
+# pinky-pro deployment scale. Nav2 map_server format (PGM + metadata)
+# extended with the demo's `defaults:` and `waypoints:` keys.
+#
+# Layout:
+#   - Outer wall (1 px)
+#   - Serving station (0.40 m x 0.20 m) in the middle
+#   - 8 waypoints on a "ring" around the station
+#
+# Physical pinky-pro dimensions (from pinky_description/urdf +
+# pinky_navigation/params/nav2_params.yaml):
+#   Nav2 footprint : 0.12 x 0.12 m square, half-extent 0.06
+#   Nav2 padding   : 0.03 m
+#   Circumscribed radius: sqrt(2) * 0.06 + 0.03 ~= 0.115 m
+# Rounded up to 0.12 m below so the planner can never plan through a
+# gap narrower than the physical robot.
+
+name: "Buffet realistic (2.0 x 1.6 m)"
+
+image: buffet_realistic.pgm
+mode: trinary
+resolution: 0.05
+origin: [0.0, 0.0, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+
+defaults:
+  entry_radius: 0.40       # m, roughly waypoint spacing / 2
+  dynamic_radius: 0.12     # m, another pinky-pro + small margin
+  inflation_radius: 0.09   # m, pinky-pro inscribed radius (0.06) + padding (0.03)
+
+waypoints:
+  # Bottom row (between wall and serving station's south edge).
+  - {x: 0.40, y: 0.35, label: "Charging"}
+  - {x: 1.00, y: 0.35}
+  - {x: 1.60, y: 0.35}
+  # Mid column junctions (flanking the station).
+  - {x: 0.40, y: 0.80}
+  - {x: 1.60, y: 0.80}
+  # Top row (between serving station's north edge and wall).
+  - {x: 0.40, y: 1.25, label: "Return"}
+  - {x: 1.00, y: 1.25, label: "Kitchen"}
+  - {x: 1.60, y: 1.25, label: "Table"}

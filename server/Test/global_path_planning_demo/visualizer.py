@@ -26,19 +26,13 @@ import matplotlib.pyplot as plt
 from matplotlib.backend_bases import KeyEvent, MouseEvent
 
 from astar_planner import (
-    DEFAULT_ENTRY_RADIUS,
     FreeStartPlan,
     plan_path_from_point,
 )
 from map_data import (
-    DEFAULT_DYNAMIC_RADIUS,
-    MAP_HEIGHT,
-    MAP_WIDTH,
     BuffetMap,
     DynamicObstacle,
     circle_contains_point,
-    is_in_map_bounds,
-    is_inside_any_obstacle,
 )
 
 
@@ -48,13 +42,23 @@ class PathPlanningVisualizer:
     def __init__(
         self,
         buffet_map: BuffetMap,
-        entry_radius: float = DEFAULT_ENTRY_RADIUS,
-        dynamic_radius: float = DEFAULT_DYNAMIC_RADIUS,
+        entry_radius: Optional[float] = None,
+        dynamic_radius: Optional[float] = None,
     ) -> None:
         self.buffet_map = buffet_map
         self.graph = buffet_map.graph
-        self.entry_radius = entry_radius
-        self.dynamic_radius = dynamic_radius
+        # Pick up per-map defaults from the loaded YAML unless the
+        # caller explicitly overrode them.
+        self.entry_radius = (
+            entry_radius
+            if entry_radius is not None
+            else buffet_map.defaults.entry_radius
+        )
+        self.dynamic_radius = (
+            dynamic_radius
+            if dynamic_radius is not None
+            else buffet_map.defaults.dynamic_radius
+        )
 
         self.start_xy: Optional[Tuple[float, float]] = None
         self.goal_id: Optional[int] = None
@@ -64,7 +68,12 @@ class PathPlanningVisualizer:
         self.dynamic_obstacles: List[DynamicObstacle] = []
         self._next_dyn_id: int = 1
 
-        self.fig, self.ax = plt.subplots(figsize=(11, 8.5))
+        # Scale figure to the map's aspect ratio so non-default maps
+        # render with sensible proportions.
+        fig_w = 11.0
+        fig_h = fig_w * (buffet_map.height_m / max(buffet_map.width_m, 1.0))
+        fig_h = max(5.5, min(fig_h + 1.0, 12.0))  # +1 for title space
+        self.fig, self.ax = plt.subplots(figsize=(fig_w, fig_h))
         self.fig.canvas.mpl_connect("button_press_event", self._on_click)
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
 
@@ -76,15 +85,16 @@ class PathPlanningVisualizer:
 
     def _redraw(self) -> None:
         self.ax.clear()
-        self.ax.set_xlim(-0.5, MAP_WIDTH - 0.5)
-        self.ax.set_ylim(-0.5, MAP_HEIGHT - 0.5)
+        bm = self.buffet_map
+        self.ax.set_xlim(bm.origin_x, bm.origin_x + bm.width_m)
+        self.ax.set_ylim(bm.origin_y, bm.origin_y + bm.height_m)
         self.ax.set_aspect("equal")
         self.ax.set_xlabel("x [m]")
         self.ax.set_ylabel("y [m]")
         self.ax.grid(True, linestyle=":", alpha=0.4)
 
+        self._draw_static_env()
         self._draw_walls()
-        self._draw_obstacles()
         self._draw_edges()
         self._draw_waypoints()
         self._draw_dynamic_obstacles()
@@ -94,40 +104,22 @@ class PathPlanningVisualizer:
 
         self.fig.canvas.draw_idle()
 
+    def _draw_static_env(self) -> None:
+        # Delegate background rendering to the StaticEnv subclass
+        # (rectangles for the rect format, imshow for occupancy grids).
+        self.buffet_map.static_env.draw_on(self.ax)
+
     def _draw_walls(self) -> None:
+        bm = self.buffet_map
         wall = mpatches.Rectangle(
-            (-0.5, -0.5),
-            MAP_WIDTH,
-            MAP_HEIGHT,
+            (bm.origin_x, bm.origin_y),
+            bm.width_m,
+            bm.height_m,
             facecolor="none",
             edgecolor="black",
             linewidth=2.0,
         )
         self.ax.add_patch(wall)
-
-    def _draw_obstacles(self) -> None:
-        for obs in self.buffet_map.obstacles:
-            rect = mpatches.Rectangle(
-                (obs.x_min - 0.5, obs.y_min - 0.5),
-                obs.width,
-                obs.height,
-                facecolor="#b0b0b0",
-                edgecolor="#404040",
-                linewidth=1.0,
-                alpha=0.85,
-            )
-            self.ax.add_patch(rect)
-            cx = (obs.x_min + obs.x_max) / 2.0
-            cy = (obs.y_min + obs.y_max) / 2.0
-            self.ax.text(
-                cx,
-                cy,
-                obs.name,
-                ha="center",
-                va="center",
-                fontsize=8,
-                color="#202020",
-            )
 
     def _draw_edges(self) -> None:
         seen = set()
@@ -272,8 +264,9 @@ class PathPlanningVisualizer:
         dyn_note = (
             f"  |  dynamic obstacles: {n_dyn}" if n_dyn else ""
         )
+        map_name = self.buffet_map.name or "Buffet Demo"
         self.ax.set_title(
-            "Waypoint-based A* Global Path Planner - Buffet Demo"
+            f"Waypoint-based A* Global Path Planner - {map_name}"
             f"{dyn_note}\n"
             f"{status}\n"
             "[left] start/goal    [right] add dyn-obs    "
@@ -309,13 +302,13 @@ class PathPlanningVisualizer:
         self._redraw()
 
     def _add_dynamic_obstacle(self, x: float, y: float) -> None:
-        if not is_in_map_bounds(x, y):
+        if not self.buffet_map.is_in_bounds(x, y):
             print(
                 f"[demo] cannot place dynamic obstacle: "
                 f"({x:.2f}, {y:.2f}) out of map bounds"
             )
             return
-        if is_inside_any_obstacle(x, y, self.buffet_map.obstacles):
+        if self.buffet_map.static_env.contains_xy(x, y):
             print(
                 f"[demo] cannot place dynamic obstacle inside a static "
                 f"obstacle: ({x:.2f}, {y:.2f})"
@@ -360,10 +353,10 @@ class PathPlanningVisualizer:
 
     def _set_start(self, x: float, y: float) -> None:
         self._reset_selection()
-        if not is_in_map_bounds(x, y):
+        if not self.buffet_map.is_in_bounds(x, y):
             print(f"[demo] start ({x:.2f}, {y:.2f}) is out of map bounds")
             return
-        if is_inside_any_obstacle(x, y, self.buffet_map.obstacles):
+        if self.buffet_map.static_env.contains_xy(x, y):
             print(
                 f"[demo] start ({x:.2f}, {y:.2f}) is inside an obstacle, "
                 "click somewhere in a corridor"
@@ -398,10 +391,9 @@ class PathPlanningVisualizer:
     def _plan(self) -> None:
         assert self.start_xy is not None and self.goal_id is not None
         plan = plan_path_from_point(
-            self.graph,
+            self.buffet_map,
             self.start_xy,
             self.goal_id,
-            self.buffet_map.obstacles,
             entry_radius=self.entry_radius,
             dynamic_obstacles=self.dynamic_obstacles,
         )

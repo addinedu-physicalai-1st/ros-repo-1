@@ -20,22 +20,14 @@ from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from map_data import (
+    DEFAULT_ENTRY_RADIUS,
+    BuffetMap,
     DynamicObstacle,
-    Obstacle,
+    StaticEnv,
     WaypointGraph,
     circle_contains_point,
     circle_intersects_segment,
-    is_inside_any_obstacle,
-    is_line_clear,
 )
-
-
-# Maximum allowed straight-line distance from a free start point to its
-# entry waypoint (in metres). The cap forces the global path to enter the
-# corridor network through a nearby waypoint instead of running long
-# diagonals across open space, which keeps the resulting motion close to
-# the project's "straight + 90-degree turns" constraint.
-DEFAULT_ENTRY_RADIUS: float = 2.5
 
 
 def _euclidean(graph: WaypointGraph, a: int, b: int) -> float:
@@ -176,7 +168,7 @@ def _astar_multi_source(
 
 
 def plan_path(
-    graph: WaypointGraph,
+    buffet_map: BuffetMap,
     start: int,
     goal: int,
     *,
@@ -192,6 +184,7 @@ def plan_path(
     that block waypoints/edges they touch. The static graph is not
     modified - the planner just skips the affected nodes for this call.
     """
+    graph = buffet_map.graph
     if start not in graph.waypoints:
         raise KeyError(f"Unknown start waypoint id {start}")
     if start == goal:
@@ -233,10 +226,9 @@ class FreeStartPlan:
 
 
 def plan_path_from_point(
-    graph: WaypointGraph,
+    buffet_map: BuffetMap,
     start_xy: Tuple[float, float],
     goal: int,
-    obstacles: Iterable[Obstacle],
     entry_radius: float = DEFAULT_ENTRY_RADIUS,
     *,
     dynamic_obstacles: Optional[Iterable[DynamicObstacle]] = None,
@@ -261,22 +253,24 @@ def plan_path_from_point(
     must also clear. The start point itself must not be inside any
     dynamic obstacle disc.
 
-    Returns ``None`` if the start point is inside an obstacle, has no
-    line-of-sight reachable waypoint at all, or no path to the goal
-    exists.
+    Returns ``None`` if the start point is inside a static obstacle or a
+    dynamic obstacle, has no line-of-sight reachable waypoint at all, or
+    no path to the goal exists.
     """
+    graph = buffet_map.graph
+    static_env: StaticEnv = buffet_map.static_env
+
     if goal not in graph.waypoints:
         raise KeyError(f"Unknown goal waypoint id {goal}")
     if entry_radius <= 0.0:
         raise ValueError("entry_radius must be positive")
 
-    obstacles = list(obstacles)
     dyn_list: List[DynamicObstacle] = (
         list(dynamic_obstacles) if dynamic_obstacles else []
     )
 
     sx, sy = start_xy
-    if is_inside_any_obstacle(sx, sy, obstacles):
+    if static_env.contains_xy(sx, sy):
         return None
     for d in dyn_list:
         if circle_contains_point(d.x, d.y, d.radius, sx, sy):
@@ -292,7 +286,7 @@ def plan_path_from_point(
     for wp in graph.waypoints.values():
         if wp.wp_id in blockage.waypoints:
             continue
-        if not is_line_clear(sx, sy, wp.x, wp.y, obstacles):
+        if not static_env.is_segment_clear(sx, sy, wp.x, wp.y):
             continue
         if any(
             circle_intersects_segment(
