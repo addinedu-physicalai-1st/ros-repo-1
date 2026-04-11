@@ -22,6 +22,11 @@ from typing import Dict, Iterable, List, Tuple
 MAP_WIDTH: int = 20
 MAP_HEIGHT: int = 15
 
+# Default circular footprint (in metres) used for a dynamic obstacle.
+# 0.6 m comfortably covers a pinky-pro chassis (~30 cm diameter) plus a
+# safety margin for the planner.
+DEFAULT_DYNAMIC_RADIUS: float = 0.6
+
 
 @dataclass(frozen=True)
 class Waypoint:
@@ -103,6 +108,25 @@ class BuffetMap:
 
     obstacles: List[Obstacle]
     graph: WaypointGraph
+
+
+@dataclass
+class DynamicObstacle:
+    """Quasi-static circular obstacle (e.g. another robot parked or
+    momentarily stopped in a corridor).
+
+    Treated as an immovable disc by the planner at the moment ``plan_*``
+    is called. Real motion of other robots is handled outside this
+    module by re-running the planner with an updated snapshot - this
+    matches the standard Nav2-style architecture in which a Local
+    Planner takes care of the actual avoidance.
+    """
+
+    obs_id: int
+    x: float
+    y: float
+    radius: float = DEFAULT_DYNAMIC_RADIUS
+    label: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +245,43 @@ def is_in_map_bounds(x: float, y: float) -> bool:
         -0.5 <= x <= MAP_WIDTH - 0.5
         and -0.5 <= y <= MAP_HEIGHT - 0.5
     )
+
+
+def circle_contains_point(
+    cx: float, cy: float, radius: float, x: float, y: float
+) -> bool:
+    """True if (x, y) lies inside the closed disc centred at (cx, cy)."""
+    return math.hypot(cx - x, cy - y) <= radius
+
+
+def circle_intersects_segment(
+    cx: float,
+    cy: float,
+    radius: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> bool:
+    """True if the closed disc intersects the segment (x1,y1)->(x2,y2).
+
+    Computes the closest point on the segment to the disc centre using
+    the standard parametric projection clamped to ``[0, 1]``, then
+    compares its distance to ``radius``.
+    """
+    dx = x2 - x1
+    dy = y2 - y1
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq == 0.0:
+        return math.hypot(cx - x1, cy - y1) <= radius
+    t = ((cx - x1) * dx + (cy - y1) * dy) / seg_len_sq
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    closest_x = x1 + t * dx
+    closest_y = y1 + t * dy
+    return math.hypot(cx - closest_x, cy - closest_y) <= radius
 
 
 def is_line_clear(

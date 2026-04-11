@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from map_data import (
+    DynamicObstacle,
     Obstacle,
     WaypointGraph,
+    circle_contains_point,
+    circle_intersects_segment,
     is_inside_any_obstacle,
     is_line_clear,
 )
@@ -47,10 +50,59 @@ def _manhattan(graph: WaypointGraph, a: int, b: int) -> float:
     return abs(wa.x - wb.x) + abs(wa.y - wb.y)
 
 
+@dataclass
+class _Blockage:
+    """Set of waypoint ids and edges blocked by dynamic obstacles."""
+
+    waypoints: Set[int] = field(default_factory=set)
+    edges: Set[FrozenSet[int]] = field(default_factory=set)
+
+
+def _compute_blockage(
+    graph: WaypointGraph,
+    dynamic_obstacles: Optional[Iterable[DynamicObstacle]],
+) -> _Blockage:
+    """Pre-compute waypoints and edges that any dynamic obstacle blocks."""
+    blockage = _Blockage()
+    if not dynamic_obstacles:
+        return blockage
+    obs_list = list(dynamic_obstacles)
+    if not obs_list:
+        return blockage
+
+    for wp in graph.waypoints.values():
+        for d in obs_list:
+            if circle_contains_point(d.x, d.y, d.radius, wp.x, wp.y):
+                blockage.waypoints.add(wp.wp_id)
+                break
+
+    seen: Set[FrozenSet[int]] = set()
+    for wp_id, neighbors in graph.adjacency.items():
+        a = graph.waypoints[wp_id]
+        for nb in neighbors:
+            key = frozenset((wp_id, nb))
+            if key in seen:
+                continue
+            seen.add(key)
+            if wp_id in blockage.waypoints or nb in blockage.waypoints:
+                blockage.edges.add(key)
+                continue
+            b = graph.waypoints[nb]
+            for d in obs_list:
+                if circle_intersects_segment(
+                    d.x, d.y, d.radius, a.x, a.y, b.x, b.y
+                ):
+                    blockage.edges.add(key)
+                    break
+
+    return blockage
+
+
 def _astar_multi_source(
     graph: WaypointGraph,
     seeds: Dict[int, float],
     goal: int,
+    blockage: Optional[_Blockage] = None,
 ) -> Tuple[Optional[List[int]], float]:
     """Run A* with one or more seeded start nodes.
 
@@ -58,10 +110,21 @@ def _astar_multi_source(
     reach that node from outside the graph). The returned path always
     starts at whichever seeded node A* found cheapest, and the returned
     cost includes the seed cost.
+
+    ``blockage`` (optional) lists waypoint ids and edges that are
+    blocked by dynamic obstacles and must be skipped.
     """
     if goal not in graph.waypoints:
         raise KeyError("Unknown goal waypoint id passed to A*")
     if not seeds:
+        return None, math.inf
+
+    blocked_wp: Set[int] = blockage.waypoints if blockage else set()
+    blocked_edges: Set[FrozenSet[int]] = (
+        blockage.edges if blockage else set()
+    )
+
+    if goal in blocked_wp:
         return None, math.inf
 
     counter = 0
@@ -72,13 +135,18 @@ def _astar_multi_source(
     for wp_id, init in seeds.items():
         if wp_id not in graph.waypoints:
             raise KeyError(f"Unknown seed waypoint id {wp_id}")
+        if wp_id in blocked_wp:
+            continue
         if init < g_score.get(wp_id, math.inf):
             g_score[wp_id] = init
             f = init + _manhattan(graph, wp_id, goal)
             heapq.heappush(open_heap, (f, counter, wp_id))
             counter += 1
 
-    closed: set = set()
+    if not g_score:
+        return None, math.inf
+
+    closed: Set[int] = set()
     while open_heap:
         _, _, current = heapq.heappop(open_heap)
         if current in closed:
@@ -89,6 +157,10 @@ def _astar_multi_source(
 
         for neighbor in graph.neighbors(current):
             if neighbor in closed:
+                continue
+            if neighbor in blocked_wp:
+                continue
+            if frozenset((current, neighbor)) in blocked_edges:
                 continue
             tentative_g = g_score[current] + _euclidean(
                 graph, current, neighbor
@@ -104,19 +176,30 @@ def _astar_multi_source(
 
 
 def plan_path(
-    graph: WaypointGraph, start: int, goal: int
+    graph: WaypointGraph,
+    start: int,
+    goal: int,
+    *,
+    dynamic_obstacles: Optional[Iterable[DynamicObstacle]] = None,
 ) -> Tuple[Optional[List[int]], float]:
     """Compute the shortest waypoint sequence from ``start`` to ``goal``.
 
     Returns ``(path, cost)``. ``path`` is the list of waypoint ids that
     starts with ``start`` and ends with ``goal``. If no path exists,
     returns ``(None, math.inf)``.
+
+    ``dynamic_obstacles`` (optional) is a list of circular obstacles
+    that block waypoints/edges they touch. The static graph is not
+    modified - the planner just skips the affected nodes for this call.
     """
     if start not in graph.waypoints:
         raise KeyError(f"Unknown start waypoint id {start}")
     if start == goal:
         return [start], 0.0
-    return _astar_multi_source(graph, {start: 0.0}, goal)
+    blockage = _compute_blockage(graph, dynamic_obstacles)
+    if start in blockage.waypoints:
+        return None, math.inf
+    return _astar_multi_source(graph, {start: 0.0}, goal, blockage)
 
 
 @dataclass
@@ -155,6 +238,8 @@ def plan_path_from_point(
     goal: int,
     obstacles: Iterable[Obstacle],
     entry_radius: float = DEFAULT_ENTRY_RADIUS,
+    *,
+    dynamic_obstacles: Optional[Iterable[DynamicObstacle]] = None,
 ) -> Optional[FreeStartPlan]:
     """Plan a path from a continuous (x, y) start point to ``goal``.
 
@@ -171,6 +256,11 @@ def plan_path_from_point(
     :attr:`FreeStartPlan.entry_radius_fallback` to ``True`` so the
     caller can warn about the relaxed constraint.
 
+    ``dynamic_obstacles`` (optional) is a list of circular obstacles
+    that block waypoints/edges they touch and that the entry segment
+    must also clear. The start point itself must not be inside any
+    dynamic obstacle disc.
+
     Returns ``None`` if the start point is inside an obstacle, has no
     line-of-sight reachable waypoint at all, or no path to the goal
     exists.
@@ -181,22 +271,42 @@ def plan_path_from_point(
         raise ValueError("entry_radius must be positive")
 
     obstacles = list(obstacles)
+    dyn_list: List[DynamicObstacle] = (
+        list(dynamic_obstacles) if dynamic_obstacles else []
+    )
+
     sx, sy = start_xy
     if is_inside_any_obstacle(sx, sy, obstacles):
+        return None
+    for d in dyn_list:
+        if circle_contains_point(d.x, d.y, d.radius, sx, sy):
+            return None
+
+    blockage = _compute_blockage(graph, dyn_list)
+    if goal in blockage.waypoints:
         return None
 
     seeds: Dict[int, float] = {}
     nearest_id: Optional[int] = None
     nearest_dist: float = math.inf
     for wp in graph.waypoints.values():
+        if wp.wp_id in blockage.waypoints:
+            continue
         if not is_line_clear(sx, sy, wp.x, wp.y, obstacles):
             continue
-        d = math.hypot(sx - wp.x, sy - wp.y)
-        if d < nearest_dist:
-            nearest_dist = d
+        if any(
+            circle_intersects_segment(
+                d.x, d.y, d.radius, sx, sy, wp.x, wp.y
+            )
+            for d in dyn_list
+        ):
+            continue
+        d_dist = math.hypot(sx - wp.x, sy - wp.y)
+        if d_dist < nearest_dist:
+            nearest_dist = d_dist
             nearest_id = wp.wp_id
-        if d <= entry_radius:
-            seeds[wp.wp_id] = d
+        if d_dist <= entry_radius:
+            seeds[wp.wp_id] = d_dist
 
     fallback = False
     if not seeds:
@@ -205,7 +315,7 @@ def plan_path_from_point(
         seeds[nearest_id] = nearest_dist
         fallback = True
 
-    path, total_cost = _astar_multi_source(graph, seeds, goal)
+    path, total_cost = _astar_multi_source(graph, seeds, goal, blockage)
     if path is None:
         return None
 

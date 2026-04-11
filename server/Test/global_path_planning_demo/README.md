@@ -44,10 +44,12 @@ python3 main.py --headless
 
 | 입력 | 동작 |
 |---|---|
-| 클릭 1회 | **START 자유 좌표 선택** — 클릭 위치를 그대로 시작점으로 사용. 웨이포인트로 스냅하지 않음. 시작점 주변 옅은 점선 원이 진입 반경(`entry_radius`, 기본 2.5 m)을 표시. 장애물 내부거나 맵 밖이면 거부 메시지 후 다시 클릭 대기 |
-| 클릭 2회 | GOAL 웨이포인트 선택 (가장 가까운 웨이포인트로 스냅), A* 즉시 실행 후 경로 표시 |
-| 클릭 3회 | 새로운 쿼리 시작 (이전 선택 초기화) |
-| `r` | 현재 선택 리셋 |
+| **좌클릭 1회** | START 자유 좌표 선택 — 클릭 위치를 그대로 시작점으로 사용. 웨이포인트로 스냅하지 않음. 시작점 주변 옅은 점선 원이 진입 반경(`entry_radius`, 기본 2.5 m)을 표시. 장애물 내부거나 맵 밖이면 거부 메시지 후 다시 클릭 대기 |
+| **좌클릭 2회** | GOAL 웨이포인트 선택 (가장 가까운 웨이포인트로 스냅), A* 즉시 실행 후 경로 표시 |
+| **좌클릭 3회** | 새로운 쿼리 시작 (이전 선택 초기화) |
+| **우클릭** | 동적 장애물(다른 로봇 등) 추가 — 클릭 위치에 반경 0.6 m 원형 장애물을 떨어뜨림. start/goal이 이미 설정되어 있으면 즉시 재계획. 정적 장애물 내부 / 맵 밖 / 현재 시작점 위에는 거부 |
+| `r` | 현재 start/goal 선택 리셋 (동적 장애물은 유지) |
+| `c` | 모든 동적 장애물 삭제 (start/goal 유지). start/goal이 설정되어 있으면 재계획 |
 | `q` | 종료 |
 
 > 시작점만 자유롭고 목적지는 웨이포인트로 스냅합니다. 뷔페 운용에서 목적지는 입구·주방·퇴식구·테이블 앞 등 미리 정의된 서비스 위치로 한정되는 것이 자연스러운 반면, 시작점은 로봇의 임의 현재 자세이기 때문입니다.
@@ -56,7 +58,8 @@ python3 main.py --headless
 
 20m × 15m 크기의 단순화된 뷔페 공간으로, 1셀 = 1m 입니다.
 
-- **장애물 (8개)**: 뷔페 스테이션 6개(A1~A3, B1~B3) 2열 + 주방(Kitchen) + 퇴식구(Return) + 외벽
+- **정적 장애물 (8개)**: 뷔페 스테이션 6개(A1~A3, B1~B3) 2열 + 주방(Kitchen) + 퇴식구(Return) + 외벽 — 축 정렬 사각형, 그래프 빌드 시 한 번만 평가
+- **동적 장애물 (런타임)**: `DynamicObstacle(x, y, radius)` — 다른 로봇 등을 표현하는 원형 장애물. plan 호출 시점의 스냅샷으로만 사용되고 정적 그래프는 변경하지 않음
 - **웨이포인트 (27개)**: 통로 교차점 + 명명된 서비스 지점
   - `Entrance`: 입구
   - `CS-Left`, `CS-Right`: 좌/우 충전 스테이션
@@ -103,6 +106,71 @@ python3 main.py --headless
 - `(19.00, 10.20) → Kitchen`: 가장 가까운 웨이포인트는 1.02m 거리의 `(18,10)`이지만, A*는 2.06m 거리의 `(18,12)`를 선택 → `(18,10)` 진입 시 총 17.02 m vs `(18,12)` 진입 시 총 16.06 m.
 - `(10.40, 0.60) → Kitchen`: 반경 2.5 m 안에는 `Entrance(10,1)` 하나뿐이라 그것이 진입점 → 17.57 m. 반경 제한이 없을 때 가능한 17.42 m(`(7,1)` 진입) 대비 0.15 m 손실은 안전성/일관성 측면 이득에 비해 무시 가능.
 
+### 동적 장애물 처리 (quasi-static + 재계획)
+
+다른 로봇이 통로에 정차해 있거나 잠시 멈춰 있는 상황을 시뮬레이션하기 위해 원형 동적 장애물을 지원합니다. 시간에 따른 미래 궤적 예측(time-expanded ST-A*) 방식이 아닌, **plan 호출 시점에 "지금 그 자리에 있는 벽"으로 취급**하고 상황이 바뀌면 다시 plan을 호출하는 quasi-static 방식입니다 (Nav2 등 거의 모든 프로덕션 시스템이 채택).
+
+처리 절차:
+
+1. plan 호출 시 `dynamic_obstacles` 리스트가 주어지면 `_compute_blockage()`로 차단 집합 미리 계산:
+   - **차단 웨이포인트**: 어떤 동적 장애물의 원이 웨이포인트를 포함하면 차단 (`circle_contains_point`)
+   - **차단 간선**: 양 끝 웨이포인트가 차단되었거나, 간선 segment가 어떤 동적 장애물의 원과 교차하면 차단 (`circle_intersects_segment`, 표준 segment-vs-circle 거리 계산)
+2. A* expansion에서 차단된 웨이포인트와 간선은 스킵
+3. 자유 시작점 처리 시:
+   - 시작점 자체가 어느 동적 장애물의 원 안이면 거부 (`None` 반환)
+   - 진입 후보 수집 단계에서 차단된 웨이포인트는 제외
+   - 진입 segment가 어느 동적 장애물의 원과 교차하면 그 후보는 제외
+4. 목적지가 차단되면 즉시 `None` 반환
+5. 최단 우회 경로가 없으면 `None` 반환
+
+이렇게 하면 정적 그래프는 그대로 유지된 채 런타임 상황에 따라 자연스럽게 우회 경로가 만들어집니다. 본 데모에서는 우클릭으로 동적 장애물을 추가/`c`키로 삭제할 때마다 즉시 재계획되어, "시간이 흘러 상황이 바뀌면 새 plan을 받는" 운영 모델을 시각적으로 확인할 수 있습니다.
+
+#### 동적 장애물 시나리오 예시 (헤드리스)
+
+```
+[dyn] Entrance -> Kitchen
+  scenario: R1 parked at junction (7,6) blocks the central north-south corridor
+  obstacles: R1@(7,6) r=0.6
+  baseline (no dyn): cost=17.00 m, 6 wps
+    path: Entrance -> (7,1) -> (7,6) -> (7,10) -> B1-N -> Kitchen
+  with dyn:          cost=23.00 m, 8 wps
+    path: Entrance -> (7,1) -> A1-S -> CS-Left -> (1,6) -> (1,10) -> B1-N -> Kitchen
+    detour: +6.00 m vs baseline
+
+[dyn] Entrance -> Return
+  scenario: R1 stopped on edge (13,1)->(13,6); A* should find an alternative column
+  obstacles: R1@(13,3.5) r=0.6
+  baseline (no dyn): cost=16.00 m, 6 wps
+    path: Entrance -> (13,1) -> (13,6) -> (13,10) -> B3-N -> Return
+  with dyn:          cost=22.00 m, 8 wps
+    path: Entrance -> (13,1) -> A3-S -> CS-Right -> (18,6) -> (18,10) -> B3-N -> Return
+    detour: +6.00 m vs baseline
+
+[dyn] Entrance -> Kitchen
+  scenario: R1 sits exactly on the goal Kitchen - planner must report no path
+  obstacles: R1@(4,12) r=0.6
+  with dyn:          NO PATH FOUND
+
+[dyn-free] (11.00, 0.50) -> Kitchen
+  scenario: R1 sits on the preferred entry waypoint (10,1)
+  obstacles: R1@(10,1) r=0.6
+  baseline (no dyn): entry=Entrance (1.12 m), total=18.12 m
+  with dyn:          entry=(13,1) (2.06 m), total=22.06 m
+    path: (11.00,0.50) -> (13,1) -> (13,6) -> (13,10) -> (13,12) -> (7,12) -> Kitchen
+
+[dyn-free] (19.00, 10.20) -> Kitchen
+  scenario: R1 blocks the entry waypoint (18,12) used by the baseline
+  obstacles: R1@(18,12) r=0.6
+  baseline (no dyn): entry=(18,12) (2.06 m), total=16.06 m
+  with dyn:          entry=(18,10) (1.02 m), total=17.02 m
+    path: (19.00,10.20) -> (18,10) -> B3-N -> (13,10) -> (13,12) -> (7,12) -> Kitchen
+```
+
+확인 포인트:
+- **간선 차단**: R1@(13, 3.5)는 어느 웨이포인트도 포함하지 않지만 간선 `(13,1)→(13,6)` 위에 있으므로 segment-vs-circle 검사로 정확히 그 간선만 차단됨.
+- **목적지 차단 안전 처리**: R1이 Kitchen 위에 있으면 즉시 `NO PATH FOUND` 반환.
+- **자유 시작점 진입 재선택**: 동적 장애물이 baseline 진입 웨이포인트를 막으면, 반경 내 multi-source A*가 자동으로 다른 진입점을 골라 우회 경로를 만듦.
+
 ## 파일 구조
 
 ```
@@ -118,20 +186,28 @@ global_path_planning_demo/
 각 모듈의 역할:
 
 - `map_data.py`
-  - `Waypoint`, `Obstacle`, `WaypointGraph`, `BuffetMap` 데이터 클래스
+  - `Waypoint`, `Obstacle`, `WaypointGraph`, `BuffetMap`, `DynamicObstacle` 데이터 클래스
   - `build_buffet_map()`: 정적 뷔페 맵을 생성. 손으로 정의한 웨이포인트와 장애물 목록으로부터 같은 행/열에서 장애물에 가로막히지 않는 인접 쌍을 자동 연결합니다.
   - 자유 좌표 검사 헬퍼: `is_inside_any_obstacle`, `is_in_map_bounds`, `is_line_clear` (0.1m 간격 샘플링).
+  - 동적 장애물 기하 헬퍼: `circle_contains_point`, `circle_intersects_segment` (segment의 디스크 중심 최근접점을 [0,1] 클램프 + 거리 비교).
 - `astar_planner.py`
   - `DEFAULT_ENTRY_RADIUS`: 자유 시작점에서 진입 웨이포인트까지 허용되는 최대 직선 거리(기본 2.5 m).
-  - `plan_path(graph, start, goal) -> (path, cost)`: 웨이포인트 ID → 웨이포인트 ID 단일 소스 A*. 경로가 없으면 `(None, inf)`.
-  - `plan_path_from_point(graph, start_xy, goal, obstacles, entry_radius=2.5) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 반경 제한 multi-source A*. `entry_radius` 안에 line-of-sight 도달 가능 웨이포인트들만 진입 후보로 시드해 그 중 최적 진입점을 선택. 반경 안에 후보가 없으면 가장 가까운 reachable 웨이포인트로 fallback (`FreeStartPlan.entry_radius_fallback = True`).
-  - 내부적으로 둘 다 `_astar_multi_source(graph, seeds_dict, goal)`를 호출하므로 단일/다중 소스 모두 동일 코드 경로를 사용.
+  - `plan_path(graph, start, goal, *, dynamic_obstacles=None) -> (path, cost)`: 웨이포인트 ID → 웨이포인트 ID 단일 소스 A*. 경로가 없으면 `(None, inf)`.
+  - `plan_path_from_point(graph, start_xy, goal, obstacles, entry_radius=2.5, *, dynamic_obstacles=None) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 반경 제한 multi-source A*. `entry_radius` 안에 line-of-sight 도달 가능 웨이포인트들만 진입 후보로 시드해 그 중 최적 진입점을 선택. 반경 안에 후보가 없으면 가장 가까운 reachable 웨이포인트로 fallback (`FreeStartPlan.entry_radius_fallback = True`).
+  - 두 함수 모두 `dynamic_obstacles` 키워드 인자를 지원: 호출 시점의 차단된 웨이포인트/간선 집합을 미리 계산(`_compute_blockage`)해서 A* expansion에서 스킵.
+  - 내부적으로 둘 다 `_astar_multi_source(graph, seeds_dict, goal, blockage)`를 호출하므로 단일/다중 소스 + 정적/동적 장애물 모두 동일 코드 경로를 사용.
 - `visualizer.py`
-  - `PathPlanningVisualizer`: 정적 요소(벽, 장애물, 웨이포인트, 간선)와 동적 요소(start 자유 좌표 마커 + 진입 반경 점선 원, goal 웨이포인트 마커, 계산된 경로)를 그리고 클릭/키 이벤트를 처리.
-  - 첫 클릭은 자유 좌표로 처리(맵 밖/장애물 내부면 거부), 두 번째 클릭만 가장 가까운 웨이포인트로 스냅.
+  - `PathPlanningVisualizer`: 정적 요소(벽, 장애물, 웨이포인트, 간선)와 동적 요소(start 자유 좌표 마커 + 진입 반경 점선 원, goal 웨이포인트 마커, 동적 장애물 빨간 원, 계산된 경로)를 그리고 마우스/키 이벤트를 처리.
+  - 좌클릭: 자유 좌표 start → goal 웨이포인트 (맵 밖/장애물 내부면 거부, goal만 스냅).
+  - 우클릭: 클릭 위치에 동적 장애물(`DynamicObstacle`) 추가, start/goal이 이미 있으면 즉시 재계획.
+  - `c` 키: 모든 동적 장애물 삭제 + 재계획. `r` 키: start/goal 선택만 리셋(동적 장애물 유지).
   - `entry_radius` fallback이 발생한 경우 타이틀에 `[radius fallback]` 표시 + 콘솔에도 경고 출력.
 - `main.py`
-  - CLI 파싱 → 맵 빌드 → 인터랙티브 또는 헤드리스 실행 분기. 헤드리스 모드는 `Waypoint -> Waypoint`와 `Free start point -> Waypoint` 두 섹션을 모두 출력.
+  - CLI 파싱 → 맵 빌드 → 인터랙티브 또는 헤드리스 실행 분기. 헤드리스 모드는 다음 4개 섹션을 출력:
+    1. `Waypoint -> Waypoint` 기본 시나리오
+    2. `Free start point -> Waypoint` 시나리오
+    3. `Dynamic obstacles (waypoint -> waypoint)` — baseline 비용/경로와 차단 후 경로를 나란히 비교
+    4. `Dynamic obstacles (free start)` — 동적 장애물이 자유 시작점의 진입 웨이포인트를 막을 때 multi-source A*가 다른 진입점으로 우회하는지 검증
 
 ## 헤드리스 검증 결과
 
@@ -201,7 +277,7 @@ Running headless A* scenarios on the buffet test map.
 
 - 맵 정의가 코드에 하드코딩되어 있음 → 실제로는 YAML/JSON 등 외부 파일에서 로드 필요
 - 웨이포인트 좌표가 정수 격자 → 실제로는 SLAM 맵 좌표계의 float 위치로 운용
-- 동적 장애물·local planner 미반영 → DWB 등 Local Planner와 결합하여 회피 처리
+- 동적 장애물은 quasi-static 스냅샷 + 재계획 모델 → 본 데모는 실제 시간 경과를 시뮬레이션하지 않음 (우클릭으로 추가/`c`로 삭제 시점에만 재계획). 실제 운용에서는 일정 주기(예: 0.5~1초)로 관제 서버가 plan을 호출하고, 미세한 회피는 DWB 등 Local Planner에 위임
 - 단일 로봇 가정 → 멀티 로봇 운용 시 충돌/대기 정책 별도 설계 필요
 - HQ Service에서 task와 함께 웨이포인트 시퀀스를 내려주는 인터페이스가 별도로 필요
 - 자유 시작점의 line-of-sight 검사가 0.1m 샘플링 기반 → 실제 운용에서는 정확한 segment-vs-rectangle 교차 또는 inflated costmap 기반 판정으로 교체 권장

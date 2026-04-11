@@ -1,21 +1,25 @@
 """Interactive matplotlib visualization for the path planning demo.
 
 Usage:
-    * Click anywhere inside the map (and outside an obstacle) to set the
-      START point. The click coordinate is used as-is - it does NOT snap
-      to a waypoint.
-    * Click again to set the GOAL waypoint (this click DOES snap to the
-      nearest waypoint, since goals in the buffet are well-defined
-      service locations). A* runs immediately and the planned path is
-      drawn from the free start point to the goal.
-    * Click a third time to start a new query.
-    * Press ``r`` to reset the current selection, ``q`` to quit.
+    * Left click anywhere inside the map (and outside an obstacle) to
+      set the START point. The click coordinate is used as-is - it does
+      NOT snap to a waypoint.
+    * Left click again to set the GOAL waypoint (this click DOES snap
+      to the nearest waypoint, since goals in the buffet are
+      well-defined service locations). A* runs immediately and the
+      planned path is drawn from the free start point to the goal.
+    * Left click a third time to start a new query.
+    * Right click to drop a DYNAMIC OBSTACLE (e.g. another robot
+      blocking the corridor) at that point. The planner re-runs
+      automatically and the new path routes around the obstacle.
+    * Press ``r`` to reset the start/goal selection, ``c`` to clear all
+      dynamic obstacles, ``q`` to quit.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -27,9 +31,12 @@ from astar_planner import (
     plan_path_from_point,
 )
 from map_data import (
+    DEFAULT_DYNAMIC_RADIUS,
     MAP_HEIGHT,
     MAP_WIDTH,
     BuffetMap,
+    DynamicObstacle,
+    circle_contains_point,
     is_in_map_bounds,
     is_inside_any_obstacle,
 )
@@ -42,15 +49,20 @@ class PathPlanningVisualizer:
         self,
         buffet_map: BuffetMap,
         entry_radius: float = DEFAULT_ENTRY_RADIUS,
+        dynamic_radius: float = DEFAULT_DYNAMIC_RADIUS,
     ) -> None:
         self.buffet_map = buffet_map
         self.graph = buffet_map.graph
         self.entry_radius = entry_radius
+        self.dynamic_radius = dynamic_radius
 
         self.start_xy: Optional[Tuple[float, float]] = None
         self.goal_id: Optional[int] = None
         self.plan: Optional[FreeStartPlan] = None
         self.plan_failed: bool = False
+
+        self.dynamic_obstacles: List[DynamicObstacle] = []
+        self._next_dyn_id: int = 1
 
         self.fig, self.ax = plt.subplots(figsize=(11, 8.5))
         self.fig.canvas.mpl_connect("button_press_event", self._on_click)
@@ -75,6 +87,7 @@ class PathPlanningVisualizer:
         self._draw_obstacles()
         self._draw_edges()
         self._draw_waypoints()
+        self._draw_dynamic_obstacles()
         self._draw_path()
         self._draw_selection()
         self._draw_title()
@@ -156,6 +169,30 @@ class PathPlanningVisualizer:
                     zorder=4,
                 )
 
+    def _draw_dynamic_obstacles(self) -> None:
+        for obs in self.dynamic_obstacles:
+            disc = mpatches.Circle(
+                (obs.x, obs.y),
+                obs.radius,
+                facecolor="#ff6b6b",
+                edgecolor="#8b0000",
+                linewidth=1.2,
+                alpha=0.75,
+                zorder=2.5,
+            )
+            self.ax.add_patch(disc)
+            self.ax.text(
+                obs.x,
+                obs.y,
+                obs.label,
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="white",
+                fontweight="bold",
+                zorder=2.6,
+            )
+
     def _draw_selection(self) -> None:
         if self.start_xy is not None:
             sx, sy = self.start_xy
@@ -231,10 +268,16 @@ class PathPlanningVisualizer:
             if self.plan.entry_radius_fallback:
                 base += "  [radius fallback]"
             status = base
+        n_dyn = len(self.dynamic_obstacles)
+        dyn_note = (
+            f"  |  dynamic obstacles: {n_dyn}" if n_dyn else ""
+        )
         self.ax.set_title(
-            "Waypoint-based A* Global Path Planner - Buffet Demo\n"
+            "Waypoint-based A* Global Path Planner - Buffet Demo"
+            f"{dyn_note}\n"
             f"{status}\n"
-            "[r] reset    [q] quit",
+            "[left] start/goal    [right] add dyn-obs    "
+            "[r] reset    [c] clear dyn    [q] quit",
             fontsize=11,
         )
 
@@ -249,8 +292,12 @@ class PathPlanningVisualizer:
             return
         x, y = float(event.xdata), float(event.ydata)
 
-        # Click 3 (or any click after we already have a complete query):
-        # treat as a fresh start.
+        # Right click drops a dynamic obstacle and re-plans.
+        if event.button == 3:
+            self._add_dynamic_obstacle(x, y)
+            return
+
+        # Left click flow: start -> goal -> (next click resets).
         already_complete = (
             self.start_xy is not None and self.goal_id is not None
         )
@@ -259,6 +306,56 @@ class PathPlanningVisualizer:
         else:
             self._set_goal(x, y)
 
+        self._redraw()
+
+    def _add_dynamic_obstacle(self, x: float, y: float) -> None:
+        if not is_in_map_bounds(x, y):
+            print(
+                f"[demo] cannot place dynamic obstacle: "
+                f"({x:.2f}, {y:.2f}) out of map bounds"
+            )
+            return
+        if is_inside_any_obstacle(x, y, self.buffet_map.obstacles):
+            print(
+                f"[demo] cannot place dynamic obstacle inside a static "
+                f"obstacle: ({x:.2f}, {y:.2f})"
+            )
+            return
+        if self.start_xy is not None and circle_contains_point(
+            x, y, self.dynamic_radius, *self.start_xy
+        ):
+            print(
+                "[demo] cannot place dynamic obstacle on top of the "
+                "current start point"
+            )
+            return
+
+        obs = DynamicObstacle(
+            obs_id=self._next_dyn_id,
+            x=x,
+            y=y,
+            radius=self.dynamic_radius,
+            label=f"R{self._next_dyn_id}",
+        )
+        self._next_dyn_id += 1
+        self.dynamic_obstacles.append(obs)
+        print(
+            f"[demo] added dynamic obstacle {obs.label} at "
+            f"({x:.2f}, {y:.2f}) r={obs.radius:.2f} m"
+        )
+        if self.start_xy is not None and self.goal_id is not None:
+            self._plan()
+        self._redraw()
+
+    def _clear_dynamic_obstacles(self) -> None:
+        if not self.dynamic_obstacles:
+            return
+        n = len(self.dynamic_obstacles)
+        self.dynamic_obstacles.clear()
+        self._next_dyn_id = 1
+        print(f"[demo] cleared {n} dynamic obstacle(s)")
+        if self.start_xy is not None and self.goal_id is not None:
+            self._plan()
         self._redraw()
 
     def _set_start(self, x: float, y: float) -> None:
@@ -287,6 +384,8 @@ class PathPlanningVisualizer:
         if event.key == "r":
             self._reset_selection()
             self._redraw()
+        elif event.key == "c":
+            self._clear_dynamic_obstacles()
         elif event.key == "q":
             plt.close(self.fig)
 
@@ -304,6 +403,7 @@ class PathPlanningVisualizer:
             self.goal_id,
             self.buffet_map.obstacles,
             entry_radius=self.entry_radius,
+            dynamic_obstacles=self.dynamic_obstacles,
         )
         self.plan = plan
         self.plan_failed = plan is None
