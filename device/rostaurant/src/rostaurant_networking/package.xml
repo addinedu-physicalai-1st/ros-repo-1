@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>pinky_mrta_comm</name>
+  <name>rostaurant_networking</name>
   <version>0.0.0</version>
-  <description>MRTA TCP/UDP bridge (pinky_comm_node)</description>
+  <description>MRTA TCP/UDP ROS2 bridge (rostaurant_comm_node)</description>
   <maintainer email="kyung133851@pinklab.art">pinklab</maintainer>
   <license>Apache-2.0</license>
 

@@ -1,4 +1,4 @@
-"""pinky_comm_node: ROS2 executor (daemon thread) + asyncio TCP/UDP on main thread."""
+"""rostaurant_comm_node: ROS2 executor (daemon thread) + asyncio TCP/UDP on main thread."""
 
 from __future__ import annotations
 
@@ -20,10 +20,10 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32
 
 from pinky_interfaces.msg import RobotCommand, RobotTaskStatus
-from pinky_mrta_comm.robotcafe.db.v1 import robotcafe_pb2 as pb
+from rostaurant_networking.robotcafe.db.v1 import robotcafe_pb2 as pb
 
-from pinky_mrta_comm.tcp_client import TcpClient
-from pinky_mrta_comm.udp_sender import UdpSender
+from rostaurant_networking.tcp_client import TcpClient
+from rostaurant_networking.udp_sender import UdpSender
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,11 @@ def _yaw_from_quat(q: Quaternion) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
-class PinkyCommNode(Node):
+class RostaurantCommNode(Node):
     """ROS subscriptions in executor thread; schedule UDP/TCP coroutines on asyncio loop."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
-        super().__init__("pinky_comm_node")
+        super().__init__("rostaurant_comm_node")
         self._loop = loop
 
         self.declare_parameter("robot_id", "PNK01")
@@ -80,7 +80,7 @@ class PinkyCommNode(Node):
         self.create_timer(0.05, self._drain_command_queue)
 
         logger.info(
-            "PinkyCommNode robot_id=%s server=%s tcp=%s udp=%s",
+            "RostaurantCommNode robot_id=%s server=%s tcp=%s udp=%s",
             self._robot_id,
             host,
             tcp_port,
@@ -166,7 +166,7 @@ class PinkyCommNode(Node):
             logger.error("Command queue full; dropping cmd_id=%s", cmd.cmd_id)
 
 
-async def _network_loop(node: PinkyCommNode) -> None:
+async def _network_loop(node: RostaurantCommNode) -> None:
     udp = node._udp
     tcp = node._tcp
     robot_id = node._robot_id
@@ -217,10 +217,10 @@ def main(args: Optional[list[str]] = None) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    holder: dict[str, PinkyCommNode] = {}
+    holder: dict[str, RostaurantCommNode] = {}
 
     def ros_thread() -> None:
-        node = PinkyCommNode(loop)
+        node = RostaurantCommNode(loop)
         holder["node"] = node
         executor = SingleThreadedExecutor()
         executor.add_node(node)

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from pinky_mrta_comm.robotcafe.db.v1 import robotcafe_pb2 as pb
+from rostaurant_networking.robotcafe.db.v1 import robotcafe_pb2 as pb
 
 logger = logging.getLogger(__name__)
 

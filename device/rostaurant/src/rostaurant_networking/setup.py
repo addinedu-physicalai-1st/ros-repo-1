@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = "pinky_mrta_comm"
+package_name = "rostaurant_networking"
 
 setup(
     name=package_name,
@@ -14,12 +14,12 @@ setup(
     zip_safe=True,
     maintainer="pinklab",
     maintainer_email="kyung133851@pinklab.art",
-    description="MRTA TCP/UDP ROS2 bridge",
+    description="MRTA TCP/UDP ROS2 bridge (rostaurant_networking)",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "pinky_comm_node=pinky_mrta_comm.ros_bridge_node:main",
+            "rostaurant_comm_node=rostaurant_networking.ros_bridge_node:main",
         ],
     },
 )
