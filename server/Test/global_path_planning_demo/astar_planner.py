@@ -53,21 +53,46 @@ class _Blockage:
 def _compute_blockage(
     graph: WaypointGraph,
     dynamic_obstacles: Optional[Iterable[DynamicObstacle]],
+    reserved_paths: Optional[Iterable[Iterable[int]]] = None,
 ) -> _Blockage:
-    """Pre-compute waypoints and edges that any dynamic obstacle blocks."""
+    """Pre-compute waypoints and edges that are blocked.
+
+    Blocked sources:
+
+    1. **Dynamic obstacles** - circular discs that physically overlap
+       waypoints or edges (existing behaviour).
+    2. **Reserved paths** - sequences of waypoint ids that another robot
+       has already claimed. Every waypoint *and* every consecutive edge
+       in a reserved path is added to the blockage set so the planner
+       routes around the other robot's planned trajectory.
+
+    ``reserved_paths`` is designed for 2-robot (or N-robot) scenarios
+    where Robot A's plan is computed first, then Robot B plans with A's
+    path reserved. The planner itself is unchanged; only the blockage
+    input grows.
+    """
     blockage = _Blockage()
-    if not dynamic_obstacles:
-        return blockage
-    obs_list = list(dynamic_obstacles)
-    if not obs_list:
-        return blockage
 
-    for wp in graph.waypoints.values():
-        for d in obs_list:
-            if circle_contains_point(d.x, d.y, d.radius, wp.x, wp.y):
-                blockage.waypoints.add(wp.wp_id)
-                break
+    # --- dynamic obstacles (disc geometry) ---
+    obs_list = list(dynamic_obstacles) if dynamic_obstacles else []
+    if obs_list:
+        for wp in graph.waypoints.values():
+            for d in obs_list:
+                if circle_contains_point(d.x, d.y, d.radius, wp.x, wp.y):
+                    blockage.waypoints.add(wp.wp_id)
+                    break
 
+    # --- reserved paths (waypoint + edge reservation) ---
+    if reserved_paths:
+        for rpath in reserved_paths:
+            ids = list(rpath)
+            for wp_id in ids:
+                if wp_id in graph.waypoints:
+                    blockage.waypoints.add(wp_id)
+            for i in range(len(ids) - 1):
+                blockage.edges.add(frozenset((ids[i], ids[i + 1])))
+
+    # --- edge blockage from dynamic obstacles ---
     seen: Set[FrozenSet[int]] = set()
     for wp_id, neighbors in graph.adjacency.items():
         a = graph.waypoints[wp_id]
@@ -78,6 +103,8 @@ def _compute_blockage(
             seen.add(key)
             if wp_id in blockage.waypoints or nb in blockage.waypoints:
                 blockage.edges.add(key)
+                continue
+            if not obs_list:
                 continue
             b = graph.waypoints[nb]
             for d in obs_list:
@@ -173,6 +200,7 @@ def plan_path(
     goal: int,
     *,
     dynamic_obstacles: Optional[Iterable[DynamicObstacle]] = None,
+    reserved_paths: Optional[Iterable[Iterable[int]]] = None,
 ) -> Tuple[Optional[List[int]], float]:
     """Compute the shortest waypoint sequence from ``start`` to ``goal``.
 
@@ -183,13 +211,17 @@ def plan_path(
     ``dynamic_obstacles`` (optional) is a list of circular obstacles
     that block waypoints/edges they touch. The static graph is not
     modified - the planner just skips the affected nodes for this call.
+
+    ``reserved_paths`` (optional) is a list of waypoint-id sequences
+    already claimed by other robots. The planner treats every waypoint
+    and edge on a reserved path as blocked.
     """
     graph = buffet_map.graph
     if start not in graph.waypoints:
         raise KeyError(f"Unknown start waypoint id {start}")
     if start == goal:
         return [start], 0.0
-    blockage = _compute_blockage(graph, dynamic_obstacles)
+    blockage = _compute_blockage(graph, dynamic_obstacles, reserved_paths)
     if start in blockage.waypoints:
         return None, math.inf
     return _astar_multi_source(graph, {start: 0.0}, goal, blockage)
@@ -232,6 +264,7 @@ def plan_path_from_point(
     goal: int,
     *,
     dynamic_obstacles: Optional[Iterable[DynamicObstacle]] = None,
+    reserved_paths: Optional[Iterable[Iterable[int]]] = None,
     goal_yaw: Optional[float] = None,
     entry_penalty_factor: float = DEFAULT_ENTRY_PENALTY_FACTOR,
 ) -> Optional[FreeStartPlan]:
@@ -251,6 +284,11 @@ def plan_path_from_point(
     that block waypoints/edges they touch and that the entry segment
     must also clear. The start point itself must not be inside any
     dynamic obstacle disc.
+
+    ``reserved_paths`` (optional) is a list of waypoint-id sequences
+    already claimed by other robots. The planner treats every waypoint
+    and edge on a reserved path as blocked, routing around the other
+    robot's planned trajectory.
 
     ``goal_yaw`` (optional) overrides the goal waypoint's declared
     yaw. If both the parameter and the waypoint are ``None``, the
@@ -280,7 +318,7 @@ def plan_path_from_point(
         if circle_contains_point(d.x, d.y, d.radius, sx, sy):
             return None
 
-    blockage = _compute_blockage(graph, dyn_list)
+    blockage = _compute_blockage(graph, dyn_list, reserved_paths)
     if goal in blockage.waypoints:
         return None
 

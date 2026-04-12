@@ -537,6 +537,80 @@ HQ Service가 이 정보를 다음과 같이 활용할 수 있습니다:
 - **목적지 차단 안전 처리**: R1이 Kitchen 위에 있으면 즉시 `NO PATH FOUND` 반환.
 - **자유 시작점 진입 재선택**: 동적 장애물이 baseline 진입 웨이포인트를 막으면, 반경 내 multi-source A*가 자동으로 다른 진입점을 골라 우회 경로를 만듦.
 
+### 2-로봇 경로 예약 (reserved paths)
+
+단일 로봇이 아닌 **2대 로봇이 동시에 경로를 생성**하는 시나리오를 지원합니다. Robot 1(우선순위)이 먼저 plan을 계산하면, Robot 2는 R1의 경로를 `reserved_paths`로 넘겨받아 **R1이 지나갈 ���이포인트와 간선을 회피**하는 경로를 생성합니다.
+
+#### 동작 원리
+
+1. `_compute_blockage()`가 기존 `dynamic_obstacles`(원형 디스크)에 더해 `reserved_paths`(웨이포인트 ID 시���스)도 차단 집합에 추가
+2. 예약된 경로의 **모든 웨이포인트 + 연속 간선**이 blockage에 포함됨
+3. A* 알고리즘 자체는 변경 없음 — blockage 입력만 확장
+
+#### API
+
+```python
+from astar_planner import plan_path, plan_path_from_point
+
+# R1: 우선순위 로봇 — 단독 계획
+r1_path, r1_cost = plan_path(m, r1_start, r1_goal)
+
+# R2: R1의 경로를 예약(차단)하고 계획
+r2_path, r2_cost = plan_path(
+    m, r2_start, r2_goal,
+    reserved_paths=[r1_path],     # R1의 웨이포인트 시퀀스
+)
+
+# plan_path_from_point에서도 동일하게 사용 가능
+plan = plan_path_from_point(
+    m, start_xy, goal,
+    reserved_paths=[r1_path],
+    dynamic_obstacles=[...],      # 함께 사용 가능
+)
+```
+
+#### ���각화 (2-robot 모드)
+
+`m` 키를 눌러 2-robot 모드로 전환합니다:
+
+1. 좌클릭 4번: R1 start → R1 goal → R2 start → R2 goal
+2. R1 경로는 **주황색 실선**, R2 경로는 **녹색 점선**
+3. **공유 웨이포인트**가 있으면 빨간 ring으로 하이라이트 (충돌 위험)
+4. R2가 경로를 찾지 못하면 "R2: no path (conflict!)" 표시
+
+#### 헤드리스 시나리오 결과
+
+```
+[2-robot] R1: Entrance -> Charging, R2: Kitchen -> Return
+  R1 alone:  cost=0.95 m, 5 wps  (left column)
+  R2 alone:  cost=0.95 m, 4 wps  (right column)
+  R2 with R1 reserved: cost=0.95 m, 4 wps
+    detour: none (reservation had no effect)
+
+[2-robot] R1: Table-S -> Return, R2: Entrance -> Kitchen
+  R1 alone:  cost=1.19 m, 4 wps  (mid bridges)
+  R2 alone:  cost=2.45 m, 6 wps  (mid column shortcut)
+  R2 with R1 reserved: cost=2.45 m, 7 wps
+    detour: rerouted (different path, same cost 2.45 m)
+
+[2-robot] R1: Entrance -> Kitchen, R2: Return -> Kitchen
+  R2 with R1 reserved: NO PATH FOUND (conflict!)
+    shared waypoints: Kitchen
+
+[2-robot] R1: Table-S -> Table-N, R2: Table-N -> Table-S
+  R2 with R1 reserved: NO PATH FOUND (conflict!)
+    shared waypoints: Table-N, Table-S
+```
+
+#### 핵심 발견: 2 m × 1.6 m 공간의 근본 제약
+
+12개 웨이포인트, 4개 cross-column bridge로 구성된 이 그래프에서 **대부분의 2-robot 조합은 경로 충돌**을 일으킵니다. 이는 `reserved_paths` API의 한계가 아니라 **물리적 공간의 한���**입니다:
+
+- 통로 폭 ≈ 0.15~0.25 m, 로봇 폭 = 0.12 m → 교차 불가
+- 그래프가 3개 vertical column + 4개 bridge로 구성 → 하나의 경로가 2개 이상 bridge를 점유하면 나머지 로봇의 경로 옵션이 급격히 줄어듦
+
+이 결과는 **area lockout 정책**(한 번에 한 로봇만 특정 구역 진입)이 이 공간에서 유일하게 안전한 멀티 로봇 전략이라는 것을 정량적으로 뒷받침합니다. `reserved_paths`는 area lockout보다 세밀한 제어가 필요할 때(예: 더 큰 공간, 더 많은 대체 경로가 있는 맵)를 위한 API입니다.
+
 ## 파일 구조
 
 ```
@@ -569,10 +643,11 @@ global_path_planning_demo/
   - 그래프 빌드 헬퍼 `_connect_neighbors`: 같은 행/열의 인접 쌍을 `static_env.is_segment_clear`로 검사해서 자동 연결 (rect/occgrid 동일 코드 경로).
   - 동적 장애물 기하 헬퍼: `circle_contains_point`, `circle_intersects_segment` (segment의 디스크 중심 최근접점을 [0,1] 클램프 + 거리 비교).
 - `astar_planner.py`
-  - `plan_path(buffet_map, start, goal, *, dynamic_obstacles=None) -> (path, cost)`: 웨이포인트 ID → 웨이포인트 ID 단일 소스 A*. 경로가 없으면 `(None, inf)`.
-  - `plan_path_from_point(buffet_map, start_xy, goal, *, dynamic_obstacles=None, goal_yaw=None, entry_penalty_factor=1.2) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 multi-source A*. 모든 line-of-sight reachable 웨이포인트를 진입 후보로 시드하되, 초기 g-score에 `entry_penalty_factor`를 곱해 **긴 대각선 진입에 soft penalty**를 부여 (기본 1.2 = "entry 1 m는 corridor 1.2 m 비용"). 반환되는 `entry_distance` / `waypoint_cost`는 페널티를 제외한 실제 거리.
+  - `plan_path(buffet_map, start, goal, *, dynamic_obstacles=None, reserved_paths=None) -> (path, cost)`: 웨이포인트 ID → 웨이포인트 ID 단일 소스 A*. 경로가 없으면 `(None, inf)`.
+  - `plan_path_from_point(buffet_map, start_xy, goal, *, dynamic_obstacles=None, reserved_paths=None, goal_yaw=None, entry_penalty_factor=1.2) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 multi-source A*. 모든 line-of-sight reachable 웨이포인트를 진입 후보로 시드하되, 초기 g-score에 `entry_penalty_factor`를 곱해 **긴 대각선 진입에 soft penalty**를 부여 (기본 1.2 = "entry 1 m는 corridor 1.2 m 비용"). 반환되는 `entry_distance` / `waypoint_cost`는 페널티를 제외한 실제 거리.
   - 두 함수 모두 `BuffetMap`을 통째로 받음 → 내부에서 `buffet_map.graph` / `buffet_map.static_env`에 접근. 정적 장애물 표현(rect 또는 occgrid)에 대한 의존이 시그니처에서 사라져 호출 측이 깔끔.
   - `dynamic_obstacles` 키워드 인자: 호출 시점의 차단된 웨이포인트/간선 집합을 미리 계산(`_compute_blockage`)해서 A* expansion에서 스킵.
+  - `reserved_paths` 키워드 인자: 다른 로봇이 이미 예약한 경로(웨이포인트 ID 시퀀스 리스트). 예약된 웨이포인트 + 간선은 `_compute_blockage`에서 blockage에 추가되어 A*가 회피.
   - 내부적으로 둘 다 `_astar_multi_source(graph, seeds_dict, goal, blockage)`를 호출하므로 단일/다중 소스 + 정적/동적 장애물 모두 동일 코드 경로.
 - `visualizer.py`
   - `PathPlanningVisualizer`: 정적 요소(맵 배경, 벽 외곽선, 웨이포인트, 간선, cut-vertex/bridge 빨간 표시)와 동적 요소(start 자유 좌표 마커, goal 웨이포인트 마커 + yaw 화살표, 동적 장애물 빨간 원, 계산된 경로)를 그리고 마우스/키 이벤트를 처리.
@@ -581,12 +656,14 @@ global_path_planning_demo/
   - 좌클릭: 자유 좌표 start → goal 웨이포인트 (맵 밖/장애물 내부면 거부, goal만 스냅).
   - 우클릭: 클릭 위치에 동적 장애물(`DynamicObstacle`) 추가, start/goal이 이미 있으면 즉시 재계획.
   - `c` 키: 모든 동적 장애물 삭제 + 재계획. `r` 키: start/goal 선택만 리셋(동적 장애물 유지).
+  - `m` 키: 2-robot 모드 토글. 4번 좌클릭으로 R1 start/goal, R2 start/goal 지정. R1 계획 후 R2는 R1 경로를 `reserved_paths`로 회피. 두 경로 동시 표시(주황/녹색) + 공유 웨이포인트 빨간 하이라이트.
 - `main.py`
-  - CLI 파싱 (`--map PATH`, `--headless`) → 맵 로딩 → 인터랙티브 또는 헤드리스 실행 분기. 맵 로딩 실패 시 `stderr`에 명확한 에러 메시지를 출력하고 `exit 1`. 헤드리스 시나리오에서 사용자 정의 맵에 없는 라벨은 우아하게 스킵. 헤드리스 모드는 다음 4개 섹션을 출력:
+  - CLI 파싱 (`--map PATH`, `--headless`) → 맵 로딩 → 인터랙티브 또는 헤드리스 실행 분기. 맵 로딩 실패 시 `stderr`에 명확한 에러 메시지를 출력하고 `exit 1`. 헤드리스 시나리오에서 사용자 정의 맵에 없는 라벨은 우아하게 스킵. 헤드리스 모드는 다음 5개 섹션을 출력:
     1. `Waypoint -> Waypoint` 기본 시나리오
     2. `Free start point -> Waypoint` 시나리오
     3. `Dynamic obstacles (waypoint -> waypoint)` — baseline 비용/경로와 차단 후 경로를 나란히 비교
     4. `Dynamic obstacles (free start)` — 동적 장애물이 자유 시작점의 진입 웨이포인트를 막을 때 multi-source A*가 다른 진입점으로 우회하는지 검증
+    5. `Two-robot scenarios (reserved paths)` — R1 우선 계획 → R2가 R1 경로를 예약(차단)하고 계획. 비충돌/경로변경/���돌 케이스 비교
 
 ## 헤드리스 검증 결과
 
@@ -658,6 +735,6 @@ Loaded buffet map 'Buffet SLAM map (map4)' from maps/buffet_sim.yaml:
 - ~~pinky-pro 치수 가정 부정확~~ → URDF + Nav2 설정 실측 값 반영 (**0.09 m** inflation, **0.12 m** 정사각 footprint).
 - ~~`entry_radius` 반경 캡의 역효과~~ → 캡 제거 + **`entry_penalty_factor` (1.2) soft bias** 도입. 하드 캡은 맵 사이즈에 민감해서 U턴을 유발했는데, soft penalty는 "corridor savings가 유의미한 경우에만 먼 진입점을 택함"을 수학적으로 보장.
 - 동적 장애물은 quasi-static 스냅샷 + 재계획 모델 → 본 데모는 실제 시간 경과를 시뮬레이션하지 않음 (우클릭으로 추가/`c`로 삭제 시점에만 재계획). 실제 운용에서는 일정 주기(예: 0.5~1초)로 HQ Service가 plan을 호출하고, 미세한 회피는 DWB 등 Local Planner에 위임.
-- 단일 로봇 가정 → 멀티 로봇 운용 시 **HQ Service 레벨 serialization + area lockout** 정책 필요 (플래너 자체는 `dynamic_obstacles` 인자로 필요한 인터페이스를 이미 갖추고 있음).
+- ~~단일 로봇 가정~~ → **`reserved_paths` 인자로 2-robot 경로 예약 지원**. R1 우선 계획 후 R2가 R1 경로를 회피. 2×1.6 m 공간에서는 대부분��� 조합이 충돌하므로 **HQ Service 레벨 area lockout**이 여전히 필수이지만, 더 큰 공간이나 더 밀집된 그래프에서는 `reserved_paths`가 세밀한 멀티 로봇 경로 분리를 제공.
 - ROS 2 패키지 래퍼 없음 → HQ Service가 RPC로 호출할 수 있도록 `PlanRoute.srv` 형태 노드로 감싸는 작업이 남아있음.
 - 자유 시작점의 line-of-sight 검사가 0.1 m 샘플링 기반 → 실제 운용에서는 정확한 픽셀 ray-cast 또는 inflated costmap 기반 판정으로 교체 고려.

@@ -1,6 +1,6 @@
 """Interactive matplotlib visualization for the path planning demo.
 
-Usage:
+Usage (single-robot mode, default):
     * Left click anywhere inside the map (and outside an obstacle) to
       set the START point. The click coordinate is used as-is - it does
       NOT snap to a waypoint.
@@ -14,6 +14,15 @@ Usage:
       automatically and the new path routes around the obstacle.
     * Press ``r`` to reset the start/goal selection, ``c`` to clear all
       dynamic obstacles, ``q`` to quit.
+
+Two-robot mode (toggle with ``m``):
+    * Press ``m`` to switch to 2-robot mode. Two goals are entered
+      sequentially: first for R1 (blue), then for R2 (green).
+    * R1 plans first (priority). R2 plans with R1's path reserved,
+      routing around R1's claimed waypoints and edges.
+    * Both paths are drawn simultaneously - orange for R1, green for R2.
+    * Overlapping waypoints (conflict) are highlighted in red.
+    * Press ``m`` again to return to single-robot mode.
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ from matplotlib.backend_bases import KeyEvent, MouseEvent
 
 from astar_planner import (
     FreeStartPlan,
+    plan_path,
     plan_path_from_point,
 )
 from map_data import (
@@ -62,6 +72,22 @@ class PathPlanningVisualizer:
         self.dynamic_obstacles: List[DynamicObstacle] = []
         self._next_dyn_id: int = 1
 
+        # --- Two-robot mode state ---
+        self.two_robot_mode: bool = False
+        # In 2-robot mode the click sequence is:
+        #   click 1 = R1 start (free point)
+        #   click 2 = R1 goal  (snap to waypoint)
+        #   click 3 = R2 start (free point)
+        #   click 4 = R2 goal  (snap) -> both plans computed
+        self._r1_start: Optional[Tuple[float, float]] = None
+        self._r1_goal: Optional[int] = None
+        self._r1_plan: Optional[FreeStartPlan] = None
+        self._r2_start: Optional[Tuple[float, float]] = None
+        self._r2_goal: Optional[int] = None
+        self._r2_plan: Optional[FreeStartPlan] = None
+        self._r2_plan_failed: bool = False
+        self._two_robot_step: int = 0  # 0..4 click counter
+
         # Scale figure to the map's aspect ratio so non-default maps
         # render with sensible proportions.
         fig_w = 11.0
@@ -92,9 +118,14 @@ class PathPlanningVisualizer:
         self._draw_edges()
         self._draw_waypoints()
         self._draw_dynamic_obstacles()
-        self._draw_path()
-        self._draw_selection()
-        self._draw_title()
+        if self.two_robot_mode:
+            self._draw_two_robot_paths()
+            self._draw_two_robot_selection()
+            self._draw_two_robot_title()
+        else:
+            self._draw_path()
+            self._draw_selection()
+            self._draw_title()
 
         self.fig.canvas.draw_idle()
 
@@ -336,6 +367,10 @@ class PathPlanningVisualizer:
             return
         x, y = float(event.xdata), float(event.ydata)
 
+        if self.two_robot_mode:
+            self._on_click_two_robot(x, y, event.button)
+            return
+
         # Right click drops a dynamic obstacle and re-plans.
         if event.button == 3:
             self._add_dynamic_obstacle(x, y)
@@ -426,10 +461,15 @@ class PathPlanningVisualizer:
 
     def _on_key(self, event: KeyEvent) -> None:
         if event.key == "r":
-            self._reset_selection()
+            if self.two_robot_mode:
+                self._reset_two_robot()
+            else:
+                self._reset_selection()
             self._redraw()
         elif event.key == "c":
             self._clear_dynamic_obstacles()
+        elif event.key == "m":
+            self._toggle_two_robot_mode()
         elif event.key == "q":
             plt.close(self.fig)
 
@@ -477,6 +517,274 @@ class PathPlanningVisualizer:
         if wp.label:
             return f"#{wp_id}({wp.label})"
         return f"#{wp_id}({wp.x},{wp.y})"
+
+    # ------------------------------------------------------------------
+    # Two-robot mode
+    # ------------------------------------------------------------------
+
+    def _toggle_two_robot_mode(self) -> None:
+        self.two_robot_mode = not self.two_robot_mode
+        if self.two_robot_mode:
+            # Enter 2-robot mode: clear single-robot state.
+            self._reset_selection()
+            self._reset_two_robot()
+            print("[demo] switched to 2-ROBOT mode (m to toggle)")
+        else:
+            self._reset_two_robot()
+            print("[demo] switched to SINGLE-ROBOT mode (m to toggle)")
+        self._redraw()
+
+    def _reset_two_robot(self) -> None:
+        self._r1_start = None
+        self._r1_goal = None
+        self._r1_plan = None
+        self._r2_start = None
+        self._r2_goal = None
+        self._r2_plan = None
+        self._r2_plan_failed = False
+        self._two_robot_step = 0
+
+    def _on_click_two_robot(self, x: float, y: float, button: int) -> None:
+        if button == 3:
+            self._add_dynamic_obstacle(x, y)
+            return
+
+        # If both robots have been planned, next click resets.
+        if self._two_robot_step >= 4:
+            self._reset_two_robot()
+
+        step = self._two_robot_step
+
+        if step == 0:
+            # R1 start (free point)
+            if not self.buffet_map.is_in_bounds(x, y):
+                print(f"[demo] R1 start ({x:.2f}, {y:.2f}) out of bounds")
+                return
+            if self.buffet_map.static_env.contains_xy(x, y):
+                print(f"[demo] R1 start ({x:.2f}, {y:.2f}) inside obstacle")
+                return
+            self._r1_start = (x, y)
+            self._two_robot_step = 1
+            print(f"[demo] R1 start = ({x:.2f}, {y:.2f})")
+
+        elif step == 1:
+            # R1 goal (snap to waypoint)
+            nearest = self._nearest_waypoint(x, y)
+            if nearest is None:
+                return
+            self._r1_goal = nearest
+            self._two_robot_step = 2
+            print(f"[demo] R1 goal  = {self._describe(nearest)}")
+            # Plan R1 immediately.
+            self._plan_r1()
+
+        elif step == 2:
+            # R2 start (free point)
+            if not self.buffet_map.is_in_bounds(x, y):
+                print(f"[demo] R2 start ({x:.2f}, {y:.2f}) out of bounds")
+                return
+            if self.buffet_map.static_env.contains_xy(x, y):
+                print(f"[demo] R2 start ({x:.2f}, {y:.2f}) inside obstacle")
+                return
+            self._r2_start = (x, y)
+            self._two_robot_step = 3
+            print(f"[demo] R2 start = ({x:.2f}, {y:.2f})")
+
+        elif step == 3:
+            # R2 goal (snap to waypoint)
+            nearest = self._nearest_waypoint(x, y)
+            if nearest is None:
+                return
+            self._r2_goal = nearest
+            self._two_robot_step = 4
+            print(f"[demo] R2 goal  = {self._describe(nearest)}")
+            # Plan R2 with R1's path reserved.
+            self._plan_r2()
+
+        self._redraw()
+
+    def _plan_r1(self) -> None:
+        assert self._r1_start is not None and self._r1_goal is not None
+        self._r1_plan = plan_path_from_point(
+            self.buffet_map,
+            self._r1_start,
+            self._r1_goal,
+            dynamic_obstacles=self.dynamic_obstacles,
+        )
+        if self._r1_plan is None:
+            print("[demo] R1: no path found")
+        else:
+            labels = [self._describe(i) for i in self._r1_plan.waypoints]
+            sx, sy = self._r1_plan.start_xy
+            print(
+                f"[demo] R1 path ({len(self._r1_plan.waypoints)} wps, "
+                f"total={self._r1_plan.total_cost:.2f} m): "
+                f"({sx:.2f},{sy:.2f}) -> " + " -> ".join(labels)
+            )
+
+    def _plan_r2(self) -> None:
+        assert self._r2_start is not None and self._r2_goal is not None
+        reserved = (
+            [self._r1_plan.waypoints] if self._r1_plan is not None else None
+        )
+        self._r2_plan = plan_path_from_point(
+            self.buffet_map,
+            self._r2_start,
+            self._r2_goal,
+            dynamic_obstacles=self.dynamic_obstacles,
+            reserved_paths=reserved,
+        )
+        self._r2_plan_failed = self._r2_plan is None
+        if self._r2_plan is None:
+            print("[demo] R2: NO PATH FOUND (R1's path blocks it)")
+        else:
+            labels = [self._describe(i) for i in self._r2_plan.waypoints]
+            sx, sy = self._r2_plan.start_xy
+            print(
+                f"[demo] R2 path ({len(self._r2_plan.waypoints)} wps, "
+                f"total={self._r2_plan.total_cost:.2f} m): "
+                f"({sx:.2f},{sy:.2f}) -> " + " -> ".join(labels)
+            )
+            # Report shared waypoints for awareness.
+            if self._r1_plan is not None:
+                shared = set(self._r1_plan.waypoints) & set(
+                    self._r2_plan.waypoints
+                )
+                if shared:
+                    shared_labels = sorted(
+                        self._describe(wp_id) for wp_id in shared
+                    )
+                    print(
+                        f"[demo] warning: R1 & R2 share waypoints "
+                        f"{', '.join(shared_labels)}"
+                    )
+
+    def _draw_two_robot_paths(self) -> None:
+        # R1 path in orange.
+        if self._r1_plan is not None:
+            sx, sy = self._r1_plan.start_xy
+            xs = [sx] + [
+                self.graph.waypoints[i].x for i in self._r1_plan.waypoints
+            ]
+            ys = [sy] + [
+                self.graph.waypoints[i].y for i in self._r1_plan.waypoints
+            ]
+            self.ax.plot(
+                xs, ys, color="#ff7f0e", linewidth=4.0, alpha=0.9,
+                zorder=2, label="R1 path",
+            )
+
+        # R2 path in green.
+        if self._r2_plan is not None:
+            sx, sy = self._r2_plan.start_xy
+            xs = [sx] + [
+                self.graph.waypoints[i].x for i in self._r2_plan.waypoints
+            ]
+            ys = [sy] + [
+                self.graph.waypoints[i].y for i in self._r2_plan.waypoints
+            ]
+            self.ax.plot(
+                xs, ys, color="#2ca02c", linewidth=3.5, alpha=0.85,
+                zorder=2.1, label="R2 path",
+                linestyle="--",
+            )
+
+        # Highlight shared waypoints in red if both plans exist.
+        if self._r1_plan is not None and self._r2_plan is not None:
+            shared = set(self._r1_plan.waypoints) & set(
+                self._r2_plan.waypoints
+            )
+            for wp_id in shared:
+                wp = self.graph.waypoints[wp_id]
+                self.ax.plot(
+                    wp.x, wp.y, marker="o", markersize=16,
+                    markerfacecolor="none", markeredgecolor="#d62728",
+                    markeredgewidth=2.5, zorder=5.5,
+                )
+
+    def _draw_two_robot_selection(self) -> None:
+        # R1 start (blue star) and goal (blue X).
+        if self._r1_start is not None:
+            sx, sy = self._r1_start
+            self.ax.plot(
+                sx, sy, marker="*", markersize=20, color="#1f77b4",
+                markeredgecolor="black", linestyle="none", zorder=5,
+            )
+        if self._r1_goal is not None:
+            wp = self.graph.waypoints[self._r1_goal]
+            self.ax.plot(
+                wp.x, wp.y, marker="X", markersize=16, color="#1f77b4",
+                markeredgecolor="black", linestyle="none", zorder=5,
+            )
+        # R2 start (green star) and goal (green X).
+        if self._r2_start is not None:
+            sx, sy = self._r2_start
+            self.ax.plot(
+                sx, sy, marker="*", markersize=20, color="#2ca02c",
+                markeredgecolor="black", linestyle="none", zorder=5,
+            )
+        if self._r2_goal is not None:
+            wp = self.graph.waypoints[self._r2_goal]
+            self.ax.plot(
+                wp.x, wp.y, marker="X", markersize=16, color="#2ca02c",
+                markeredgecolor="black", linestyle="none", zorder=5,
+            )
+
+    def _draw_two_robot_title(self) -> None:
+        step = self._two_robot_step
+        if step == 0:
+            status = "2-ROBOT: click R1 START"
+        elif step == 1:
+            status = "2-ROBOT: click R1 GOAL"
+        elif step == 2:
+            if self._r1_plan is None:
+                status = "2-ROBOT: R1 no path! Click R2 START anyway"
+            else:
+                status = (
+                    f"2-ROBOT: R1 planned "
+                    f"({self._r1_plan.total_cost:.2f} m). "
+                    f"Click R2 START"
+                )
+        elif step == 3:
+            status = "2-ROBOT: click R2 GOAL"
+        else:
+            # Both planned.
+            parts = []
+            if self._r1_plan is not None:
+                parts.append(
+                    f"R1: {self._r1_plan.total_cost:.2f} m"
+                )
+            else:
+                parts.append("R1: no path")
+            if self._r2_plan is not None:
+                parts.append(
+                    f"R2: {self._r2_plan.total_cost:.2f} m"
+                )
+            else:
+                parts.append("R2: no path (conflict!)")
+            status = "2-ROBOT: " + "  |  ".join(parts)
+            # Show shared waypoints count.
+            if self._r1_plan and self._r2_plan:
+                shared = set(self._r1_plan.waypoints) & set(
+                    self._r2_plan.waypoints
+                )
+                if shared:
+                    status += f"  |  {len(shared)} shared wp(s)!"
+
+        n_dyn = len(self.dynamic_obstacles)
+        dyn_note = (
+            f"  |  dyn-obs: {n_dyn}" if n_dyn else ""
+        )
+        map_name = self.buffet_map.name or "Buffet Demo"
+        self.ax.set_title(
+            f"Waypoint-based A* Global Path Planner - {map_name}"
+            f"{dyn_note}\n"
+            f"{status}\n"
+            "[left] set points    [right] add dyn-obs    "
+            "[r] reset    [c] clear dyn    [m] toggle mode    "
+            "[q] quit",
+            fontsize=10,
+        )
 
     def show(self) -> None:
         plt.show()

@@ -140,6 +140,58 @@ _DYNAMIC_FREE_SCENARIOS: List[
 ]
 
 
+# Two-robot scenarios using reserved_paths. Each entry is:
+#   (description, r1_start, r1_goal, r2_start, r2_goal)
+# Robot 1 plans first (no reservation). Robot 2 plans with R1's
+# entire path reserved. We then compare R2's baseline (alone) vs
+# R2 with reservation, showing how reservation forces detours or
+# reports conflicts.
+#
+# The buffet_sim graph has 12 waypoints, 13 edges, and only 4
+# cross-column bridges. In a 2.0 x 1.6 m space two robots can
+# rarely find non-overlapping paths. The scenarios below are
+# designed to demonstrate:
+#   A - true non-conflict (paths on different sides)
+#   B - reroute (R1 takes mid bridges, R2 forced to top corridor)
+#   C - same-goal conflict (impossible)
+#   D - head-on conflict (impossible)
+_TWO_ROBOT_SCENARIOS: List[
+    Tuple[str, str, str, str, str]
+] = [
+    # Case A: true non-conflict — R1 left/bottom, R2 right only.
+    (
+        "Non-conflict: R1 left column (Entrance->Charging), R2 right "
+        "column (Kitchen->Return). Completely disjoint corridors",
+        "Entrance", "Charging",
+        "Kitchen", "Return",
+    ),
+    # Case B: reroute — R1 takes the mid/low bridges, forcing R2
+    # to detour via the top corridor + right column instead.
+    (
+        "Reroute: R1 uses mid bridges (Table-S->Return), blocking "
+        "the usual mid-column shortcut. R2 (Entrance->Kitchen) must "
+        "detour via the left column + top corridor",
+        "Table-S", "Return",
+        "Entrance", "Kitchen",
+    ),
+    # Case C: same goal — both robots heading to Kitchen.
+    (
+        "Same goal conflict: both robots want Kitchen. R1 reserves "
+        "it first, R2 cannot reach the goal",
+        "Entrance", "Kitchen",
+        "Return", "Kitchen",
+    ),
+    # Case D: head-on in middle column.
+    (
+        "Head-on conflict: R1 Table-S->Table-N (up), R2 "
+        "Table-N->Table-S (down). Both endpoints reserved, R2 has "
+        "no alternative in this 2-node corridor",
+        "Table-S", "Table-N",
+        "Table-N", "Table-S",
+    ),
+]
+
+
 def _print_scenario(
     buffet_map: BuffetMap, start_label: str, goal_label: str
 ) -> None:
@@ -335,6 +387,95 @@ def _print_dynamic_free_scenario(
           f"{_format_path(buffet_map, plan.waypoints)}")
 
 
+def _print_two_robot_scenario(
+    buffet_map: BuffetMap,
+    description: str,
+    r1_start_label: str,
+    r1_goal_label: str,
+    r2_start_label: str,
+    r2_goal_label: str,
+) -> None:
+    graph = buffet_map.graph
+    try:
+        r1_start = graph.find_by_label(r1_start_label)
+        r1_goal = graph.find_by_label(r1_goal_label)
+        r2_start = graph.find_by_label(r2_start_label)
+        r2_goal = graph.find_by_label(r2_goal_label)
+    except KeyError as exc:
+        print(
+            f"\n[2-robot] R1: {r1_start_label}->{r1_goal_label}, "
+            f"R2: {r2_start_label}->{r2_goal_label}: skipped ({exc})"
+        )
+        return
+
+    print(
+        f"\n[2-robot] R1: {r1_start_label} -> {r1_goal_label}, "
+        f"R2: {r2_start_label} -> {r2_goal_label}"
+    )
+    print(f"  scenario: {description}")
+
+    # --- R1 plans alone (priority robot) ---
+    r1_path, r1_cost = plan_path(buffet_map, r1_start, r1_goal)
+    if r1_path is None:
+        print("  R1 alone:  NO PATH FOUND")
+        print("  (cannot proceed with R2 reservation)")
+        return
+    print(
+        f"  R1 alone:  cost={r1_cost:.2f} m, {len(r1_path)} wps"
+    )
+    print(f"    path: {_format_path(buffet_map, r1_path)}")
+
+    # --- R2 baseline (alone, no reservation) ---
+    r2_base_path, r2_base_cost = plan_path(
+        buffet_map, r2_start, r2_goal
+    )
+    if r2_base_path is None:
+        print("  R2 alone:  NO PATH FOUND")
+    else:
+        print(
+            f"  R2 alone:  cost={r2_base_cost:.2f} m, "
+            f"{len(r2_base_path)} wps"
+        )
+        print(f"    path: {_format_path(buffet_map, r2_base_path)}")
+
+    # --- R2 with R1's path reserved ---
+    r2_res_path, r2_res_cost = plan_path(
+        buffet_map, r2_start, r2_goal, reserved_paths=[r1_path]
+    )
+    if r2_res_path is None:
+        print("  R2 with R1 reserved: NO PATH FOUND (conflict!)")
+        # Show which waypoints are shared to explain the conflict.
+        if r2_base_path is not None:
+            shared = set(r1_path) & set(r2_base_path)
+            if shared:
+                shared_labels = sorted(
+                    _describe_waypoint(buffet_map, wp_id)
+                    for wp_id in shared
+                )
+                print(
+                    f"    shared waypoints (cause of conflict): "
+                    f"{', '.join(shared_labels)}"
+                )
+    else:
+        print(
+            f"  R2 with R1 reserved: cost={r2_res_cost:.2f} m, "
+            f"{len(r2_res_path)} wps"
+        )
+        print(f"    path: {_format_path(buffet_map, r2_res_path)}")
+        if r2_base_path is not None:
+            detour = r2_res_cost - r2_base_cost
+            rerouted = r2_res_path != r2_base_path
+            if abs(detour) < 0.005 and not rerouted:
+                print("    detour: none (reservation had no effect)")
+            elif abs(detour) < 0.005 and rerouted:
+                print(
+                    "    detour: rerouted (different path, same cost "
+                    f"{r2_res_cost:.2f} m)"
+                )
+            else:
+                print(f"    detour: +{detour:.2f} m vs R2 alone")
+
+
 def _run_headless(buffet_map: BuffetMap) -> None:
     print("Running headless A* scenarios on the buffet test map.")
     print("\n--- Waypoint -> Waypoint ---")
@@ -349,6 +490,11 @@ def _run_headless(buffet_map: BuffetMap) -> None:
     print("\n--- Dynamic obstacles (free start) ---")
     for desc, sxy, gl, obs in _DYNAMIC_FREE_SCENARIOS:
         _print_dynamic_free_scenario(buffet_map, desc, sxy, gl, obs)
+    print("\n--- Two-robot scenarios (reserved paths) ---")
+    for desc, r1s, r1g, r2s, r2g in _TWO_ROBOT_SCENARIOS:
+        _print_two_robot_scenario(
+            buffet_map, desc, r1s, r1g, r2s, r2g
+        )
 
 
 def _describe_waypoint(buffet_map: BuffetMap, wp_id: int) -> str:
