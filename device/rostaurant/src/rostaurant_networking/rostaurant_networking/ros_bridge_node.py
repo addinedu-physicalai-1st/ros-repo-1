@@ -49,8 +49,12 @@ class RostaurantCommNode(Node):
         self.declare_parameter("battery_topic", "/battery")
         self.declare_parameter("task_status_topic", "/task_status")
         self.declare_parameter("robot_command_topic", "/robot_command")
+        self.declare_parameter("connection_token", "")
 
         self._robot_id = self.get_parameter("robot_id").get_parameter_value().string_value
+        self._connection_token = (
+            self.get_parameter("connection_token").get_parameter_value().string_value
+        )
         host = self.get_parameter("server_host").get_parameter_value().string_value
         tcp_port = int(self.get_parameter("tcp_port").get_parameter_value().integer_value)
         udp_port = int(self.get_parameter("udp_port").get_parameter_value().integer_value)
@@ -175,10 +179,14 @@ async def _network_loop(node: RostaurantCommNode) -> None:
 
     async def on_connected(_: TcpClient) -> None:
         node._tcp_seq += 1
+        hb = pb.Heartbeat(robot_id=robot_id, timestamp=time.time_ns())
+        tok = (node._connection_token or "").strip()
+        if tok:
+            hb.connection_token = tok
         pkt = pb.TcpPacket(
             robot_id=robot_id,
             seq=node._tcp_seq,
-            heartbeat=pb.Heartbeat(robot_id=robot_id, timestamp=time.time_ns()),
+            heartbeat=hb,
         )
         await tcp.send_packet(pkt)
 
@@ -193,6 +201,9 @@ async def _network_loop(node: RostaurantCommNode) -> None:
                 continue
             node._tcp_seq += 1
             hb = pb.Heartbeat(robot_id=robot_id, timestamp=time.time_ns())
+            tok = (node._connection_token or "").strip()
+            if tok:
+                hb.connection_token = tok
             pkt = pb.TcpPacket(robot_id=robot_id, seq=node._tcp_seq, heartbeat=hb)
             try:
                 await tcp.send_packet(pkt)

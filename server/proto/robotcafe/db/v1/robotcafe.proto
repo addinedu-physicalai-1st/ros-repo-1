@@ -188,6 +188,9 @@ message Command {
 message Heartbeat {
   string robot_id = 1;
   uint64 timestamp = 2;
+  // When MRTA_REQUIRE_ROBOT_TOKEN=1 on server, first Heartbeat must carry the
+  // plaintext token issued for this robot_id (server stores SHA-256 only).
+  string connection_token = 3;
 }
 
 message CommandAck {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import struct
 from typing import Awaitable, Callable, Optional
 
@@ -12,6 +13,16 @@ from rostaurant_networking.robotcafe.db.v1 import robotcafe_pb2 as pb
 logger = logging.getLogger(__name__)
 
 TCP_MAGIC = 0xAABBCCDD
+_TCP_ABS_MAX = 16 * 1024 * 1024
+_TCP_MIN = 4096
+
+
+def _max_tcp_frame_bytes() -> int:
+    try:
+        raw = int(os.environ.get("MRTA_MAX_TCP_FRAME_BYTES", str(2 * 1024 * 1024)))
+    except ValueError:
+        raw = 2 * 1024 * 1024
+    return max(_TCP_MIN, min(raw, _TCP_ABS_MAX))
 
 
 class TcpClient:
@@ -74,6 +85,7 @@ class TcpClient:
         on_packet: Callable[[pb.TcpPacket], Awaitable[None]],
     ) -> None:
         buf = bytearray()
+        cap = _max_tcp_frame_bytes()
         while True:
             chunk = await reader.read(65536)
             if not chunk:
@@ -81,8 +93,8 @@ class TcpClient:
             buf.extend(chunk)
             while len(buf) >= 4:
                 (length,) = struct.unpack_from("!I", buf, 0)
-                if length > 16 * 1024 * 1024:
-                    raise ValueError(f"frame too large: {length}")
+                if length > cap:
+                    raise ValueError(f"frame too large: {length} (max {cap})")
                 if len(buf) < 4 + length:
                     break
                 payload = bytes(memoryview(buf)[4 : 4 + length])

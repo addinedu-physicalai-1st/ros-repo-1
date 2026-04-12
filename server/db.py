@@ -60,7 +60,8 @@ class Database:
                 battery_last    INTEGER NOT NULL DEFAULT 0,
                 last_seen_ms    INTEGER,
                 current_task_id TEXT    NOT NULL DEFAULT '',
-                fsm_state       INTEGER NOT NULL DEFAULT 0
+                fsm_state       INTEGER NOT NULL DEFAULT 0,
+                connection_token_hash TEXT
             );
 
             CREATE TABLE IF NOT EXISTS tasks (
@@ -148,7 +149,17 @@ class Database:
             """
         )
         await conn.commit()
+        await self.migrate_schema(conn)
         logger.info("Database schema ready at %s", self._path)
+
+    async def migrate_schema(self, conn: aiosqlite.Connection) -> None:
+        """Additive migrations for existing SQLite files."""
+        cur = await conn.execute("PRAGMA table_info(robots)")
+        cols = {str(r[1]) for r in await cur.fetchall()}
+        if "connection_token_hash" not in cols:
+            await conn.execute("ALTER TABLE robots ADD COLUMN connection_token_hash TEXT")
+            await conn.commit()
+            logger.info("migration: added column robots.connection_token_hash")
 
     # ──────────────────────────────────────────────────────────────
     # Places — seed data
@@ -450,6 +461,48 @@ class Database:
         cur = await conn.execute("SELECT * FROM robots ORDER BY robot_id")
         rows = await cur.fetchall()
         return [self._row_to_robot(r) for r in rows]
+
+    async def get_robot_connection_token_hash(
+        self, conn: aiosqlite.Connection, robot_id: str
+    ) -> Optional[str]:
+        cur = await conn.execute(
+            "SELECT connection_token_hash FROM robots WHERE robot_id = ?",
+            (robot_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        v = row["connection_token_hash"]
+        if v is None or v == "":
+            return None
+        return str(v)
+
+    async def set_robot_connection_token_hash(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        robot_id: str,
+        token_hash: str,
+    ) -> None:
+        """Insert minimal robot row if missing, then store hashed connection token."""
+        await conn.execute(
+            """
+            INSERT INTO robots (
+                robot_id, model, status, battery_last, last_seen_ms,
+                current_task_id, fsm_state, connection_token_hash
+            )
+            VALUES (?, '', ?, 0, NULL, '', ?, ?)
+            ON CONFLICT(robot_id) DO UPDATE SET
+                connection_token_hash = excluded.connection_token_hash
+            """,
+            (
+                robot_id,
+                int(pb.RobotStatus.IDLE),
+                int(pb.FsmState.FSM_IDLE),
+                token_hash,
+            ),
+        )
+        await conn.commit()
 
     def _row_to_robot(self, r: aiosqlite.Row) -> pb.Robot:
         rob = pb.Robot(

@@ -2,11 +2,11 @@
 
 | 항목 | 내용 |
 |------|------|
-| 문서 버전 | 1.1 |
+| 문서 버전 | 1.2 |
 | 대상 코드베이스 | `ros-repo-1` — `server/`, `device/rostaurant/.../rostaurant_networking/` |
 | 스키마 원본 | `server/proto/robotcafe/db/v1/robotcafe.proto` |
 | DB 구현 | SQLite `mrta.db` (`server/db.py`) |
-| 변경 이력 | v1.0 초안 / v1.1 places·waypoints·menu_items 테이블 추가 |
+| 변경 이력 | v1.0 초안 / v1.1 places·waypoints·menu_items / **v1.2** 보안·`Heartbeat.connection_token` |
 
 ---
 
@@ -21,6 +21,12 @@
 | UDP 데이터그램 | `[4B UDP_MAGIC 0xDDCCBBAA][UdpTelemetryPacket]` |
 | 기본 포트 | TCP **9000** (`MRTA_TCP_PORT`), UDP **9001** (`MRTA_UDP_PORT`) |
 | 하트비트 타임아웃 | 5초 무응답 → 로봇 OFFLINE 처리 |
+
+### 1.1 보안·방화벽 (요약)
+
+- **REST(기본 8000)**: `Authorization: Bearer <api_key>` 필수(문서화된 예외: `GET /health`만 비인증·최소 응답).
+- **TCP 9000 / UDP 9001**: 로봇 평면은 기본 **무인증**이므로, 운영망에서는 **서버 인바운드 제한**, **사설망/VPN**, 선택적으로 **`MRTA_REQUIRE_ROBOT_TOKEN=1`** + `POST /robots/{id}/rotate-connection-token`으로 발급한 토큰을 브리지 `connection_token` 파라미터로 넣는 것을 권장.
+- **`MRTA_UDP_REQUIRE_ACTIVE_SESSION=1`**: 해당 `robot_id`에 **활성 TCP 세션**이 있을 때만 UDP 텔레메트리를 반영(스푸핑 완화, TCP 먼저 연결 필요).
 
 ---
 
@@ -61,6 +67,7 @@
 |--------|---|------|---------|
 | `robot_id` | 1 | string | — |
 | `timestamp` | 2 | uint64 | 서버에서 `robots.last_seen_ms` 갱신 |
+| `connection_token` | 3 | string | `MRTA_REQUIRE_ROBOT_TOKEN=1`일 때 **첫 Heartbeat에 필수**. 서버는 `robots.connection_token_hash`(SHA-256)와 비교 |
 
 ### 5.2 `StatusReport`
 
@@ -162,6 +169,7 @@
 | `last_seen_ms` | INTEGER | — | NULL 가능 |
 | `current_task_id` | TEXT | — | 수행 중 task_id |
 | `fsm_state` | INTEGER | — | `FsmState` |
+| `connection_token_hash` | TEXT | — | TCP 연결 토큰 SHA-256(평문은 저장 안 함). `rotate-connection-token`으로 설정 |
 
 ### 8.3 `tasks`
 
@@ -283,6 +291,7 @@
 | GET | `/tasks` | CUSTOMER | 작업 목록 (CUSTOMER는 본인 것만) |
 | GET | `/tasks/{id}` | CUSTOMER | 단건 조회 |
 | GET | `/robots` | STAFF_FLOOR | 로봇 목록 |
+| POST | `/robots/{id}/rotate-connection-token` | ADMIN | 로봇 TCP용 연결 토큰 재발급(평문 1회 응답) |
 | GET | `/telemetry/pose/{id}` | STAFF_FLOOR | 최신 pose |
 | POST | `/commands/send` | ADMIN | 명령 전송 |
 | GET | `/users` | ADMIN | 사용자 목록 |
@@ -295,7 +304,21 @@
 | PUT | `/places/{id}/waypoints` | ADMIN | 경유점 일괄 교체 |
 | GET | `/menu-items` | CUSTOMER | 메뉴 목록 |
 | PATCH | `/menu-items/{id}` | ADMIN | 메뉴명·장소 수정 |
-| GET | `/health` | — (no auth) | 서버 상태 |
+| GET | `/health` | — (no auth) | `{"status":"ok"}` 만 반환 |
+| GET | `/health/detail` | STAFF_FLOOR | `connected_robots` 포함 |
+
+### 9.1 서버 환경 변수 (보안·운영)
+
+| 변수 | 기본 | 설명 |
+|------|------|------|
+| `MRTA_DISABLE_OPENAPI` | (unset) | `1`이면 `/docs`, `/redoc`, `/openapi.json` 비활성 |
+| `MRTA_ENV` | (unset) | `production`이면 OpenAPI 비활성(위와 동일 효과) |
+| `MRTA_ADMIN_KEY_OUT` | (unset) | 최초 관리자 생성 시 API 키를 이 경로에 `0600`으로 기록 |
+| `MRTA_MAX_TCP_FRAME_BYTES` | `2097152` | TCP 프레임 최대 길이(바이트), 상한 16MiB |
+| `MRTA_REQUIRE_ROBOT_TOKEN` | (unset) | `1`이면 TCP 세션 등록 시 Heartbeat의 `connection_token` 필수 |
+| `MRTA_UDP_REQUIRE_ACTIVE_SESSION` | (unset) | `1`이면 활성 TCP 세션이 있는 `robot_id`의 UDP만 캐시 반영 |
+
+로봇 브리지·`TcpClient`는 동일하게 `MRTA_MAX_TCP_FRAME_BYTES`를 읽습니다.
 
 ---
 
@@ -339,3 +362,4 @@ ERR_NONE=0, ERR_NETWORK=101, ERR_NAV_FAILED=201, ERR_OBSTACLE=202, ERR_TIMEOUT=2
 |------|------|------|
 | 1.0 | 2026-04-12 | 초안 |
 | 1.1 | 2026-04-12 | places·place_waypoints·menu_items 테이블 추가, REST 목록 갱신 |
+| 1.2 | 2026-04-12 | 보안: OpenAPI 비활성·health 분리·TCP 프레임 상한·로봇 연결 토큰·UDP 세션 옵션, `Heartbeat.connection_token` |

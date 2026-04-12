@@ -7,6 +7,7 @@ POST   /tasks                      ✓        ✓        ✓       ✓
 GET    /tasks                      own      all      all     all
 GET    /tasks/{id}                 own      ✓        ✓       ✓
 GET    /robots                     —        —        ✓       ✓
+POST   /robots/{id}/rotate-connection-token  —   —   —       ✓
 GET    /telemetry/pose/{id}        —        —        ✓       ✓
 POST   /commands/send              —        —        —       ✓
 GET    /users                      —        —        —       ✓
@@ -19,7 +20,8 @@ GET    /places/{id}/waypoints      ✓        ✓        ✓       ✓
 PUT    /places/{id}/waypoints      —        —        —       ✓
 GET    /menu-items                 ✓        ✓        ✓       ✓
 PATCH  /menu-items/{id}            —        —        —       ✓
-GET    /health                     ✓        ✓        ✓       ✓
+GET    /health                     —        —        —       —   (no auth; status only)
+GET    /health/detail              —        —        ✓       ✓   (connected_robots)
 ──────────────────────────────────────────────────────────────────
 """
 
@@ -49,6 +51,41 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _openapi_disabled() -> bool:
+    if os.environ.get("MRTA_DISABLE_OPENAPI", "").strip() == "1":
+        return True
+    return os.environ.get("MRTA_ENV", "").strip().lower() == "production"
+
+
+def _write_initial_admin_key_file(path: str, admin_id: str, raw_key: str) -> None:
+    text = f"user_id={admin_id}\napi_key={raw_key}\n"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _log_initial_admin_created(admin_id: str, raw_key: str) -> None:
+    out = os.environ.get("MRTA_ADMIN_KEY_OUT", "").strip()
+    if out:
+        try:
+            _write_initial_admin_key_file(out, admin_id, raw_key)
+            logger.info("INITIAL ADMIN user_id=%s — api_key written to %s (mode 0600)", admin_id, out)
+        except OSError as e:
+            logger.error("MRTA_ADMIN_KEY_OUT write failed (%s): %s", out, e)
+            logger.info("INITIAL ADMIN user_id=%s (key not written to file)", admin_id)
+    suffix = raw_key[-4:] if len(raw_key) >= 4 else "****"
+    logger.info(
+        "INITIAL ADMIN user_id=%s api_key_suffix=...%s (full key not logged). "
+        "Set MRTA_ADMIN_KEY_OUT=/secure/path to persist, or POST /users with an admin key.",
+        admin_id,
+        suffix,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -162,16 +199,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 role=int(pb.UserRole.ADMIN),
                 api_key_hash=hash_api_key(raw_key),
             )
-            logger.info("=" * 60)
-            logger.info("  INITIAL ADMIN CREATED")
-            logger.info("  user_id : %s", admin_id)
-            logger.info("  api_key : %s", raw_key)
-            logger.info("  Keep this key — it will not be shown again.")
-            logger.info("=" * 60)
+            _log_initial_admin_created(admin_id, raw_key)
 
     # ── background tasks ─────────────────────────────────────────
+    max_tcp = int(os.environ.get("MRTA_MAX_TCP_FRAME_BYTES", "2097152"))
+
     async def tcp_runner() -> None:
-        srv = await start_tcp_server(tcp_host, tcp_port, manager)
+        srv = await start_tcp_server(tcp_host, tcp_port, manager, max_frame_bytes=max_tcp)
         async with srv:
             await srv.serve_forever()
 
@@ -203,7 +237,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Shutdown complete")
 
 
-app = FastAPI(title="MRTA Server", version="1.0.0", lifespan=lifespan)
+_openapi_off = _openapi_disabled()
+app = FastAPI(
+    title="MRTA Server",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None if _openapi_off else "/docs",
+    redoc_url=None if _openapi_off else "/redoc",
+    openapi_url=None if _openapi_off else "/openapi.json",
+)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -301,6 +343,25 @@ async def list_robots(
     async with lock:
         robots = await db.list_robots(conn)
     return _pb_to_json(pb.ListRobotsResponse(robots=robots))
+
+
+@app.post(
+    "/robots/{robot_id}/rotate-connection-token",
+    summary="Issue a new robot TCP connection token (ADMIN; plaintext shown once)",
+)
+async def rotate_robot_connection_token(
+    robot_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.ROBOT_COMMAND)),
+) -> dict[str, str]:
+    raw = generate_api_key()
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    async with lock:
+        await db.set_robot_connection_token_hash(
+            conn, robot_id=robot_id, token_hash=hash_api_key(raw)
+        )
+    logger.info("Rotated connection token for robot %s by %s", robot_id, user)
+    return {"robot_id": robot_id, "connection_token": raw}
 
 
 @app.get("/telemetry/pose/{robot_id}", summary="Latest pose for a robot")
@@ -565,8 +626,19 @@ async def patch_menu_item(
 # Health
 # ──────────────────────────────────────────────────────────────────
 
-@app.get("/health", summary="Server health check (no auth required)")
-async def health(request: Request) -> dict[str, Any]:
+@app.get("/health", summary="Server health check (no auth; minimal payload)")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get(
+    "/health/detail",
+    summary="Health with connected robot IDs (STAFF_FLOOR+ / requires API key)",
+)
+async def health_detail(
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.ROBOT_READ)),
+) -> dict[str, Any]:
     manager = _get_manager(request)
     sessions = await manager.get_all_session_ids()
     return {"status": "ok", "connected_robots": sessions}
