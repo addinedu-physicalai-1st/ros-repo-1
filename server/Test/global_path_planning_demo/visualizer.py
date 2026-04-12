@@ -34,6 +34,8 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from matplotlib.backend_bases import KeyEvent, MouseEvent
 
+from matplotlib.animation import FuncAnimation
+
 from astar_planner import (
     FreeStartPlan,
     plan_path,
@@ -44,6 +46,7 @@ from map_data import (
     DynamicObstacle,
     circle_contains_point,
 )
+from simulator import TwoRobotSimulator, SimRobot, ROBOT_SPEED, FRAME_MS
 
 
 class PathPlanningVisualizer:
@@ -72,21 +75,18 @@ class PathPlanningVisualizer:
         self.dynamic_obstacles: List[DynamicObstacle] = []
         self._next_dyn_id: int = 1
 
-        # --- Two-robot mode state ---
+        # --- Two-robot simulation mode state ---
         self.two_robot_mode: bool = False
-        # In 2-robot mode the click sequence is:
-        #   click 1 = R1 start (free point)
-        #   click 2 = R1 goal  (snap to waypoint)
-        #   click 3 = R2 start (free point)
-        #   click 4 = R2 goal  (snap) -> both plans computed
-        self._r1_start: Optional[Tuple[float, float]] = None
-        self._r1_goal: Optional[int] = None
-        self._r1_plan: Optional[FreeStartPlan] = None
-        self._r2_start: Optional[Tuple[float, float]] = None
-        self._r2_goal: Optional[int] = None
-        self._r2_plan: Optional[FreeStartPlan] = None
-        self._r2_plan_failed: bool = False
         self._two_robot_step: int = 0  # 0..4 click counter
+        # Starts are free (x,y), goals snap to waypoints.
+        self._r1_start_xy: Optional[Tuple[float, float]] = None
+        self._r1_goal_wp: Optional[int] = None
+        self._r2_start_xy: Optional[Tuple[float, float]] = None
+        self._r2_goal_wp: Optional[int] = None
+        self._sim: Optional[TwoRobotSimulator] = None
+        self._sim_anim: Optional[FuncAnimation] = None
+        self._sim_paused: bool = False
+        self._sim_speed: float = 1.0
 
         # Scale figure to the map's aspect ratio so non-default maps
         # render with sensible proportions.
@@ -470,6 +470,15 @@ class PathPlanningVisualizer:
             self._clear_dynamic_obstacles()
         elif event.key == "m":
             self._toggle_two_robot_mode()
+        elif event.key == " " and self.two_robot_mode and self._sim:
+            self._sim_paused = not self._sim_paused
+            self._redraw()
+        elif event.key == "up" and self.two_robot_mode and self._sim:
+            self._sim_speed = min(self._sim_speed * 2, 16)
+            print(f"[sim] speed x{self._sim_speed:.0f}")
+        elif event.key == "down" and self.two_robot_mode and self._sim:
+            self._sim_speed = max(self._sim_speed / 2, 0.5)
+            print(f"[sim] speed x{self._sim_speed:.1f}")
         elif event.key == "q":
             plt.close(self.fig)
 
@@ -519,272 +528,279 @@ class PathPlanningVisualizer:
         return f"#{wp_id}({wp.x},{wp.y})"
 
     # ------------------------------------------------------------------
-    # Two-robot mode
+    # Two-robot simulation mode
     # ------------------------------------------------------------------
 
     def _toggle_two_robot_mode(self) -> None:
         self.two_robot_mode = not self.two_robot_mode
         if self.two_robot_mode:
-            # Enter 2-robot mode: clear single-robot state.
             self._reset_selection()
             self._reset_two_robot()
-            print("[demo] switched to 2-ROBOT mode (m to toggle)")
+            print(
+                "[demo] 2-ROBOT SIM mode: click 4 waypoints "
+                "(R1 start, R1 goal, R2 start, R2 goal)"
+            )
         else:
             self._reset_two_robot()
-            print("[demo] switched to SINGLE-ROBOT mode (m to toggle)")
+            print("[demo] SINGLE-ROBOT mode")
         self._redraw()
 
     def _reset_two_robot(self) -> None:
-        self._r1_start = None
-        self._r1_goal = None
-        self._r1_plan = None
-        self._r2_start = None
-        self._r2_goal = None
-        self._r2_plan = None
-        self._r2_plan_failed = False
+        if self._sim_anim is not None:
+            self._sim_anim.event_source.stop()
+            self._sim_anim = None
+        self._sim = None
         self._two_robot_step = 0
+        self._r1_start_xy = None
+        self._r1_goal_wp = None
+        self._r2_start_xy = None
+        self._r2_goal_wp = None
+        self._sim_paused = False
+        self._sim_speed = 1.0
 
     def _on_click_two_robot(self, x: float, y: float, button: int) -> None:
-        if button == 3:
-            self._add_dynamic_obstacle(x, y)
-            return
-
-        # If both robots have been planned, next click resets.
-        if self._two_robot_step >= 4:
+        # If simulation is running, click resets.
+        if self._sim is not None:
             self._reset_two_robot()
+            self._redraw()
+            return
 
         step = self._two_robot_step
 
-        if step == 0:
-            # R1 start (free point)
+        if step in (0, 2):
+            # Start points: free (x, y) — same as single-robot mode.
             if not self.buffet_map.is_in_bounds(x, y):
-                print(f"[demo] R1 start ({x:.2f}, {y:.2f}) out of bounds")
+                print(f"[sim] ({x:.2f}, {y:.2f}) out of bounds")
                 return
             if self.buffet_map.static_env.contains_xy(x, y):
-                print(f"[demo] R1 start ({x:.2f}, {y:.2f}) inside obstacle")
+                print(f"[sim] ({x:.2f}, {y:.2f}) inside obstacle")
                 return
-            self._r1_start = (x, y)
-            self._two_robot_step = 1
-            print(f"[demo] R1 start = ({x:.2f}, {y:.2f})")
+            who = "R1" if step == 0 else "R2"
+            if step == 0:
+                self._r1_start_xy = (x, y)
+            else:
+                self._r2_start_xy = (x, y)
+            self._two_robot_step = step + 1
+            print(f"[sim] {who} start = ({x:.2f}, {y:.2f})  (free)")
 
-        elif step == 1:
-            # R1 goal (snap to waypoint)
+        elif step in (1, 3):
+            # Goal points: snap to nearest waypoint.
             nearest = self._nearest_waypoint(x, y)
             if nearest is None:
                 return
-            self._r1_goal = nearest
-            self._two_robot_step = 2
-            print(f"[demo] R1 goal  = {self._describe(nearest)}")
-            # Plan R1 immediately.
-            self._plan_r1()
-
-        elif step == 2:
-            # R2 start (free point)
-            if not self.buffet_map.is_in_bounds(x, y):
-                print(f"[demo] R2 start ({x:.2f}, {y:.2f}) out of bounds")
-                return
-            if self.buffet_map.static_env.contains_xy(x, y):
-                print(f"[demo] R2 start ({x:.2f}, {y:.2f}) inside obstacle")
-                return
-            self._r2_start = (x, y)
-            self._two_robot_step = 3
-            print(f"[demo] R2 start = ({x:.2f}, {y:.2f})")
-
-        elif step == 3:
-            # R2 goal (snap to waypoint)
-            nearest = self._nearest_waypoint(x, y)
-            if nearest is None:
-                return
-            self._r2_goal = nearest
-            self._two_robot_step = 4
-            print(f"[demo] R2 goal  = {self._describe(nearest)}")
-            # Plan R2 with R1's path reserved.
-            self._plan_r2()
+            who = "R1" if step == 1 else "R2"
+            if step == 1:
+                self._r1_goal_wp = nearest
+            else:
+                self._r2_goal_wp = nearest
+            self._two_robot_step = step + 1
+            print(f"[sim] {who} goal  = {self._describe(nearest)}  (snap)")
+            if step == 3:
+                self._start_simulation()
 
         self._redraw()
 
-    def _plan_r1(self) -> None:
-        assert self._r1_start is not None and self._r1_goal is not None
-        self._r1_plan = plan_path_from_point(
-            self.buffet_map,
-            self._r1_start,
-            self._r1_goal,
-            dynamic_obstacles=self.dynamic_obstacles,
-        )
-        if self._r1_plan is None:
-            print("[demo] R1: no path found")
-        else:
-            labels = [self._describe(i) for i in self._r1_plan.waypoints]
-            sx, sy = self._r1_plan.start_xy
-            print(
-                f"[demo] R1 path ({len(self._r1_plan.waypoints)} wps, "
-                f"total={self._r1_plan.total_cost:.2f} m): "
-                f"({sx:.2f},{sy:.2f}) -> " + " -> ".join(labels)
-            )
+    def _start_simulation(self) -> None:
+        """Create simulator and start animation."""
+        r1_start = self._r1_start_xy
+        r1_goal = self._r1_goal_wp
+        r2_start = self._r2_start_xy
+        r2_goal = self._r2_goal_wp
+        assert all(v is not None for v in (r1_start, r1_goal, r2_start, r2_goal))
 
-    def _plan_r2(self) -> None:
-        assert self._r2_start is not None and self._r2_goal is not None
-        reserved = (
-            [self._r1_plan.waypoints] if self._r1_plan is not None else None
-        )
-        self._r2_plan = plan_path_from_point(
+        self._sim = TwoRobotSimulator(
             self.buffet_map,
-            self._r2_start,
-            self._r2_goal,
-            dynamic_obstacles=self.dynamic_obstacles,
-            reserved_paths=reserved,
+            r1_start, r1_goal,
+            r2_start, r2_goal,
         )
-        self._r2_plan_failed = self._r2_plan is None
-        if self._r2_plan is None:
-            print("[demo] R2: NO PATH FOUND (R1's path blocks it)")
-        else:
-            labels = [self._describe(i) for i in self._r2_plan.waypoints]
-            sx, sy = self._r2_plan.start_xy
-            print(
-                f"[demo] R2 path ({len(self._r2_plan.waypoints)} wps, "
-                f"total={self._r2_plan.total_cost:.2f} m): "
-                f"({sx:.2f},{sy:.2f}) -> " + " -> ".join(labels)
-            )
-            # Report shared waypoints for awareness.
-            if self._r1_plan is not None:
-                shared = set(self._r1_plan.waypoints) & set(
-                    self._r2_plan.waypoints
-                )
-                if shared:
-                    shared_labels = sorted(
-                        self._describe(wp_id) for wp_id in shared
-                    )
-                    print(
-                        f"[demo] warning: R1 & R2 share waypoints "
-                        f"{', '.join(shared_labels)}"
-                    )
+
+        self._sim_anim = FuncAnimation(
+            self.fig,
+            self._sim_tick,
+            interval=FRAME_MS,
+            blit=False,
+            cache_frame_data=False,
+        )
+
+    def _sim_tick(self, _frame: int) -> None:
+        if self._sim is None or self._sim_paused:
+            return
+        steps = max(1, int(self._sim_speed))
+        for _ in range(steps):
+            if not self._sim.done:
+                self._sim.step()
+        self._redraw()
+
+    def _wp_label(self, wp_id: int) -> str:
+        wp = self.graph.waypoints[wp_id]
+        return wp.label if wp.label else f"({wp.x:g},{wp.y:g})"
 
     def _draw_two_robot_paths(self) -> None:
-        # R1 path in orange.
-        if self._r1_plan is not None:
-            sx, sy = self._r1_plan.start_xy
-            xs = [sx] + [
-                self.graph.waypoints[i].x for i in self._r1_plan.waypoints
-            ]
-            ys = [sy] + [
-                self.graph.waypoints[i].y for i in self._r1_plan.waypoints
-            ]
+        if self._sim is None:
+            # Pre-simulation: draw selected waypoints only.
+            return
+
+        sim = self._sim
+        graph = self.graph
+
+        # Draw trails.
+        for robot in (sim.r1, sim.r2):
+            if len(robot.trail) < 2:
+                continue
+            xs = [p[0] for p in robot.trail]
+            ys = [p[1] for p in robot.trail]
             self.ax.plot(
-                xs, ys, color="#ff7f0e", linewidth=4.0, alpha=0.9,
-                zorder=2, label="R1 path",
+                xs, ys, color=robot.color, linewidth=3,
+                alpha=0.25, zorder=2, solid_capstyle="round",
             )
 
-        # R2 path in green.
-        if self._r2_plan is not None:
-            sx, sy = self._r2_plan.start_xy
-            xs = [sx] + [
-                self.graph.waypoints[i].x for i in self._r2_plan.waypoints
+        # Draw planned path (remaining portion).
+        for robot in (sim.r1, sim.r2):
+            if robot.path is None or robot.status in ("done", "waiting"):
+                continue
+            idx = max(0, robot.path_index - 1)
+            remaining = robot.path[idx:]
+            if not remaining:
+                continue
+            xs = [robot.position[0]] + [
+                graph.waypoints[i].x for i in remaining
             ]
-            ys = [sy] + [
-                self.graph.waypoints[i].y for i in self._r2_plan.waypoints
+            ys = [robot.position[1]] + [
+                graph.waypoints[i].y for i in remaining
             ]
+            ls = "--" if robot.robot_id == "R2" else "-"
             self.ax.plot(
-                xs, ys, color="#2ca02c", linewidth=3.5, alpha=0.85,
-                zorder=2.1, label="R2 path",
-                linestyle="--",
+                xs, ys, color=robot.color, linewidth=2.5,
+                alpha=0.4, linestyle=ls, zorder=2.5,
             )
 
-        # Highlight shared waypoints in red if both plans exist.
-        if self._r1_plan is not None and self._r2_plan is not None:
-            shared = set(self._r1_plan.waypoints) & set(
-                self._r2_plan.waypoints
-            )
-            for wp_id in shared:
-                wp = self.graph.waypoints[wp_id]
+        # Goals.
+        for robot in (sim.r1, sim.r2):
+            for i in range(robot.current_leg + 1, len(robot.mission)):
+                gwp = graph.waypoints[robot.mission[i]]
+                is_cur = i == robot.current_leg + 1
                 self.ax.plot(
-                    wp.x, wp.y, marker="o", markersize=16,
-                    markerfacecolor="none", markeredgecolor="#d62728",
-                    markeredgewidth=2.5, zorder=5.5,
+                    gwp.x, gwp.y, marker="X",
+                    markersize=14 if is_cur else 10,
+                    color=robot.color, markeredgecolor="black",
+                    markeredgewidth=1.5 if is_cur else 1.0,
+                    alpha=0.7 if is_cur else 0.3, zorder=5,
+                )
+
+        # Robot bodies.
+        for robot in (sim.r1, sim.r2):
+            edge = "black"
+            if robot.status == "waiting":
+                edge = "#d62728"
+            elif robot.status == "done":
+                edge = "#FFD700"
+            self.ax.plot(
+                robot.position[0], robot.position[1],
+                marker="s", markersize=14,
+                color=robot.color, markeredgecolor=edge,
+                markeredgewidth=2.5, zorder=10,
+            )
+            self.ax.text(
+                robot.position[0], robot.position[1] + 0.07,
+                robot.robot_id,
+                ha="center", va="bottom", fontsize=9,
+                fontweight="bold", color=robot.color, zorder=11,
+            )
+            status_text = {
+                "waiting": "WAIT", "done": "DONE",
+            }.get(robot.status, "")
+            if status_text:
+                self.ax.text(
+                    robot.position[0], robot.position[1] - 0.07,
+                    status_text,
+                    ha="center", va="top", fontsize=7,
+                    fontweight="bold",
+                    color="#d62728" if robot.status == "waiting" else "#555",
+                    zorder=11,
                 )
 
     def _draw_two_robot_selection(self) -> None:
-        # R1 start (blue star) and goal (blue X).
-        if self._r1_start is not None:
-            sx, sy = self._r1_start
+        # Pre-simulation: show selected start (free) / goal (wp).
+        # Starts are (x, y) tuples, goals are waypoint IDs.
+        free_pts = [
+            (self._r1_start_xy, "#1f77b4"),
+            (self._r2_start_xy, "#2ca02c"),
+        ]
+        for xy, color in free_pts:
+            if xy is None:
+                continue
             self.ax.plot(
-                sx, sy, marker="*", markersize=20, color="#1f77b4",
-                markeredgecolor="black", linestyle="none", zorder=5,
+                xy[0], xy[1], marker="*", markersize=22,
+                color=color, markeredgecolor="black",
+                linestyle="none", zorder=5,
             )
-        if self._r1_goal is not None:
-            wp = self.graph.waypoints[self._r1_goal]
+        goal_wps = [
+            (self._r1_goal_wp, "#1f77b4"),
+            (self._r2_goal_wp, "#2ca02c"),
+        ]
+        for wp_id, color in goal_wps:
+            if wp_id is None:
+                continue
+            wp = self.graph.waypoints[wp_id]
             self.ax.plot(
-                wp.x, wp.y, marker="X", markersize=16, color="#1f77b4",
-                markeredgecolor="black", linestyle="none", zorder=5,
-            )
-        # R2 start (green star) and goal (green X).
-        if self._r2_start is not None:
-            sx, sy = self._r2_start
-            self.ax.plot(
-                sx, sy, marker="*", markersize=20, color="#2ca02c",
-                markeredgecolor="black", linestyle="none", zorder=5,
-            )
-        if self._r2_goal is not None:
-            wp = self.graph.waypoints[self._r2_goal]
-            self.ax.plot(
-                wp.x, wp.y, marker="X", markersize=16, color="#2ca02c",
-                markeredgecolor="black", linestyle="none", zorder=5,
+                wp.x, wp.y, marker="X", markersize=18,
+                color=color, markeredgecolor="black",
+                linestyle="none", zorder=5,
             )
 
     def _draw_two_robot_title(self) -> None:
-        step = self._two_robot_step
-        if step == 0:
-            status = "2-ROBOT: click R1 START"
-        elif step == 1:
-            status = "2-ROBOT: click R1 GOAL"
-        elif step == 2:
-            if self._r1_plan is None:
-                status = "2-ROBOT: R1 no path! Click R2 START anyway"
-            else:
-                status = (
-                    f"2-ROBOT: R1 planned "
-                    f"({self._r1_plan.total_cost:.2f} m). "
-                    f"Click R2 START"
-                )
-        elif step == 3:
-            status = "2-ROBOT: click R2 GOAL"
+        sim = self._sim
+        if sim is not None:
+            # Simulation running.
+            r1s = self._sim_status(sim.r1)
+            r2s = self._sim_status(sim.r2)
+            pause = "  [PAUSED]" if self._sim_paused else ""
+            speed = (
+                f"  (x{self._sim_speed:.0f})"
+                if self._sim_speed != 1.0 else ""
+            )
+            status = (
+                f"t={sim.sim_time:.1f}s{pause}{speed}  "
+                f"R1: {r1s}  |  R2: {r2s}"
+            )
+            controls = (
+                "[space] pause  [\u2191\u2193] speed  "
+                "[click] reset  [m] exit  [q] quit"
+            )
         else:
-            # Both planned.
+            # Pre-simulation click sequence.
+            labels = ["R1 START", "R1 GOAL", "R2 START", "R2 GOAL"]
+            done = self._two_robot_step
             parts = []
-            if self._r1_plan is not None:
-                parts.append(
-                    f"R1: {self._r1_plan.total_cost:.2f} m"
-                )
-            else:
-                parts.append("R1: no path")
-            if self._r2_plan is not None:
-                parts.append(
-                    f"R2: {self._r2_plan.total_cost:.2f} m"
-                )
-            else:
-                parts.append("R2: no path (conflict!)")
-            status = "2-ROBOT: " + "  |  ".join(parts)
-            # Show shared waypoints count.
-            if self._r1_plan and self._r2_plan:
-                shared = set(self._r1_plan.waypoints) & set(
-                    self._r2_plan.waypoints
-                )
-                if shared:
-                    status += f"  |  {len(shared)} shared wp(s)!"
+            for i, lbl in enumerate(labels):
+                if i < done:
+                    parts.append(f"\u2713{lbl}")
+                elif i == done:
+                    parts.append(f"\u25b6{lbl}")
+                else:
+                    parts.append(lbl)
+            status = "2-ROBOT SIM: " + "  ".join(parts)
+            controls = (
+                "[left] select waypoint    "
+                "[r] reset    [m] exit    [q] quit"
+            )
 
-        n_dyn = len(self.dynamic_obstacles)
-        dyn_note = (
-            f"  |  dyn-obs: {n_dyn}" if n_dyn else ""
-        )
         map_name = self.buffet_map.name or "Buffet Demo"
         self.ax.set_title(
-            f"Waypoint-based A* Global Path Planner - {map_name}"
-            f"{dyn_note}\n"
-            f"{status}\n"
-            "[left] set points    [right] add dyn-obs    "
-            "[r] reset    [c] clear dyn    [m] toggle mode    "
-            "[q] quit",
+            f"Waypoint A* Planner - {map_name}\n"
+            f"{status}\n{controls}",
             fontsize=10,
         )
+
+    def _sim_status(self, robot: SimRobot) -> str:
+        if robot.status == "done":
+            final = self._wp_label(robot.mission[-1])
+            return f"done({final})"
+        goal = robot.current_goal
+        gl = self._wp_label(goal) if goal else "?"
+        if robot.status == "waiting":
+            return f"wait"
+        return f"->{gl}"
 
     def show(self) -> None:
         plt.show()

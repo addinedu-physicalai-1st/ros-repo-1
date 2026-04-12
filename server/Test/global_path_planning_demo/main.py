@@ -10,6 +10,11 @@ Run a few canned scenarios without opening a window:
 
     python3 main.py --headless
 
+Two-robot simulation (animated):
+
+    python3 main.py --sim
+    python3 main.py --sim --scenario 2
+
 Use a custom YAML map file:
 
     python3 main.py --map maps/my_map.yaml
@@ -572,6 +577,18 @@ def main() -> None:
         help="run a few canned scenarios without opening a window",
     )
     parser.add_argument(
+        "--sim",
+        action="store_true",
+        help="run the two-robot animated simulation",
+    )
+    parser.add_argument(
+        "--scenario",
+        type=int,
+        default=1,
+        metavar="N",
+        help="scenario number for --sim mode (default: 1)",
+    )
+    parser.add_argument(
         "--map",
         type=Path,
         default=DEFAULT_MAP_PATH,
@@ -622,6 +639,17 @@ def main() -> None:
 
     if args.headless:
         _run_headless(buffet_map)
+    elif args.sim:
+        try:
+            from simulator import run_simulation
+        except ImportError as exc:
+            print(
+                f"Failed to import the simulator ({exc}). "
+                "Install matplotlib or rerun with --headless.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        run_simulation(buffet_map, scenario_index=args.scenario - 1)
     else:
         _run_interactive(buffet_map)
 
