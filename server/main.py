@@ -1,19 +1,26 @@
 """FastAPI entrypoint: REST + lifespan TCP/UDP + SQLite + RBAC.
 
 Role-based access matrix
-─────────────────────────────────────────────────────────────
-Endpoint                   CUSTOMER  STAFF_K  STAFF_F  ADMIN
-POST   /tasks                 ✓        ✓        ✓       ✓
-GET    /tasks                 own      all      all     all
-GET    /tasks/{id}            own      ✓        ✓       ✓
-GET    /robots                —        —        ✓       ✓
-GET    /telemetry/pose/{id}   —        —        ✓       ✓
-POST   /commands/send         —        —        —       ✓
-GET    /users                 —        —        —       ✓
-POST   /users                 —        —        —       ✓
-PATCH  /users/{id}/deactivate —        —        —       ✓
-GET    /health                ✓        ✓        ✓       ✓
-─────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────
+Endpoint                        CUSTOMER  STAFF_K  STAFF_F  ADMIN
+POST   /tasks                      ✓        ✓        ✓       ✓
+GET    /tasks                      own      all      all     all
+GET    /tasks/{id}                 own      ✓        ✓       ✓
+GET    /robots                     —        —        ✓       ✓
+GET    /telemetry/pose/{id}        —        —        ✓       ✓
+POST   /commands/send              —        —        —       ✓
+GET    /users                      —        —        —       ✓
+POST   /users                      —        —        —       ✓
+PATCH  /users/{id}/deactivate      —        —        —       ✓
+GET    /places                     ✓        ✓        ✓       ✓
+GET    /places/{id}                ✓        ✓        ✓       ✓
+PATCH  /places/{id}                —        —        —       ✓
+GET    /places/{id}/waypoints      ✓        ✓        ✓       ✓
+PUT    /places/{id}/waypoints      —        —        —       ✓
+GET    /menu-items                 ✓        ✓        ✓       ✓
+PATCH  /menu-items/{id}            —        —        —       ✓
+GET    /health                     ✓        ✓        ✓       ✓
+──────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
@@ -92,6 +99,32 @@ class CreateUserBody(BaseModel):
     role: int = Field(default=int(pb.UserRole.CUSTOMER), ge=1, le=4)
 
 
+class PatchPlaceBody(BaseModel):
+    name: Optional[str] = None
+    zone: Optional[int] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    theta: Optional[float] = None
+    max_speed: Optional[float] = None
+    is_active: Optional[int] = Field(default=None, ge=0, le=1)
+    sort_order: Optional[int] = None
+
+
+class WaypointIn(BaseModel):
+    seq: int = Field(ge=0)
+    label: str = ""
+    x: Optional[float] = None
+    y: Optional[float] = None
+    theta: Optional[float] = None
+
+
+class PatchMenuItemBody(BaseModel):
+    name: Optional[str] = None
+    place_id: Optional[str] = None
+    is_available: Optional[int] = Field(default=None, ge=0, le=1)
+    sort_order: Optional[int] = None
+
+
 # ──────────────────────────────────────────────────────────────────
 # Lifespan
 # ──────────────────────────────────────────────────────────────────
@@ -111,6 +144,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     manager = ConnectionManager(database, get_conn=lambda: conn, db_lock=db_lock)
     stop_watchdog = asyncio.Event()
+
+    # ── seed places / menu-items (idempotent) ────────────────────
+    async with db_lock:
+        await database.seed_places(conn)
 
     # ── seed initial admin if none exist ─────────────────────────
     async with db_lock:
@@ -187,6 +224,11 @@ async def create_task(
     )
     db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
     async with lock:
+        if not await db.place_exists_active(conn, body.dest_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"dest_id '{body.dest_id}' is not a valid active place",
+            )
         task = await db.create_task(
             conn,
             requester_id=requester_id,
@@ -389,6 +431,134 @@ async def deactivate_user(
         await db.set_user_active(conn, user_id, active=False)
     logger.info("User %s deactivated by %s", user_id, user)
     return {"user_id": user_id, "is_active": False}
+
+
+# ──────────────────────────────────────────────────────────────────
+# Places  (READ: all roles  /  MANAGE: ADMIN only)
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/places", summary="List all places")
+async def list_places(
+    request: Request,
+    active_only: bool = False,
+    user: CurrentUser = Depends(require(Permission.PLACE_READ)),
+) -> dict[str, Any]:
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    async with lock:
+        rows = await db.list_places(conn, active_only=active_only)
+    return {"places": rows, "total": len(rows)}
+
+
+@app.get("/places/{place_id}", summary="Get a single place")
+async def get_place(
+    place_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.PLACE_READ)),
+) -> dict[str, Any]:
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    async with lock:
+        row = await db.get_place(conn, place_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="place not found")
+    return row
+
+
+@app.patch("/places/{place_id}", summary="Update place metadata / coordinates (ADMIN only)")
+async def patch_place(
+    place_id: str,
+    body: PatchPlaceBody,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.PLACE_MANAGE)),
+) -> dict[str, Any]:
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    fields = body.model_dump(exclude_none=True)
+    async with lock:
+        updated = await db.patch_place(conn, place_id, fields=fields)
+    if not updated:
+        raise HTTPException(status_code=404, detail="place not found or nothing to update")
+    async with lock:
+        row = await db.get_place(conn, place_id)
+    logger.info("Place %s patched by %s: %s", place_id, user, list(fields.keys()))
+    return row or {}
+
+
+# ──────────────────────────────────────────────────────────────────
+# Place Waypoints  (READ: all roles  /  WRITE: ADMIN only)
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/places/{place_id}/waypoints", summary="Get waypoints for a place")
+async def get_place_waypoints(
+    place_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.PLACE_READ)),
+) -> dict[str, Any]:
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    async with lock:
+        place = await db.get_place(conn, place_id)
+        if place is None:
+            raise HTTPException(status_code=404, detail="place not found")
+        wps = await db.list_place_waypoints(conn, place_id)
+    return {"place_id": place_id, "waypoints": wps, "total": len(wps)}
+
+
+@app.put(
+    "/places/{place_id}/waypoints",
+    summary="Replace all waypoints for a place (ADMIN only)",
+)
+async def put_place_waypoints(
+    place_id: str,
+    waypoints: list[WaypointIn],
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.PLACE_MANAGE)),
+) -> dict[str, Any]:
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    async with lock:
+        if await db.get_place(conn, place_id) is None:
+            raise HTTPException(status_code=404, detail="place not found")
+        wp_dicts = [w.model_dump() for w in waypoints]
+        await db.put_place_waypoints(conn, place_id, wp_dicts)
+    logger.info("Waypoints updated for place %s (%d pts) by %s", place_id, len(waypoints), user)
+    return {"place_id": place_id, "total": len(waypoints)}
+
+
+# ──────────────────────────────────────────────────────────────────
+# Menu Items  (READ: all roles  /  MANAGE: ADMIN only)
+# ──────────────────────────────────────────────────────────────────
+
+@app.get("/menu-items", summary="List all menu items with mapped display place")
+async def list_menu_items(
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.PLACE_READ)),
+) -> dict[str, Any]:
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    async with lock:
+        rows = await db.list_menu_items(conn)
+    return {"menu_items": rows, "total": len(rows)}
+
+
+@app.patch("/menu-items/{menu_id}", summary="Update a menu item (ADMIN only)")
+async def patch_menu_item(
+    menu_id: int,
+    body: PatchMenuItemBody,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.PLACE_MANAGE)),
+) -> dict[str, Any]:
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    fields = body.model_dump(exclude_none=True)
+    # Validate new place_id if provided
+    if "place_id" in fields:
+        async with lock:
+            if await db.get_place(conn, fields["place_id"]) is None:
+                raise HTTPException(status_code=422, detail="place_id not found")
+    async with lock:
+        updated = await db.patch_menu_item(conn, menu_id, fields=fields)
+    if not updated:
+        raise HTTPException(status_code=404, detail="menu item not found or nothing to update")
+    logger.info("MenuItem %s patched by %s: %s", menu_id, user, list(fields.keys()))
+    async with lock:
+        rows = await db.list_menu_items(conn)
+    item = next((r for r in rows if r["menu_id"] == menu_id), None)
+    return item or {}
 
 
 # ──────────────────────────────────────────────────────────────────

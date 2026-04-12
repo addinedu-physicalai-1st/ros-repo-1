@@ -37,22 +37,27 @@ class Permission(str, Enum):
     ROBOT_COMMAND  = "robot:command"
     TELEMETRY_READ = "telemetry:read"
     USER_MANAGE    = "user:manage"
+    PLACE_READ     = "place:read"      # GET /places, /menu-items (all roles)
+    PLACE_MANAGE   = "place:manage"    # PATCH /places, PUT waypoints (ADMIN only)
 
 
 ROLE_PERMISSIONS: dict[int, frozenset[Permission]] = {
     int(pb.UserRole.CUSTOMER): frozenset({
         Permission.TASK_CREATE,
         Permission.TASK_READ_OWN,
+        Permission.PLACE_READ,
     }),
     int(pb.UserRole.STAFF_KITCHEN): frozenset({
         Permission.TASK_CREATE,
         Permission.TASK_READ_ALL,
+        Permission.PLACE_READ,
     }),
     int(pb.UserRole.STAFF_FLOOR): frozenset({
         Permission.TASK_CREATE,
         Permission.TASK_READ_ALL,
         Permission.ROBOT_READ,
         Permission.TELEMETRY_READ,
+        Permission.PLACE_READ,
     }),
     int(pb.UserRole.ADMIN): frozenset({
         Permission.TASK_CREATE,
@@ -61,6 +66,8 @@ ROLE_PERMISSIONS: dict[int, frozenset[Permission]] = {
         Permission.ROBOT_COMMAND,
         Permission.TELEMETRY_READ,
         Permission.USER_MANAGE,
+        Permission.PLACE_READ,
+        Permission.PLACE_MANAGE,
     }),
 }
 

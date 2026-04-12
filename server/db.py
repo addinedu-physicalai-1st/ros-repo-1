@@ -106,10 +106,229 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_tasks_status    ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_tasks_created   ON tasks(created_at_ms);
             CREATE INDEX IF NOT EXISTS idx_tasks_requester ON tasks(requester_id);
+
+            CREATE TABLE IF NOT EXISTS places (
+                place_id      TEXT    PRIMARY KEY,
+                name          TEXT    NOT NULL DEFAULT '',
+                zone          INTEGER NOT NULL DEFAULT 0,
+                x             REAL,
+                y             REAL,
+                theta         REAL,
+                max_speed     REAL,
+                is_active     INTEGER NOT NULL DEFAULT 1,
+                sort_order    INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS place_waypoints (
+                wp_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                place_id TEXT    NOT NULL,
+                seq      INTEGER NOT NULL,
+                label    TEXT    NOT NULL DEFAULT '',
+                x        REAL,
+                y        REAL,
+                theta    REAL,
+                FOREIGN KEY (place_id) REFERENCES places(place_id) ON DELETE CASCADE,
+                UNIQUE (place_id, seq)
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_items (
+                menu_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT    NOT NULL DEFAULT '',
+                place_id     TEXT    NOT NULL UNIQUE,
+                is_available INTEGER NOT NULL DEFAULT 1,
+                sort_order   INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (place_id) REFERENCES places(place_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_places_active    ON places(is_active);
+            CREATE INDEX IF NOT EXISTS idx_places_zone      ON places(zone);
+            CREATE INDEX IF NOT EXISTS idx_menu_place       ON menu_items(place_id);
             """
         )
         await conn.commit()
         logger.info("Database schema ready at %s", self._path)
+
+    # ──────────────────────────────────────────────────────────────
+    # Places — seed data
+    # ──────────────────────────────────────────────────────────────
+
+    # (place_id, name, zone, sort_order)
+    # zone values from ZoneType proto enum:
+    #   ZONE_TABLE=1, ZONE_KITCHEN=2, ZONE_TOILET=3, ZONE_DISPLAY=4,
+    #   ZONE_DOCK=5, ZONE_CORRIDOR=6
+    _PLACE_SEEDS: list[tuple[str, str, int, int]] = [
+        ("WAIT_A",    "대기 A",          6,  1),
+        ("WAIT_B",    "대기 B",          6,  2),
+        ("KIOSK_1",   "키오스크(출입구)", 4,  3),
+        ("TBL_01",    "테이블 1",         1,  4),
+        ("TBL_02",    "테이블 2",         1,  5),
+        ("TBL_03",    "테이블 3",         1,  6),
+        ("TBL_04",    "테이블 4",         1,  7),
+        ("TBL_05",    "테이블 5",         1,  8),
+        ("TOILET",    "화장실",           3,  9),
+        ("EXIT_DINE", "퇴식구",           6, 10),
+        ("KITCHEN",   "주방",             2, 11),
+        ("DISP_01",   "진열장 1",         4, 12),
+        ("DISP_02",   "진열장 2",         4, 13),
+        ("DISP_03",   "진열장 3",         4, 14),
+        ("DISP_04",   "진열장 4",         4, 15),
+        ("DISP_05",   "진열장 5",         4, 16),
+        ("DISP_06",   "진열장 6",         4, 17),
+    ]
+
+    # (name, place_id, sort_order) — 진열장 6곳과 1:1 매핑
+    _MENU_SEEDS: list[tuple[str, str, int]] = [
+        ("메뉴 1", "DISP_01", 1),
+        ("메뉴 2", "DISP_02", 2),
+        ("메뉴 3", "DISP_03", 3),
+        ("메뉴 4", "DISP_04", 4),
+        ("메뉴 5", "DISP_05", 5),
+        ("메뉴 6", "DISP_06", 6),
+    ]
+
+    async def seed_places(self, conn: aiosqlite.Connection) -> None:
+        """Insert default 17 places and 6 menu items if not already present."""
+        now = _ts_now_ms()
+        for place_id, name, zone, sort_order in self._PLACE_SEEDS:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO places
+                  (place_id, name, zone, is_active, sort_order, created_at_ms, updated_at_ms)
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                """,
+                (place_id, name, zone, sort_order, now, now),
+            )
+        for name, place_id, sort_order in self._MENU_SEEDS:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO menu_items (name, place_id, is_available, sort_order)
+                VALUES (?, ?, 1, ?)
+                """,
+                (name, place_id, sort_order),
+            )
+        await conn.commit()
+        logger.info("Places seed complete")
+
+    # ──────────────────────────────────────────────────────────────
+    # Places — CRUD
+    # ──────────────────────────────────────────────────────────────
+
+    async def list_places(
+        self, conn: aiosqlite.Connection, *, active_only: bool = False
+    ) -> list[dict[str, Any]]:
+        where = "WHERE is_active = 1" if active_only else ""
+        cur = await conn.execute(
+            f"SELECT * FROM places {where} ORDER BY sort_order, place_id"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_place(
+        self, conn: aiosqlite.Connection, place_id: str
+    ) -> Optional[dict[str, Any]]:
+        cur = await conn.execute("SELECT * FROM places WHERE place_id = ?", (place_id,))
+        row = await cur.fetchone()
+        return dict(row) if row is not None else None
+
+    async def patch_place(
+        self,
+        conn: aiosqlite.Connection,
+        place_id: str,
+        *,
+        fields: dict[str, Any],
+    ) -> bool:
+        _allowed = {"name", "zone", "x", "y", "theta", "max_speed", "is_active", "sort_order"}
+        updates = {k: v for k, v in fields.items() if k in _allowed}
+        if not updates:
+            return False
+        updates["updated_at_ms"] = _ts_now_ms()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        vals: list[Any] = list(updates.values()) + [place_id]
+        cur = await conn.execute(
+            f"UPDATE places SET {set_clause} WHERE place_id = ?", vals
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+    async def place_exists_active(
+        self, conn: aiosqlite.Connection, place_id: str
+    ) -> bool:
+        """Return True if place_id exists and is active (used to validate dest_id)."""
+        cur = await conn.execute(
+            "SELECT 1 FROM places WHERE place_id = ? AND is_active = 1", (place_id,)
+        )
+        return await cur.fetchone() is not None
+
+    # ──────────────────────────────────────────────────────────────
+    # Place Waypoints — CRUD
+    # ──────────────────────────────────────────────────────────────
+
+    async def list_place_waypoints(
+        self, conn: aiosqlite.Connection, place_id: str
+    ) -> list[dict[str, Any]]:
+        cur = await conn.execute(
+            "SELECT * FROM place_waypoints WHERE place_id = ? ORDER BY seq", (place_id,)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def put_place_waypoints(
+        self,
+        conn: aiosqlite.Connection,
+        place_id: str,
+        waypoints: list[dict[str, Any]],
+    ) -> None:
+        """Replace all waypoints for a place (idempotent full replace)."""
+        await conn.execute(
+            "DELETE FROM place_waypoints WHERE place_id = ?", (place_id,)
+        )
+        for wp in waypoints:
+            await conn.execute(
+                """
+                INSERT INTO place_waypoints (place_id, seq, label, x, y, theta)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    place_id,
+                    int(wp["seq"]),
+                    str(wp.get("label") or ""),
+                    wp.get("x"),
+                    wp.get("y"),
+                    wp.get("theta"),
+                ),
+            )
+        await conn.commit()
+
+    # ──────────────────────────────────────────────────────────────
+    # Menu Items — CRUD
+    # ──────────────────────────────────────────────────────────────
+
+    async def list_menu_items(
+        self, conn: aiosqlite.Connection
+    ) -> list[dict[str, Any]]:
+        cur = await conn.execute(
+            "SELECT * FROM menu_items ORDER BY sort_order, menu_id"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def patch_menu_item(
+        self,
+        conn: aiosqlite.Connection,
+        menu_id: int,
+        *,
+        fields: dict[str, Any],
+    ) -> bool:
+        _allowed = {"name", "place_id", "is_available", "sort_order"}
+        updates = {k: v for k, v in fields.items() if k in _allowed}
+        if not updates:
+            return False
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        vals: list[Any] = list(updates.values()) + [menu_id]
+        cur = await conn.execute(
+            f"UPDATE menu_items SET {set_clause} WHERE menu_id = ?", vals
+        )
+        await conn.commit()
+        return cur.rowcount > 0
 
     # ──────────────────────────────────────────────────────────────
     # Users
