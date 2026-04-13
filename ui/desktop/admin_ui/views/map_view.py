@@ -7,7 +7,8 @@ from PyQt5.QtCore import Qt, QTimer, QPointF
 from components.map_items import RobotMapItem
 from components.widgets import RobotCard
 from utils.config import (MAP_IMG_PATH, COLOR_MOVING, COLOR_WAITING,
-                          COLOR_COLLECT, COLOR_CHARGING, MAP_POSE_SCALE_PX)
+                          COLOR_COLLECT, COLOR_CHARGING,
+                          MAP_POSE_SCALE_PX, MAP_ORIGIN_X, MAP_ORIGIN_Y)
 from utils.api_client import (ApiClient, ApiWorker,
                               CMD_CANCEL, CMD_RETURN_DOCK, CMD_EMERGENCY_STOP,
                               ROBOT_STATUS_LABELS)
@@ -49,16 +50,19 @@ class MapWidget(QGraphicsView):
         self.robots[r_id] = robot
 
     def update_robot_pos(self, r_id: str, x: float, y: float) -> None:
-        """Move a robot marker using ROS pose coordinates (metres).
+        """Move a robot marker using ROS /odom pose coordinates (metres).
 
-        Coordinate mapping: scene_x = map_cx + x * scale
-                            scene_y = map_cy - y * scale   (screen y inverted)
-        Adjust MAP_POSE_SCALE_PX env-var to calibrate to your floor plan.
+        Coordinate mapping (derived from map4.yaml, 10x upscaled):
+            scene_x = MAP_ORIGIN_X + x * MAP_POSE_SCALE_PX
+            scene_y = MAP_ORIGIN_Y - y * MAP_POSE_SCALE_PX  (screen y inverted)
+
+        Override via env-vars MAP_ORIGIN_X, MAP_ORIGIN_Y, MAP_POSE_SCALE_PX
+        if the map or spawn position changes.
         """
         if r_id not in self.robots:
             return
-        cx = self.bg_pixmap.width()  / 2.0 + x * MAP_POSE_SCALE_PX
-        cy = self.bg_pixmap.height() / 2.0 - y * MAP_POSE_SCALE_PX
+        cx = MAP_ORIGIN_X + x * MAP_POSE_SCALE_PX
+        cy = MAP_ORIGIN_Y - y * MAP_POSE_SCALE_PX
         self.robots[r_id].setPos(QPointF(cx, cy))
 
     def resizeEvent(self, event):

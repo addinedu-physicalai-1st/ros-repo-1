@@ -5,16 +5,12 @@ from PyQt5.QtGui import QColor
 # Resolve assets path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IMG_DIR = os.path.join(BASE_DIR, "assets", "images")
-MAP_IMG_PATH = os.path.join(IMG_DIR, "빈맵.png")
+MAP_IMG_PATH = os.path.join(IMG_DIR, "gazebo_map.png")
 
 if not os.path.exists(MAP_IMG_PATH):
     png_files = glob.glob(os.path.join(IMG_DIR, "*.png"))
-    for f in png_files:
-        if "빈맵" in f or "빈맵" in f:
-            MAP_IMG_PATH = f
-            break
-    else:
-        if png_files: MAP_IMG_PATH = png_files[0]
+    if png_files:
+        MAP_IMG_PATH = png_files[0]
 
 COLOR_MOVING = QColor("#4A88D4")
 COLOR_WAITING = QColor("#999999")
@@ -35,6 +31,11 @@ CARD_STYLE = """
 CONTROL_BASE_URL: str = os.environ.get("CONTROL_BASE_URL", "http://localhost:8000")
 ADMIN_API_KEY:    str = os.environ.get("ADMIN_API_KEY", "")
 
-# Scale factor: pixels per meter used to map ROS pose coordinates onto the
-# floor-plan image.  Adjust to match your actual map resolution.
-MAP_POSE_SCALE_PX: float = float(os.environ.get("MAP_POSE_SCALE_PX", "50"))
+# ── Map coordinate calibration ────────────────────────────────────────────────
+# Derived from map4.yaml (nav2 occupancy grid, 0.05 m/px, 10x upscaled to PNG):
+#   MAP_POSE_SCALE_PX : pixels per meter  (= 1/resolution * upscale = 20 * 10)
+#   MAP_ORIGIN_X/Y    : pixel position of Gazebo world (0, 0) in the image
+#                       origin: [-0.285, -1.241] → spawn pixel (57, 72) at 200 px/m
+MAP_POSE_SCALE_PX: float = float(os.environ.get("MAP_POSE_SCALE_PX", "200"))
+MAP_ORIGIN_X:      float = float(os.environ.get("MAP_ORIGIN_X",      "57"))
+MAP_ORIGIN_Y:      float = float(os.environ.get("MAP_ORIGIN_Y",      "72"))

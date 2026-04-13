@@ -181,7 +181,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     db_lock = asyncio.Lock()
 
     broker = WSBroker()
-    manager = ConnectionManager(database, get_conn=lambda: conn, db_lock=db_lock, broker=broker)
+    async def _get_db_conn() -> aiosqlite.Connection:
+        return conn
+
+    manager = ConnectionManager(database, get_conn=_get_db_conn, db_lock=db_lock, broker=broker)
     stop_watchdog = asyncio.Event()
 
     # ── seed places / menu-items (idempotent) ────────────────────

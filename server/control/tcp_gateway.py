@@ -42,7 +42,7 @@ class _TcpBuffer:
                 raise ValueError(f"TCP frame too large: {length} (max {self._max_frame_bytes})")
             if len(self._buf) < 4 + length:
                 break
-            payload = memoryview(self._buf)[4 : 4 + length]
+            payload = bytes(self._buf[4 : 4 + length])
             del self._buf[: 4 + length]
             if length < 4:
                 raise ValueError("TCP payload too short for magic")
@@ -50,7 +50,7 @@ class _TcpBuffer:
             if magic != TCP_MAGIC:
                 raise ValueError(f"Bad TCP magic: {magic:#x}")
             pkt = pb.TcpPacket()
-            pkt.ParseFromString(payload[4:].tobytes())
+            pkt.ParseFromString(payload[4:])
             out.append(pkt)
         return out
 
