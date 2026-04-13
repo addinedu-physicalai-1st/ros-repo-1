@@ -39,7 +39,7 @@ free_thresh: 0.196
 
 defaults:
   dynamic_radius: 0.12     # m; another pinky-pro + small margin
-  inflation_radius: 0.09   # m; matches Nav2 inscribed + padding
+  inflation_radius: 0.01   # m; near-zero for wider corridors
 
 # Yaw conventions (standard math / REP 103):
 #   0   = facing +x (east)
