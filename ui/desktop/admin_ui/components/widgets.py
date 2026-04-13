@@ -139,12 +139,15 @@ class RobotCard(QFrame):
         actions_layout = QHBoxLayout(self.actions_frame)
         actions_layout.setContentsMargins(0, 0, 0, 0)
         
-        btn_stop_imm = QPushButton("❌ 즉시 멈춤")
-        btn_stop_imm.setStyleSheet("background-color: #FDE2E2; color: #F56C6C; border-radius: 5px; padding: 5px; font-weight: bold;")
-        btn_stop_next = QPushButton("⏸ 다음 멈춤")
-        btn_stop_next.setStyleSheet("background-color: #FAECD8; color: #E6A23C; border-radius: 5px; padding: 5px; font-weight: bold;")
-        btn_charge = QPushButton("🔌 충전하기")
-        btn_charge.setStyleSheet("background-color: #E1F3D8; color: #67C23A; border-radius: 5px; padding: 5px; font-weight: bold;")
+        self.btn_stop_imm = QPushButton("❌ 즉시 멈춤")
+        self.btn_stop_imm.setStyleSheet("background-color: #FDE2E2; color: #F56C6C; border-radius: 5px; padding: 5px; font-weight: bold;")
+        btn_stop_imm = self.btn_stop_imm
+        self.btn_stop_next = QPushButton("⏸ 다음 멈춤")
+        self.btn_stop_next.setStyleSheet("background-color: #FAECD8; color: #E6A23C; border-radius: 5px; padding: 5px; font-weight: bold;")
+        btn_stop_next = self.btn_stop_next
+        self.btn_charge = QPushButton("🔌 충전하기")
+        self.btn_charge.setStyleSheet("background-color: #E1F3D8; color: #67C23A; border-radius: 5px; padding: 5px; font-weight: bold;")
+        btn_charge = self.btn_charge
 
         actions_layout.addWidget(btn_stop_imm)
         actions_layout.addWidget(btn_stop_next)

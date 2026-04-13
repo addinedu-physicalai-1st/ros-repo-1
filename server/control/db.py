@@ -29,7 +29,7 @@ def _timestamp_from_ms(ms: Optional[int]) -> Timestamp:
 
 class Database:
     def __init__(self, path: Optional[str] = None) -> None:
-        self._path = path or os.environ.get("MRTA_DB_PATH", "mrta.db")
+        self._path = path or os.environ.get("MRTA_DB_PATH", "rostaurant.db")
 
     async def connect(self) -> aiosqlite.Connection:
         conn = await aiosqlite.connect(self._path)

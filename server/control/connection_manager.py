@@ -12,6 +12,7 @@ import aiosqlite
 
 from db import Database, _ts_now_ms
 from robotcafe.db.v1 import robotcafe_pb2 as pb
+from ws_broker import WSBroker
 
 logger = logging.getLogger(__name__)
 
@@ -94,10 +95,12 @@ class ConnectionManager:
         db: Database,
         get_conn: Callable[[], Awaitable[aiosqlite.Connection]],
         db_lock: asyncio.Lock,
+        broker: Optional[WSBroker] = None,
     ) -> None:
         self._db = db
         self._get_conn = get_conn
         self._db_lock = db_lock
+        self._broker = broker
         self._sessions: dict[str, RobotSession] = {}
         self._sessions_lock = asyncio.Lock()
         self.telemetry = TelemetryCache()
@@ -156,6 +159,12 @@ class ConnectionManager:
             async with self._db_lock:
                 conn = await self._get_conn()
                 await self._db.upsert_robot_heartbeat(conn, robot_id=hb.robot_id or rid, last_seen_ms=now_ms)
+            if self._broker:
+                await self._broker.broadcast({
+                    "event": "heartbeat",
+                    "robot_id": hb.robot_id or rid,
+                    "timestamp_ms": now_ms,
+                })
         elif packet.HasField("status_payload"):
             sr = packet.status_payload
             async with self._db_lock:
@@ -169,6 +178,16 @@ class ConnectionManager:
                     current_task_id=sr.current_task,
                     fsm_state=int(sr.fsm_state),
                 )
+            if self._broker:
+                await self._broker.broadcast({
+                    "event": "status",
+                    "robot_id": sr.robot_id or rid,
+                    "robot_status": int(sr.robot_status),
+                    "fsm_state": int(sr.fsm_state),
+                    "current_task": sr.current_task,
+                    "battery": sr.battery,
+                    "timestamp_ms": now_ms,
+                })
         elif packet.HasField("ack_payload"):
             await self._handle_command_ack(packet.ack_payload)
         elif packet.HasField("cmd_payload"):
@@ -177,6 +196,7 @@ class ConnectionManager:
         await self.touch_heartbeat(session.robot_id)
 
     async def _handle_command_ack(self, ack: pb.CommandAck) -> None:
+        now_ms = _ts_now_ms()
         async with self._db_lock:
             conn = await self._get_conn()  # type: ignore[misc]
             row = await self._db.get_command(conn, ack.cmd_id)
@@ -184,7 +204,6 @@ class ConnectionManager:
                 logger.warning("CommandAck for unknown cmd_id=%s", ack.cmd_id)
                 return
             task_id = str(row["task_id"])
-            now_ms = _ts_now_ms()
             st = int(ack.status)
             if st == int(pb.AckStatus.ACCEPTED):
                 await self._db.update_command_status(
@@ -208,6 +227,15 @@ class ConnectionManager:
                 await self._db.update_task_status(
                     conn, task_id=task_id, status=int(pb.TaskStatus.FAILED), completed=True
                 )
+        if self._broker:
+            await self._broker.broadcast({
+                "event": "command_ack",
+                "cmd_id": ack.cmd_id,
+                "robot_id": ack.robot_id,
+                "ack_status": int(ack.status),
+                "task_id": task_id,
+                "timestamp_ms": now_ms,
+            })
 
     async def heartbeat_watchdog(self, stop: asyncio.Event) -> None:
         while not stop.is_set():

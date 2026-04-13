@@ -35,7 +35,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
 import aiosqlite
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from google.protobuf.json_format import MessageToDict
 from pydantic import BaseModel, Field
 
@@ -45,6 +45,7 @@ from db import Database, _ts_now_ms
 from robotcafe.db.v1 import robotcafe_pb2 as pb
 from tcp_gateway import start_tcp_server
 from udp_receiver import start_udp_receiver
+from ws_broker import WSBroker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -168,7 +169,7 @@ class PatchMenuItemBody(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    db_path   = os.environ.get("MRTA_DB_PATH",  "mrta.db")
+    db_path   = os.environ.get("MRTA_DB_PATH",  "rostaurant.db")
     tcp_host  = os.environ.get("MRTA_TCP_HOST", "0.0.0.0")
     tcp_port  = int(os.environ.get("MRTA_TCP_PORT", "9000"))
     udp_host  = os.environ.get("MRTA_UDP_HOST", "0.0.0.0")
@@ -179,7 +180,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await database.init_schema(conn)
     db_lock = asyncio.Lock()
 
-    manager = ConnectionManager(database, get_conn=lambda: conn, db_lock=db_lock)
+    broker = WSBroker()
+    manager = ConnectionManager(database, get_conn=lambda: conn, db_lock=db_lock, broker=broker)
     stop_watchdog = asyncio.Event()
 
     # ── seed places / menu-items (idempotent) ────────────────────
@@ -219,6 +221,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.conn        = conn
     app.state.db_lock     = db_lock
     app.state.manager     = manager
+    app.state.broker      = broker
     app.state.tcp_task    = tcp_task
     app.state.udp_transport = udp_transport
     app.state.watchdog_task = watchdog_task
@@ -620,6 +623,38 @@ async def patch_menu_item(
         rows = await db.list_menu_items(conn)
     item = next((r for r in rows if r["menu_id"] == menu_id), None)
     return item or {}
+
+
+# ──────────────────────────────────────────────────────────────────
+# WebSocket stream  (Data Plane — server→web, unidirectional)
+# ──────────────────────────────────────────────────────────────────
+
+@app.websocket("/ws/stream")
+async def ws_stream(websocket: WebSocket) -> None:
+    """Internal WebSocket endpoint for the web server to subscribe to real-time events.
+
+    Authentication: query param ``token`` must match env ``CONTROL_SERVICE_KEY``.
+    Unauthenticated connections are closed immediately with code 4001.
+    """
+    service_key = os.environ.get("CONTROL_SERVICE_KEY", "").strip()
+    token = websocket.query_params.get("token", "")
+    if service_key and token != service_key:
+        await websocket.close(code=4001)
+        logger.warning("WS /ws/stream rejected: invalid token from %s", websocket.client)
+        return
+
+    broker: WSBroker = websocket.app.state.broker
+    await broker.connect(websocket)
+    logger.info("WS /ws/stream client connected: %s", websocket.client)
+    try:
+        while True:
+            # Keep connection alive; data flows only from server to client.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await broker.disconnect(websocket)
+        logger.info("WS /ws/stream client disconnected: %s", websocket.client)
 
 
 # ──────────────────────────────────────────────────────────────────

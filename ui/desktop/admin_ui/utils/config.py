@@ -29,3 +29,12 @@ CARD_STYLE = """
         border: 1px solid #E4E7ED;
     }
 """
+
+# ── Control server connection ─────────────────────────────────────────────────
+# Override with environment variables before launching the dashboard.
+CONTROL_BASE_URL: str = os.environ.get("CONTROL_BASE_URL", "http://localhost:8000")
+ADMIN_API_KEY:    str = os.environ.get("ADMIN_API_KEY", "")
+
+# Scale factor: pixels per meter used to map ROS pose coordinates onto the
+# floor-plan image.  Adjust to match your actual map resolution.
+MAP_POSE_SCALE_PX: float = float(os.environ.get("MAP_POSE_SCALE_PX", "50"))

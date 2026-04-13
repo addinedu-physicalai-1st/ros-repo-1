@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # ros-repo-1
 
 다중 로봇 작업 할당(MRTA)용 **관제 서버**(Python / FastAPI / asyncio / SQLite)와 **로봇 측 ROS2 브리지**(`rostaurant_networking`)가 포함된 저장소입니다.
@@ -9,59 +8,94 @@
 
 | 경로 | 설명 |
 |------|------|
-| `server/` | TCP(제어)·UDP(텔레메트리)·REST API·SQLite·RBAC |
-| `server/proto/.../robotcafe.proto` | Protobuf 계약 (소스) |
-| `server/robotcafe/db/v1/` | 생성된 Python protobuf 스텁 |
+| `server/control/` | 관제 서버: TCP(제어)·UDP(텔레메트리)·REST API·SQLite(`rostaurant.db`)·RBAC |
+| `server/web/` | 웹 서버: 브라우저 UI 서빙·REST 프록시·WebSocket relay |
+| `server/start.sh` | 두 서버 동시 실행 스크립트 |
+| `server/control/proto/.../robotcafe.proto` | Protobuf 계약 (소스) |
+| `server/control/robotcafe/db/v1/` | 생성된 Python protobuf 스텁 |
+| `server/web/static/kiosk/` | 키오스크 UI (손님 입장·결제) |
+| `server/web/static/kitchen/` | 주방 패널 UI (직원용) |
+| `server/web/static/table_ui/` | 테이블 서비스 UI (손님 요청) |
+| `server/docs/` | 통신 프로토콜 명세 |
+| `ui/desktop/admin_ui/` | PyQt5 데스크톱 관제 UI (관제 서버 REST 직접 연결) |
 | `device/pinky_pro_robot/src/pinky_interfaces/` | ROS 메시지 `RobotCommand`, `RobotTaskStatus` |
 | `device/rostaurant/src/rostaurant_networking/` | ROS2 패키지: TCP 클라이언트 + UDP 송신 + `rostaurant_comm_node` |
 | `device/pinky_pro_robot/src/rostaurant_networking` | 위 패키지로 연결되는 심볼릭 링크(`pinky_pro_robot` 워크스페이스에서 colcon 빌드용) |
 
 ---
 
-## 관제 서버 (`server/`)
+## 서버 실행 (`server/`)
 
 ### 요구 사항
 
 - Python 3.10 이상
-- 권장: `server` 디렉터리 안에 가상환경 `.venv`
+- 가상환경은 `server/control/` 및 `server/web/` 각각에 생성하거나, 한 venv로 두 requirements를 모두 설치해도 됩니다.
 
 ### 설치
 
-**`requirements.txt`는 `server/` 안에만 있습니다.** 저장소 루트가 아니라 반드시 `server`로 이동한 뒤 설치하세요.
-
 ```bash
-cd /path/to/ros-repo-1/server
+# 관제 서버 의존성
+cd /path/to/ros-repo-1/server/control
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# 웹 서버 의존성 (같은 venv 또는 별도)
+cd /path/to/ros-repo-1/server/web
+pip install -r requirements.txt
 ```
 
-(`/path/to/ros-repo-1`은 본인 환경의 실제 절대 경로로 바꿉니다.)
-
-### 실행
-
-`main` 모듈은 **`server` 디렉터리**를 현재 디렉터리로 두고, `PYTHONPATH=.` 로 찾습니다. 아래는 **한 줄씩** 입력합니다 (`export PYTHONPATH=.` 와 `uvicorn`을 붙이면 안 됩니다).
+### 동시 실행 (권장)
 
 ```bash
 cd /path/to/ros-repo-1/server
-source .venv/bin/activate
-export PYTHONPATH=.
-python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+# CONTROL_SERVICE_KEY: 관제 서버 최초 기동 후 로그에서 확인한 ADMIN api_key
+CONTROL_SERVICE_KEY=<admin_api_key> ./start.sh
 ```
 
-(`uvicorn`이 PATH에 있으면 `uvicorn main:app ...` 만으로도 됩니다.)
+- 관제 서버: `http://<호스트>:8000` — API 문서: `http://<호스트>:8000/docs`
+- 웹 서버: `http://<호스트>:3000`
+  - 키오스크 UI: `http://<호스트>:3000/static/kiosk/kiosk.html`
+  - 주방 패널: `http://<호스트>:3000/static/kitchen/kitchen.html`
+  - 테이블 UI: `http://<호스트>:3000/static/table_ui/table_service.html?table=1`
 
-- **HTTP·REST**: `http://<호스트>:8000` — API 문서: `http://<호스트>:8000/docs`  
-  운영에서는 `MRTA_DISABLE_OPENAPI=1` 또는 `MRTA_ENV=production`으로 `/docs`, `/redoc`, `/openapi.json` 비활성화를 권장합니다.
-- **TCP** 기본 `9000`, **UDP** 기본 `9001` (`MRTA_TCP_HOST`, `MRTA_TCP_PORT`, `MRTA_UDP_HOST`, `MRTA_UDP_PORT`, `MRTA_DB_PATH` 등으로 변경 가능)
+포트 변경: `MRTA_PORT=8080 WEB_PORT=5000 ./start.sh`
+
+### 개별 실행
+
+```bash
+# 관제 서버만
+cd /path/to/ros-repo-1/server/control
+source .venv/bin/activate && export PYTHONPATH=.
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+
+# 웹 서버만 (별도 터미널)
+cd /path/to/ros-repo-1/server/web
+source .venv/bin/activate && export PYTHONPATH=.
+CONTROL_SERVICE_KEY=<key> python3 -m uvicorn main:app --host 0.0.0.0 --port 3000
+```
+
+### 환경변수 요약
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `MRTA_DB_PATH` | `rostaurant.db` | DB 파일 경로 (control) |
+| `MRTA_TCP_PORT` | `9000` | 로봇 TCP 포트 |
+| `MRTA_UDP_PORT` | `9001` | 로봇 UDP 포트 |
+| `MRTA_ADMIN_KEY_OUT` | — | 초기 ADMIN 키 저장 파일 경로 |
+| `CONTROL_SERVICE_KEY` | — | 웹→관제 내부 인증 키 (web에 설정) |
+| `CONTROL_BASE_URL` | `http://localhost:8000` | 웹서버가 바라보는 관제 REST 주소 |
+| `CONTROL_WS_URL` | `ws://localhost:8000/ws/stream` | 웹서버가 구독하는 관제 WS 주소 |
+| `MRTA_PORT` | `8000` | `start.sh`에서 관제 서버 포트 |
+| `WEB_PORT` | `3000` | `start.sh`에서 웹 서버 포트 |
 
 ### 보안·운영 요약
 
-- 방화벽: 관제 호스트 **8000·9000·9001 인바운드**는 신뢰 네트워크만, 로봇에서는 해당 호스트로 **아웃바운드** 허용.
+- 방화벽: 관제 호스트 **8000·9000·9001 인바운드**는 신뢰 네트워크만, 로봇에서는 해당 호스트로 **아웃바운드** 허용. 웹서버 **3000** 은 사용자 네트워크에 노출.
 - 최초 기동 시 관리자 API 키는 **로그에 전체 미기록**. 파일 저장: `MRTA_ADMIN_KEY_OUT=/path/to/file` (권한 `0600`).
-- 로봇 평면 기본 무인증. 운영 시 `MRTA_REQUIRE_ROBOT_TOKEN=1` + `POST /robots/{robot_id}/rotate-connection-token`(ADMIN)으로 받은 값을 브리지 `connection_token`에 설정. UDP만 제한: `MRTA_UDP_REQUIRE_ACTIVE_SESSION=1`(해당 `robot_id`에 TCP 세션 있을 때만 UDP 반영).
-- `GET /health` → 인증 없이 `{"status":"ok"}`만. 연결 로봇 ID: `GET /health/detail` + Bearer(STAFF_FLOOR 이상).
-- 환경 변수 표: [server/docs/MRTA_Communication_Protocol_Spec.md](server/docs/MRTA_Communication_Protocol_Spec.md) §9.1
+- 로봇 평면 기본 무인증. 운영 시 `MRTA_REQUIRE_ROBOT_TOKEN=1` + `POST /robots/{robot_id}/rotate-connection-token`(ADMIN).
+- `GET /health` → 인증 없이 `{"status":"ok"}`만.
+- 환경 변수 전체 표: [server/docs/MRTA_Communication_Protocol_Spec.md](server/docs/MRTA_Communication_Protocol_Spec.md)
 
 ---
 
@@ -135,7 +169,7 @@ curl -sS -X POST "http://127.0.0.1:8000/commands/send" \
   -d '{"robot_id":"PNK01","task_id":"위에서_만든_task_id","command":1,"target_id":"TBL_01"}'
 ```
 
-- `command`는 `CommandType` 정수(예: `1`=MOVE_TO). 정의는 `server/proto/robotcafe/db/v1/robotcafe.proto` 참고.
+- `command`는 `CommandType` 정수(예: `1`=MOVE_TO). 정의는 `server/control/proto/robotcafe/db/v1/robotcafe.proto` 참고.
 - `503 robot not connected`이면 TCP 세션 없음(브리지·`server_host`/포트 확인).
 
 **브리지 없이** 토픽만 점검할 때:
@@ -157,7 +191,19 @@ ros2 topic pub --once /robot_command pinky_interfaces/msg/RobotCommand \
 | `ros2 topic echo` 가 멈춘 것처럼 보임 | 구독 대기 상태가 정상. 다른 터미널에서 `curl` 또는 `ros2 topic pub`으로 메시지 발생 |
 
 주요 파라미터 전체는 [device/rostaurant/.../ros_bridge_node.py](device/rostaurant/src/rostaurant_networking/rostaurant_networking/ros_bridge_node.py) 의 `declare_parameter` 를 참고하세요.
-=======
+
+---
+
+## 권장 기동 순서 (전체 시스템)
+
+| 순서 | 터미널 | 내용 |
+|------|--------|------|
+| 1 | A | `cd server && CONTROL_SERVICE_KEY=<key> ./start.sh` |
+| 2 | B | (시뮬 사용 시) Gazebo 등 |
+| 3 | C | `ros2 run rostaurant_networking rostaurant_comm_node ...` |
+| 4 | — | 브라우저: `http://localhost:3000/static/kiosk/kiosk.html` |
+| 5 | — | (선택) `cd ui/desktop/admin_ui && python main.py` |
+
 # Smart Restaurant Robot System - Admin Dashboard
 
 ## 📖 프로젝트 소개 (Introduction)
@@ -215,4 +261,3 @@ cd ui/desktop/admin_ui
 # 어플리케이션 실행
 python main.py
 ```
->>>>>>> origin/feat/admin-gui
