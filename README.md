@@ -4,180 +4,187 @@
 
 ---
 
-## 저장소 구조
+## 전체 시스템 실행 방법
 
-| 경로 | 설명 |
+### 필수 요구 사항
+
+| 항목 | 버전 |
 |------|------|
-| `server/control/` | 관제 서버: TCP(제어)·UDP(텔레메트리)·REST API·SQLite(`rostaurant.db`)·RBAC |
-| `server/web/` | 웹 서버: 브라우저 UI 서빙·REST 프록시·WebSocket relay |
-| `server/start.sh` | 두 서버 동시 실행 스크립트 |
-| `server/control/proto/.../robotcafe.proto` | Protobuf 계약 (소스) |
-| `server/control/robotcafe/db/v1/` | 생성된 Python protobuf 스텁 |
-| `server/web/static/kiosk/` | 키오스크 UI (손님 입장·결제) |
-| `server/web/static/kitchen/` | 주방 패널 UI (직원용) |
-| `server/web/static/table_ui/` | 테이블 서비스 UI (손님 요청) |
-| `server/docs/` | 통신 프로토콜 명세 |
-| `ui/desktop/admin_ui/` | PyQt5 데스크톱 관제 UI (관제 서버 REST 직접 연결) |
-| `device/pinky_pro_robot/src/pinky_interfaces/` | ROS 메시지 `RobotCommand`, `RobotTaskStatus` |
-| `device/rostaurant/src/rostaurant_networking/` | ROS2 패키지: TCP 클라이언트 + UDP 송신 + `rostaurant_comm_node` |
-| `device/pinky_pro_robot/src/rostaurant_networking` | 위 패키지로 연결되는 심볼릭 링크(`pinky_pro_robot` 워크스페이스에서 colcon 빌드용) |
+| Python | 3.10 이상 |
+| ROS2 | Jazzy |
+| PyQt5 | 시스템 패키지 (`sudo apt install python3-pyqt5`) |
+| requests | `pip install requests` |
 
 ---
 
-## 서버 실행 (`server/`)
-
-### 요구 사항
-
-- Python 3.10 이상
-- 가상환경은 `server/control/` 및 `server/web/` 각각에 생성하거나, 한 venv로 두 requirements를 모두 설치해도 됩니다.
-
-### 설치
+### 1단계 — 서버 의존성 설치 (최초 1회)
 
 ```bash
-# 관제 서버 의존성
 cd /path/to/ros-repo-1/server/control
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 웹 서버 의존성 (같은 venv 또는 별도)
-cd /path/to/ros-repo-1/server/web
+cd ../web
 pip install -r requirements.txt
 ```
 
-### 동시 실행 (권장)
+---
+
+### 2단계 — ADMIN_API_KEY 확인
+
+**최초 실행 시**: 키를 파일로 저장해두면 이후 재사용이 편합니다.
 
 ```bash
 cd /path/to/ros-repo-1/server
-# CONTROL_SERVICE_KEY: 관제 서버 최초 기동 후 로그에서 확인한 ADMIN api_key
-CONTROL_SERVICE_KEY=<admin_api_key> ./start.sh
+MRTA_ADMIN_KEY_OUT=~/admin_key.txt ./start.sh
+# 서버 시작 후 ~/admin_key.txt 에 키가 저장됨
+cat ~/admin_key.txt
 ```
 
-- 관제 서버: `http://<호스트>:8000` — API 문서: `http://<호스트>:8000/docs`
-- 웹 서버: `http://<호스트>:3000`
-  - 키오스크 UI: `http://<호스트>:3000/static/kiosk/kiosk.html`
-  - 주방 패널: `http://<호스트>:3000/static/kitchen/kitchen.html`
-  - 테이블 UI: `http://<호스트>:3000/static/table_ui/table_service.html?table=1`
-
-포트 변경: `MRTA_PORT=8080 WEB_PORT=5000 ./start.sh`
-
-### 개별 실행
-
-```bash
-# 관제 서버만
-cd /path/to/ros-repo-1/server/control
-source .venv/bin/activate && export PYTHONPATH=.
-python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
-
-# 웹 서버만 (별도 터미널)
-cd /path/to/ros-repo-1/server/web
-source .venv/bin/activate && export PYTHONPATH=.
-CONTROL_SERVICE_KEY=<key> python3 -m uvicorn main:app --host 0.0.0.0 --port 3000
-```
-
-### 환경변수 요약
-
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `MRTA_DB_PATH` | `rostaurant.db` | DB 파일 경로 (control) |
-| `MRTA_TCP_PORT` | `9000` | 로봇 TCP 포트 |
-| `MRTA_UDP_PORT` | `9001` | 로봇 UDP 포트 |
-| `MRTA_ADMIN_KEY_OUT` | — | 초기 ADMIN 키 저장 파일 경로 |
-| `CONTROL_SERVICE_KEY` | — | 웹→관제 내부 인증 키 (web에 설정) |
-| `CONTROL_BASE_URL` | `http://localhost:8000` | 웹서버가 바라보는 관제 REST 주소 |
-| `CONTROL_WS_URL` | `ws://localhost:8000/ws/stream` | 웹서버가 구독하는 관제 WS 주소 |
-| `MRTA_PORT` | `8000` | `start.sh`에서 관제 서버 포트 |
-| `WEB_PORT` | `3000` | `start.sh`에서 웹 서버 포트 |
-
-### 보안·운영 요약
-
-- 방화벽: 관제 호스트 **8000·9000·9001 인바운드**는 신뢰 네트워크만, 로봇에서는 해당 호스트로 **아웃바운드** 허용. 웹서버 **3000** 은 사용자 네트워크에 노출.
-- 최초 기동 시 관리자 API 키는 **로그에 전체 미기록**. 파일 저장: `MRTA_ADMIN_KEY_OUT=/path/to/file` (권한 `0600`).
-- 로봇 평면 기본 무인증. 운영 시 `MRTA_REQUIRE_ROBOT_TOKEN=1` + `POST /robots/{robot_id}/rotate-connection-token`(ADMIN).
-- `GET /health` → 인증 없이 `{"status":"ok"}`만.
-- 환경 변수 전체 표: [server/docs/MRTA_Communication_Protocol_Spec.md](server/docs/MRTA_Communication_Protocol_Spec.md)
+**이미 키를 알고 있는 경우**: 아래 3단계로 바로 진행.
 
 ---
 
-## 로봇 측 ROS2 (`rostaurant_networking`)
+### 3단계 — 서버 + PyQt 대시보드 실행
 
-### 빌드
+```bash
+cd /path/to/ros-repo-1/server
+ADMIN_API_KEY=<admin_api_key> ./start.sh
+```
 
-`device/pinky_pro_robot`을 워크스페이스 루트로 두고, `pinky_interfaces`와 함께 빌드합니다.
+- 관제 서버: `http://localhost:8000` (API 문서: `http://localhost:8000/docs`)
+- 웹 서버: `http://localhost:3000`
+- PyQt 대시보드: DISPLAY 환경변수가 설정된 경우 **자동 실행**
+
+> PyQt가 뜨지 않을 때: `sudo apt install python3-pyqt5 python3-requests` 후 재시도.  
+> 대시보드 없이 서버만 실행하려면: `NO_DASHBOARD=1 ADMIN_API_KEY=<key> ./start.sh`
+
+---
+
+### 4단계 — Gazebo 시뮬레이션 실행 (별도 터미널)
+
+```bash
+# ROS2 환경 활성화
+source /opt/ros/jazzy/setup.zsh   # 또는 setup.bash
+
+# Gazebo 시뮬레이션 시작
+ros2 launch pinky_gz_sim launch_sim.launch.xml
+```
+
+---
+
+### 5단계 — 로봇 브리지 노드 실행 (별도 터미널)
 
 ```bash
 cd /path/to/ros-repo-1/device/pinky_pro_robot
+
+# 빌드 (최초 1회)
+source /opt/ros/jazzy/setup.zsh
 colcon build --packages-select pinky_interfaces rostaurant_networking
-source install/setup.bash
-```
+source install/setup.zsh
 
-(zsh이면 `source install/setup.zsh`.)
-
-`ros2 run`이 실행 파일을 찾으려면 패키지에 `setup.cfg`가 포함되어 있어야 합니다(본 저장소의 `rostaurant_networking`에 포함됨). 빌드 후 확인:
-
-```bash
-ros2 pkg executables rostaurant_networking
-# 기대 출력: rostaurant_networking rostaurant_comm_node
-```
-
-### 노드 실행
-
-관제 서버가 떠 있는 호스트를 `server_host`로 지정합니다. 로봇마다 **`robot_id`를 다르게** 줍니다.
-
-```bash
-source install/setup.bash
-ros2 run rostaurant_networking rostaurant_comm_node --ros-args \
+# 브리지 노드 실행
+ros2 run rostaurant_networking rostaurant_comm_node \
+  --ros-args \
   -p robot_id:=PNK01 \
   -p server_host:=127.0.0.1 \
   -p tcp_port:=9000 \
-  -p udp_port:=9001
+  -p udp_port:=9001 \
+  -p odom_topic:=/odom \
+  -p battery_topic:=/battery \
+  -p task_status_topic:=/task_status \
+  -p robot_command_topic:=/robot_command
 ```
 
-- **`connection_token`**: 서버에 `MRTA_REQUIRE_ROBOT_TOKEN=1`일 때만 `-p connection_token:=...` (관제에서 `POST /robots/{robot_id}/rotate-connection-token`으로 발급).
-- **토픽 리맵**: 시뮬/로봇에 따라 `-p odom_topic:=...`, `-p battery_topic:=...`, `-p task_status_topic:=...` (기본은 각각 `/odom`, `/battery`, `/task_status`). Gazebo만 켠 상태에서 이 토픽이 없으면 해당 텔레메트리는 서버로 거의 안 나갑니다.
-- **명령 수신 토픽**: 브리지가 TCP로 받은 명령은 **`/robot_command`** (`pinky_interfaces/RobotCommand`)로 퍼블리시합니다. `-p robot_command_topic:=...` 으로 바꿀 수 있습니다.
-
-### 권장 기동 순서 (터미널 나누기)
-
-| 순서 | 터미널 | 내용 |
-|------|--------|------|
-| 1 | A | 위 **관제 서버** 실행 (`server` + venv + uvicorn) |
-| 2 | B | (시뮬 사용 시) Gazebo 등 — 예: `ros2 launch pinky_gz_sim launch_sim.launch.xml` |
-| 3 | C | `pinky_pro_robot`에서 `source install/setup.bash` 후 `ros2 run rostaurant_networking rostaurant_comm_node ...` |
+연결 성공 시 서버 로그에 다음이 출력됩니다:
+```
+INFO  connection_manager  Registered TCP session for PNK01
+```
 
 ---
 
-## 명령 수신 테스트 (REST → TCP → ROS)
+### 권장 기동 순서 요약
 
-1. 브리지가 TCP로 붙어 있고, `curl`의 `robot_id`가 브리지의 `robot_id`와 같아야 합니다.
-2. `POST /commands/send`는 DB 제약으로 **`task_id`가 기존 `tasks` 행과 일치**해야 할 수 있습니다. 먼저 `POST /tasks`로 작업을 만들고 응답의 `task_id`를 사용하세요.
-3. **ADMIN** API 키로 호출합니다 (`Authorization: Bearer <키>`).
+| 순서 | 터미널 | 명령 |
+|------|--------|------|
+| 1 | A | `cd server && ADMIN_API_KEY=<key> ./start.sh` |
+| 2 | B | `ros2 launch pinky_gz_sim launch_sim.launch.xml` |
+| 3 | C | `ros2 run rostaurant_networking rostaurant_comm_node ...` |
+| 4 | 브라우저 | `http://localhost:3000/static/kiosk/kiosk.html` |
 
-**터미널 1** — 수신 확인:
+---
 
-```bash
-source install/setup.bash
-ros2 topic echo /robot_command
+### 환경변수 전체 목록
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `ADMIN_API_KEY` | — | ADMIN 사용자 API 키. 서버 최초 기동 시 로그/파일에서 확인 |
+| `MRTA_ADMIN_KEY_OUT` | — | ADMIN 키를 저장할 파일 경로 (`chmod 600` 권장) |
+| `MRTA_DB_PATH` | `rostaurant.db` | SQLite DB 파일 경로 |
+| `MRTA_PORT` | `8000` | 관제 서버 포트 |
+| `WEB_PORT` | `3000` | 웹 서버 포트 |
+| `MRTA_TCP_PORT` | `9000` | 로봇 TCP 포트 |
+| `MRTA_UDP_PORT` | `9001` | 로봇 UDP 포트 |
+| `CONTROL_BASE_URL` | `http://localhost:8000` | 웹서버·PyQt가 바라보는 관제 REST 주소 |
+| `CONTROL_WS_URL` | `ws://localhost:8000/ws/stream` | 웹서버 WS relay 주소 |
+| `CONTROL_SERVICE_KEY` | `ADMIN_API_KEY`와 동일 | 웹→관제 내부 인증 키 |
+| `NO_DASHBOARD` | `0` | `1`로 설정하면 PyQt 대시보드 자동 실행 안 함 |
+| `DASHBOARD_PYTHON` | 자동 탐색 | PyQt5가 설치된 Python 경로 |
+| `MAP_POSE_SCALE_PX` | `200` | 맵 픽셀/미터 비율 (map4, 10x 업스케일 기준) |
+| `MAP_ORIGIN_X` | `57` | Gazebo (0,0) 스폰 위치의 맵 이미지 X 픽셀 |
+| `MAP_ORIGIN_Y` | `72` | Gazebo (0,0) 스폰 위치의 맵 이미지 Y 픽셀 |
+
+---
+
+## 웹 UI 주소
+
+| UI | 주소 |
+|----|------|
+| 키오스크 (손님 입장·결제) | `http://localhost:3000/static/kiosk/kiosk.html` |
+| 주방 패널 (직원용) | `http://localhost:3000/static/kitchen/kitchen.html` |
+| 테이블 서비스 (손님 요청) | `http://localhost:3000/static/table_ui/table_service.html?table=1` |
+| API 문서 (Swagger) | `http://localhost:8000/docs` |
+
+---
+
+## 저장소 구조
+
+| 경로 | 설명 |
+|------|------|
+| `server/control/` | 관제 서버: TCP·UDP·REST API·SQLite(`rostaurant.db`)·RBAC |
+| `server/web/` | 웹 서버: 브라우저 UI 서빙·REST 프록시·WebSocket relay |
+| `server/start.sh` | 관제 서버 + 웹 서버 + PyQt 대시보드 동시 실행 스크립트 |
+| `server/control/proto/` | Protobuf 계약 소스 |
+| `server/web/static/kiosk/` | 키오스크 UI |
+| `server/web/static/kitchen/` | 주방 패널 UI |
+| `server/web/static/table_ui/` | 테이블 서비스 UI |
+| `ui/desktop/admin_ui/` | PyQt5 데스크톱 관제 대시보드 |
+| `ui/desktop/assets/images/gazebo_map.png` | Gazebo `map4` 점유 격자 맵 (PyQt 표시용, 400×320px) |
+| `device/pinky_pro_robot/map4.pgm` | nav2 원본 맵 (40×32px, 0.05 m/px) |
+| `device/pinky_pro_robot/map4.yaml` | nav2 맵 메타데이터 (origin, resolution) |
+| `device/rostaurant/src/rostaurant_networking/` | ROS2 패키지: TCP 클라이언트 + UDP 송신 |
+| `device/pinky_pro_robot/src/pinky_gz_sim/` | Gazebo 시뮬레이션 패키지 |
+
+---
+
+## PyQt 대시보드 맵 좌표 동기화
+
+PyQt 맵(`gazebo_map.png`)은 `map4.pgm`을 10배 업스케일한 이미지입니다.  
+Gazebo `/odom` 좌표가 그대로 맵 픽셀로 변환됩니다:
+
+```
+pixel_x = MAP_ORIGIN_X + odom_x × MAP_POSE_SCALE_PX
+pixel_y = MAP_ORIGIN_Y - odom_y × MAP_POSE_SCALE_PX   (화면 Y축 반전)
 ```
 
-**터미널 2** — 명령 전송(값은 환경에 맞게 수정):
+| Gazebo 위치 | 맵 픽셀 | 의미 |
+|---|---|---|
+| (0, 0) — 로봇 스폰 | (57, 72) | 맵 좌상단 근처 |
+| (+1m, 0) | (257, 72) | 오른쪽 1m |
+| (0, -1m) | (57, 272) | 아래쪽 1m |
 
-```bash
-curl -sS -X POST "http://127.0.0.1:8000/commands/send" \
-  -H "Authorization: Bearer ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"robot_id":"PNK01","task_id":"위에서_만든_task_id","command":1,"target_id":"TBL_01"}'
-```
-
-- `command`는 `CommandType` 정수(예: `1`=MOVE_TO). 정의는 `server/control/proto/robotcafe/db/v1/robotcafe.proto` 참고.
-- `503 robot not connected`이면 TCP 세션 없음(브리지·`server_host`/포트 확인).
-
-**브리지 없이** 토픽만 점검할 때:
-
-```bash
-ros2 topic pub --once /robot_command pinky_interfaces/msg/RobotCommand \
-  "{cmd_id: 'test', task_id: 't1', robot_id: 'PNK01', command: 1, target_id: 'TBL_01'}"
-```
+맵 또는 스폰 위치가 바뀌면 `MAP_ORIGIN_X`, `MAP_ORIGIN_Y`, `MAP_POSE_SCALE_PX` 환경변수로 재보정할 수 있습니다.
 
 ---
 
@@ -185,79 +192,54 @@ ros2 topic pub --once /robot_command pinky_interfaces/msg/RobotCommand \
 
 | 증상 | 원인·조치 |
 |------|-----------|
-| `Could not open requirements.txt` | `cd .../server` 후 `pip install -r requirements.txt` |
-| `Could not import module "main"` | `cd server` 후 `export PYTHONPATH=.` 실행 여부 확인 |
-| `No executable found` / `ros2 pkg executables` 빈 줄 | `rostaurant_networking` 재빌드, `setup.cfg` 포함 여부 확인 후 `source install/setup.bash` |
-| `ros2 topic echo` 가 멈춘 것처럼 보임 | 구독 대기 상태가 정상. 다른 터미널에서 `curl` 또는 `ros2 topic pub`으로 메시지 발생 |
-
-주요 파라미터 전체는 [device/rostaurant/.../ros_bridge_node.py](device/rostaurant/src/rostaurant_networking/rostaurant_networking/ros_bridge_node.py) 의 `declare_parameter` 를 참고하세요.
+| `{"detail":"Not authenticated"}` | `ADMIN_API_KEY` 미설정 또는 `Authorization: Bearer <key>` 헤더 누락 |
+| `{"detail":"no pose cached for robot"}` | 브리지 노드가 서버에 연결되지 않음. 브리지 재실행 필요 |
+| PyQt 대시보드가 안 뜸 | `DISPLAY` 환경변수 미설정 또는 PyQt5 미설치 (`sudo apt install python3-pyqt5`) |
+| `TCP framing error` | 브리지 노드가 연결 후 즉시 끊어짐. 서버 로그의 상세 에러 확인 |
+| `503 robot not connected` | 브리지 노드가 TCP로 연결되지 않은 상태에서 명령 전송 시도 |
+| `FOREIGN KEY constraint failed` | 존재하지 않는 `task_id`로 명령 전송. `POST /tasks`로 먼저 태스크 생성 필요 |
+| `Could not import module "main"` | `cd server/control` 후 `export PYTHONPATH=.` 실행 |
+| Gazebo에서 로봇 이동 시 PyQt 맵이 안 움직임 | 브리지 노드가 서버에 연결된 후 `/odom`이 발행되고 있는지 `ros2 topic hz /odom`으로 확인 |
 
 ---
 
-## 권장 기동 순서 (전체 시스템)
+## 보안·운영 요약
 
-| 순서 | 터미널 | 내용 |
-|------|--------|------|
-| 1 | A | `cd server && CONTROL_SERVICE_KEY=<key> ./start.sh` |
-| 2 | B | (시뮬 사용 시) Gazebo 등 |
-| 3 | C | `ros2 run rostaurant_networking rostaurant_comm_node ...` |
-| 4 | — | 브라우저: `http://localhost:3000/static/kiosk/kiosk.html` |
-| 5 | — | (선택) `cd ui/desktop/admin_ui && python main.py` |
+- 방화벽: 관제 호스트 **8000·9000·9001 인바운드**는 신뢰 네트워크만 허용.
+- 최초 기동 시 ADMIN API 키: `MRTA_ADMIN_KEY_OUT=/path/to/file`로 파일에 저장 (`chmod 600` 권장).
+- 로봇 평면 기본 무인증. 운영 시 `MRTA_REQUIRE_ROBOT_TOKEN=1` 설정.
+- `GET /health` → 인증 없이 `{"status":"ok"}`.
 
-# Smart Restaurant Robot System - Admin Dashboard
+---
 
-## 📖 프로젝트 소개 (Introduction)
-본 프로젝트는 스마트 레스토랑 로봇 시스템을 위한 모듈형 **PyQt5 기반의 통합 관제 대시보드 (Admin Dashboard)** 입니다. 로봇의 실시간 관제, 개별 네트워크 설정, 맵 및 테이블 관리, 태스크 할당, 블랙박스 녹화 기록 관리 및 시스템 네트워크 모의 테스트 기능을 단일 어플리케이션 안에서 모두 제공합니다.
+## Admin Dashboard (PyQt5)
 
-## ✨ 주요 기능 (Key Features)
-1. **🗺️ 관제 메인 페이지 (Map Dashboard)**
-   - 로봇의 위치와 이동 경로를 시각적으로 모니터링할 수 있는 반응형 맵 뷰 제공.
-2. **🤖 로봇 개별 환경 설정 (Robot Setting)**
-   - 각 로봇의 TCP/UDP 네트워크 파라미터 등 상세 연결 환경을 구성하고 제어.
-3. **🪑 맵(테이블/경로) 설정 (Map Setting)**
-   - 매장 내 테이블 추가/삭제 및 로봇의 주행 경로 등을 직관적으로 설정.
-4. **📝 태스크(작업) 통합 관리 (Task Management)**
-   - 로봇에게 할당되는 각종 서빙 및 이동 태스크를 종합적으로 관리.
-5. **📹 비전 및 녹화 관리 (Vision & Record Management)**
-   - 로봇의 비전 시스템 및 블랙박스 역할을 하는 녹화 기록 조회 기능.
-6. **🧪 관제 시스템 및 네트워크 테스트 (System & Network Tests)**
-   - TCP 상태, REST API, 실시간 응답 성능, 장애 및 예외 상황 등에 대한 통합 네트워크 모의 테스트 및 히스토리 트래킹 기능 지원.
+### 주요 기능
 
-## 📂 디렉토리 구조 (Directory Structure)
-UI 관련 코드는 `ui/desktop/admin_ui/` 하위에 완전하게 모듈화되어 있습니다.
+1. **관제 메인 (Map Dashboard)** — 로봇 실시간 위치 + Gazebo 맵 동기화
+2. **로봇 설정 (Robot Setting)** — TCP/UDP 파라미터 구성 및 제어
+3. **맵 설정 (Map Setting)** — 테이블 추가/삭제, 주행 경로 설정
+4. **태스크 관리 (Task Management)** — 서빙·이동 태스크 통합 관리
+5. **비전·녹화 관리 (Vision & Record)** — 녹화 기록 조회
+6. **시스템 테스트 (Network Tests)** — TCP·REST·실시간 응답 모의 테스트
 
-```text
-ros-repo-1/
-└── ui/
-    └── desktop/
-        └── admin_ui/
-            ├── main.py              # 메인 실행 파일 및 통합 GUI (QMainWindow)
-            ├── components/          # 재사용 가능한 UI 컴포넌트(위젯)
-            ├── utils/               # 유틸리티 (예: test_manager.py)
-            └── views/               # 기능별 개별 페이지 화면 구성
-                ├── map_view.py              # 맵 관제 대시보드
-                ├── robot_setting_view.py    # 로봇 환경 설정
-                ├── map_setting_view.py      # 맵 & 테이블 설정
-                ├── task_view.py             # 태스크 관리
-                └── record_view.py           # 비전 및 녹화 관리
+### 디렉토리 구조
+
+```
+ui/desktop/admin_ui/
+├── main.py              # 메인 실행 파일 (QMainWindow)
+├── components/          # 재사용 UI 컴포넌트
+├── utils/               # api_client.py, config.py 등
+└── views/
+    ├── map_view.py          # 맵 관제 대시보드
+    ├── robot_setting_view.py
+    ├── map_setting_view.py
+    ├── task_view.py
+    └── record_view.py
 ```
 
-## ⚙️ 요구 환경 (Requirements)
-* **Python 3.x**
-* **PyQt5**
-
-필요한 패키지를 설치하려면 아래 명령어를 사용하세요:
-```bash
-pip install PyQt5
-```
-
-## 🚀 실행 가이드 (How to Run)
-터미널에서 `admin_ui` 디렉토리로 이동한 후 `main.py`를 실행합니다.
+### 단독 실행 (start.sh 없이)
 
 ```bash
-# 디렉토리 이동
-cd ui/desktop/admin_ui
-
-# 어플리케이션 실행
-python main.py
+ADMIN_API_KEY=<key> python3 ui/desktop/admin_ui/main.py
 ```
