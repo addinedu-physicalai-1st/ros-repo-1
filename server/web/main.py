@@ -176,9 +176,10 @@ async def api_checkout(request: Request) -> JSONResponse:
     if not table:
         raise HTTPException(status_code=422, detail="table is required")
 
+    dest_id = f"TBL_{table.zfill(2)}" if table.isdigit() else table
     payload = {
         "task_type": 1,        # KIOSK_TO_TABLE
-        "dest_id":   table,
+        "dest_id":   dest_id,
         "priority":  2,        # NORMAL
         "requester_id": "",
     }
@@ -206,7 +207,7 @@ async def api_kitchen(request: Request) -> JSONResponse:
 
 
 _TABLE_TASK_MAP: dict[str, int] = {
-    "toilet":     6,   # ESCORT_SERVICE
+    "toilet":     2,   # TABLE_TO_TOILET
     "robotSwap":  5,   # ROBOT_SWAP
     "dishDone":   4,   # DISH_PICKUP
     "dishPickup": 4,   # DISH_PICKUP

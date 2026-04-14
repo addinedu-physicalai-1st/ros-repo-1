@@ -1,13 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { Screen, Flow, MenuItem } from './types'
 import { sendRequest, respondTask } from './api/client'
 import { useTaskEvents } from './hooks/useTaskEvents'
-import {
-  mockAccompanyRequest,
-  mockWaitAccompanyArrival,
-  mockWaitReturnArrival,
-  mockRespondAccompanyTask,
-} from './api/mock'
 
 import Toast from './components/Toast'
 import type { ToastMessage } from './components/Toast'
@@ -60,83 +54,73 @@ export default function App() {
 
   // ── Accompany flow state ──────────────────────────────────────────────────
   const [accompanyTaskId, setAccompanyTaskId] = useState<string | null>(null)
-  // Holds the cleanup function for the active mock WS arrival listener
-  const accompanyCleanupRef = useRef<(() => void) | null>(null)
 
-  // Cancel any pending mock WS timer on unmount / flow reset
-  useEffect(() => {
-    return () => {
-      accompanyCleanupRef.current?.()
-    }
-  }, [])
+  // WebSocket: fires when the robot assigned to accompany task reports ARRIVED
+  useTaskEvents(
+    (screen === 'accompanyCallingRobot' || screen === 'accompanyReturning') ? accompanyTaskId : null,
+    () => {
+      if (screen === 'accompanyCallingRobot') go('accompanyArrived')
+      if (screen === 'accompanyReturning') go('accompanyReturned')
+    },
+  )
 
-  const cancelAccompanyListener = () => {
-    accompanyCleanupRef.current?.()
-    accompanyCleanupRef.current = null
-  }
-
-  // [화면 1 -> 2] 동행 버튼: POST /api/request then wait for arrival WS event
+  // [화면 1 -> 2] 동행 버튼: POST /api/request { type: "escort" }
   const startAccompanyFlow = async () => {
-    cancelAccompanyListener()
     go('accompanyCallingRobot')
-    const { task_id } = await mockAccompanyRequest()
-    setAccompanyTaskId(task_id)
-    const cleanup = mockWaitAccompanyArrival(() => go('accompanyArrived'))
-    accompanyCleanupRef.current = cleanup
+    const tableDest = `TBL_${tableId.padStart(2, '0')}`
+    const res = await sendRequest('escort', tableDest)
+    if (res.task_id) {
+      setAccompanyTaskId(res.task_id)
+    } else if (!res.ok) {
+      setToast({ id: Date.now(), text: '동행 로봇 요청 실패', type: 'error' })
+      go('home')
+    }
   }
 
   // [화면 3 RETRY] re-dispatch and wait again
   const handleAccompanyRetry = async () => {
     if (!accompanyTaskId) return
-    cancelAccompanyListener()
-    await mockRespondAccompanyTask(accompanyTaskId, 'retry')
+    await respondTask(accompanyTaskId, { status: 'retry' })
     go('accompanyCallingRobot')
-    const cleanup = mockWaitAccompanyArrival(() => go('accompanyArrived'))
-    accompanyCleanupRef.current = cleanup
   }
 
   // [화면 3 OK] accept -> accompany active
   const handleAccompanyOk = async () => {
     if (!accompanyTaskId) return
-    await mockRespondAccompanyTask(accompanyTaskId, 'ok')
+    await respondTask(accompanyTaskId, { status: 'ok' })
     go('accompanyActive')
   }
 
   // [화면 4 자리로 복귀] send return command, wait for return arrival
   const handleAccompanyReturn = async () => {
     if (!accompanyTaskId) return
-    cancelAccompanyListener()
-    await mockRespondAccompanyTask(accompanyTaskId, 'return')
+    await respondTask(accompanyTaskId, { status: 'retry' })
     go('accompanyReturning')
-    const cleanup = mockWaitReturnArrival(() => go('accompanyReturned'))
-    accompanyCleanupRef.current = cleanup
   }
 
   // [화면 4 동행 완료 / 화면 6 완료] service complete
   const handleAccompanyComplete = async () => {
-    cancelAccompanyListener()
     if (!accompanyTaskId) return
-    await mockRespondAccompanyTask(accompanyTaskId, 'complete')
+    await respondTask(accompanyTaskId, { status: 'ok' })
     go('accompanyComplete')
   }
 
   // [화면 6 동행] resume accompany from returned state
   const handleAccompanyResume = async () => {
     if (!accompanyTaskId) return
-    await mockRespondAccompanyTask(accompanyTaskId, 'resume')
+    await respondTask(accompanyTaskId, { status: 'ok' })
     go('accompanyActive')
   }
 
   // Reset accompany state when returning home
   const resetAccompanyState = () => {
-    cancelAccompanyListener()
     setAccompanyTaskId(null)
   }
 
   // ── Toilet flow ──────────────────────────────────────────────────
   const startToiletRobotGuide = async () => {
     go('callingRobot')
-    const toiDest = 'TOILET_01'
+    const toiDest = 'TOILET'
     const res = await sendRequest('toilet', toiDest)
     if (res.task_id) {
       setTaskId(res.task_id)

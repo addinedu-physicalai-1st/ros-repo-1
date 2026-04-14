@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # ros-repo-1
 
 다중 로봇 작업 할당(MRTA)용 **관제 서버**(Python / FastAPI / asyncio / SQLite)와 **로봇 측 ROS2 브리지**(`rostaurant_networking`)가 포함된 저장소입니다.
@@ -112,11 +111,82 @@ INFO  connection_manager  Registered TCP session for PNK01
 | 1 | A | `cd server && ADMIN_API_KEY=<key> ./start.sh` |
 | 2 | B | `ros2 launch pinky_gz_sim launch_sim.launch.xml` |
 | 3 | C | `ros2 run rostaurant_networking rostaurant_comm_node ...` |
-| 4 | 브라우저 | `http://localhost:3000/static/kiosk/kiosk.html` |
+| 4 | 브라우저 | `http://localhost:3000/static/table_ui/index.html?table=3` |
 
 ---
 
-### 환경변수 전체 목록
+## 데이터 송수신 흐름
+
+### 시스템 아키텍처
+
+```
+Browser ──REST──▶ Web Server ──REST──▶ Control Server ◀──TCP/UDP──▶ Robot (ROS2)
+Browser ◀──WS───  Web Server ◀──WS───  Control Server
+PyQt Dashboard ─────────REST──────────▶ Control Server
+```
+
+| 프로토콜 | 구간 | 용도 |
+|---------|------|------|
+| REST (HTTP) | Web Frontend <-> Web Server <-> Control Server | 태스크 생성, 응답, 조회 |
+| REST (HTTP) | PyQt Dashboard <-> Control Server | 로봇/태스크/텔레메트리 조회 |
+| WebSocket | Control Server -> Web Server -> Browser | 로봇 상태 변경 실시간 브로드캐스트 |
+| TCP | Control Server <-> Robot | 명령 전송, 상태 보고, 하트비트 |
+| UDP | Robot -> Control Server | 텔레메트리 (pose, battery) |
+
+### 시나리오별 요청 매핑 (Web Frontend -> 관제 서버)
+
+| 시나리오 | Frontend `type` | `task_type` | Proto `TaskType` | `dest_id` 출처 | 예시 |
+|---------|----------------|-------------|------------------|---------------|------|
+| 키오스크 결제 | (POST /api/checkout) | 1 | KIOSK_TO_TABLE | `TBL_{table.zfill(2)}` | `TBL_03` |
+| 화장실 안내 | `"toilet"` | 2 | TABLE_TO_TOILET | 프론트엔드 하드코딩 | `TOILET` |
+| 메뉴 안내 | `"menu:DISP_01"` | 3 | TABLE_TO_DISPLAY | 메뉴 선택 항목의 `place_id` | `DISP_01` |
+| 식기 수거 | `"dishPickup"` | 4 | DISH_PICKUP | 서버 자동 생성 | `TBL_03` |
+| 로봇 교체 | `"robotSwap"` | 5 | ROBOT_SWAP | 서버 자동 생성 | `TBL_03` |
+| 동행 서비스 | `"escort"` | 6 | ESCORT_SERVICE | 프론트엔드 `TBL_` 생성 | `TBL_03` |
+| 직원 호출 | `"staff"` | 0 | (태스크 미생성) | — | — |
+| 도킹 복귀 | (respond "ok") | 7 | RETURN_TO_DOCK | 서버 내부 | `""` |
+
+### 사용자 응답 (POST /api/tasks/{id}/respond)
+
+| `status` | `next_dest` | 서버 동작 |
+|----------|-------------|----------|
+| `"ok"` | 있음 | `MOVE_TO` 다음 경유지로 이동 |
+| `"ok"` | 없음 | `RETURN_DOCK` + 태스크 COMPLETED |
+| `"retry"` | — | `MOVE_TO` 같은 dest_id로 재이동 |
+| 기타 | — | `RETURN_DOCK` + 태스크 FAILED |
+
+### WebSocket 이벤트 형식 (관제 서버 -> 브라우저)
+
+| 이벤트 | 주요 필드 | 설명 |
+|--------|----------|------|
+| `status` | `robot_id`, `robot_status`(int), `fsm_state`(int), `current_task`, `battery` | 로봇 상태 변경. `robot_status=3`(ARRIVED) + `current_task=taskId`로 도착 감지 |
+| `heartbeat` | `robot_id`, `timestamp_ms` | 로봇 TCP 연결 유지 |
+| `command_ack` | `cmd_id`, `robot_id`, `ack_status`, `task_id` | 명령 수신/실행 확인 |
+
+### 로봇 텔레메트리 (ROS2 -> 관제 서버)
+
+| ROS2 토픽 | 메시지 타입 | 프로토콜 | 관제 서버 수신 |
+|-----------|-----------|---------|--------------|
+| `/odom` | `nav_msgs/Odometry` | UDP `TelemetryPose` | `GET /telemetry/pose/{robot_id}` |
+| `/battery` | `std_msgs/Float32` | UDP `TelemetryState` | `GET /telemetry/battery/{robot_id}` |
+| `/task_status` | `RobotTaskStatus` | TCP `StatusReport` | DB 업데이트 + WS 브로드캐스트 |
+| `/robot_command` | `RobotCommand` | (수신 전용) | 관제 서버 TCP `Command` -> ROS2 publish |
+
+### DB 등록 장소 (place_id)
+
+| place_id | 이름 | 용도 |
+|----------|------|------|
+| `WAIT_A`, `WAIT_B` | 대기 A/B | 로봇 대기 위치 |
+| `KIOSK_1` | 키오스크(출입구) | 결제 후 안내 출발점 |
+| `TBL_01` ~ `TBL_05` | 테이블 1~5 | 고객 테이블 |
+| `TOILET` | 화장실 | 화장실 안내 목적지 |
+| `EXIT_DINE` | 퇴식구 | 식기 수거 관련 |
+| `KITCHEN` | 주방 | 서빙 출발점 |
+| `DISP_01` ~ `DISP_06` | 진열장 1~6 | 메뉴 안내 목적지 |
+
+---
+
+## 환경변수 전체 목록
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
@@ -127,9 +197,9 @@ INFO  connection_manager  Registered TCP session for PNK01
 | `WEB_PORT` | `3000` | 웹 서버 포트 |
 | `MRTA_TCP_PORT` | `9000` | 로봇 TCP 포트 |
 | `MRTA_UDP_PORT` | `9001` | 로봇 UDP 포트 |
-| `CONTROL_BASE_URL` | `http://localhost:8000` | 웹서버·PyQt가 바라보는 관제 REST 주소 |
+| `CONTROL_BASE_URL` | `http://localhost:8000` | 웹서버/PyQt가 바라보는 관제 REST 주소 |
 | `CONTROL_WS_URL` | `ws://localhost:8000/ws/stream` | 웹서버 WS relay 주소 |
-| `CONTROL_SERVICE_KEY` | `ADMIN_API_KEY`와 동일 | 웹→관제 내부 인증 키 |
+| `CONTROL_SERVICE_KEY` | `ADMIN_API_KEY`와 동일 | 웹->관제 내부 인증 키 |
 | `NO_DASHBOARD` | `0` | `1`로 설정하면 PyQt 대시보드 자동 실행 안 함 |
 | `DASHBOARD_PYTHON` | 자동 탐색 | PyQt5가 설치된 Python 경로 |
 | `MAP_POSE_SCALE_PX` | `200` | 맵 픽셀/미터 비율 (map4, 10x 업스케일 기준) |
@@ -142,9 +212,9 @@ INFO  connection_manager  Registered TCP session for PNK01
 
 | UI | 주소 |
 |----|------|
-| 키오스크 (손님 입장·결제) | `http://localhost:3000/static/kiosk/kiosk.html` |
+| 키오스크 (손님 입장/결제) | `http://localhost:3000/static/kiosk/kiosk.html` |
 | 주방 패널 (직원용) | `http://localhost:3000/static/kitchen/kitchen.html` |
-| 테이블 서비스 (손님 요청) | `http://localhost:3000/static/table_ui/table_service.html?table=1` |
+| 테이블 서비스 (손님 요청) | `http://localhost:3000/static/table_ui/index.html?table=1` |
 | API 문서 (Swagger) | `http://localhost:8000/docs` |
 
 ---
@@ -153,19 +223,63 @@ INFO  connection_manager  Registered TCP session for PNK01
 
 | 경로 | 설명 |
 |------|------|
-| `server/control/` | 관제 서버: TCP·UDP·REST API·SQLite(`rostaurant.db`)·RBAC |
-| `server/web/` | 웹 서버: 브라우저 UI 서빙·REST 프록시·WebSocket relay |
+| `server/control/` | 관제 서버: TCP/UDP/REST API/SQLite(`rostaurant.db`)/RBAC |
+| `server/web/` | 웹 서버: 브라우저 UI 서빙/REST 프록시/WebSocket relay |
+| `server/web/frontend/` | React 테이블 UI (Vite + Tailwind CSS) |
 | `server/start.sh` | 관제 서버 + 웹 서버 + PyQt 대시보드 동시 실행 스크립트 |
 | `server/control/proto/` | Protobuf 계약 소스 |
 | `server/web/static/kiosk/` | 키오스크 UI |
 | `server/web/static/kitchen/` | 주방 패널 UI |
-| `server/web/static/table_ui/` | 테이블 서비스 UI |
+| `server/web/static/table_ui/` | 테이블 서비스 UI (빌드 결과물) |
 | `ui/desktop/admin_ui/` | PyQt5 데스크톱 관제 대시보드 |
-| `ui/desktop/assets/images/gazebo_map.png` | Gazebo `map4` 점유 격자 맵 (PyQt 표시용, 400×320px) |
-| `device/pinky_pro_robot/map4.pgm` | nav2 원본 맵 (40×32px, 0.05 m/px) |
+| `ui/desktop/admin_ui/utils/scheduler.py` | 태스크 스케줄링 엔진 (mock 시뮬레이션) |
+| `ui/desktop/assets/images/gazebo_map.png` | Gazebo `map4` 점유 격자 맵 (PyQt 표시용, 400x320px) |
+| `device/pinky_pro_robot/map4.pgm` | nav2 원본 맵 (40x32px, 0.05 m/px) |
 | `device/pinky_pro_robot/map4.yaml` | nav2 맵 메타데이터 (origin, resolution) |
 | `device/rostaurant/src/rostaurant_networking/` | ROS2 패키지: TCP 클라이언트 + UDP 송신 |
 | `device/pinky_pro_robot/src/pinky_gz_sim/` | Gazebo 시뮬레이션 패키지 |
+
+---
+
+## Admin Dashboard (PyQt5)
+
+### 주요 기능
+
+1. **관제 메인 (Map Dashboard)** — 로봇 실시간 위치 + Gazebo 맵 동기화. pose 데이터 송신 중인 활성 로봇만 표시.
+2. **로봇 설정 (Robot Setting)** — TCP/UDP 파라미터 구성 및 제어. DB 전체 로봇 수 + 활성/오프라인 분류 표시.
+3. **맵 설정 (Map Setting)** — 테이블 추가/삭제, 주행 경로 설정
+4. **태스크 관리 (Task Management)** — 서빙/이동 태스크 통합 관리. 로봇 상태 모니터(활성 로봇만), 시뮬레이션 스케줄러, 실제 서버 태스크 테이블 통합.
+5. **비전/녹화 관리 (Vision & Record)** — 녹화 기록 조회
+6. **시스템 테스트 (Network Tests)** — TCP/REST/실시간 응답 모의 테스트
+
+### 스케줄링 엔진 (`utils/scheduler.py`)
+
+태스크 관리 탭의 시뮬레이션 모니터에 사용되는 mock 스케줄러입니다.
+
+- `Task`: 단일 작업의 메타데이터 (ID, 유형, 상태, 우선순위, 예상 소요 시간)
+- `TaskScheduler`: 작업 큐 관리 및 로봇 할당 정책 실행. 자동 충전 트리거 포함.
+- FSM 상태: 대기(PENDING) -> 이동(MOVING) -> 도착(ARRIVED) -> 작업(WORKING) -> 완료(COMPLETED)
+
+### 디렉토리 구조
+
+```
+ui/desktop/admin_ui/
+├── main.py              # 메인 실행 파일 (QMainWindow)
+├── components/          # 재사용 UI 컴포넌트
+├── utils/               # api_client.py, config.py, scheduler.py
+└── views/
+    ├── map_view.py          # 맵 관제 대시보드
+    ├── robot_setting_view.py
+    ├── map_setting_view.py
+    ├── task_view.py
+    └── record_view.py
+```
+
+### 단독 실행 (start.sh 없이)
+
+```bash
+ADMIN_API_KEY=<key> python3 ui/desktop/admin_ui/main.py
+```
 
 ---
 
@@ -175,8 +289,8 @@ PyQt 맵(`gazebo_map.png`)은 `map4.pgm`을 10배 업스케일한 이미지입�
 Gazebo `/odom` 좌표가 그대로 맵 픽셀로 변환됩니다:
 
 ```
-pixel_x = MAP_ORIGIN_X + odom_x × MAP_POSE_SCALE_PX
-pixel_y = MAP_ORIGIN_Y - odom_y × MAP_POSE_SCALE_PX   (화면 Y축 반전)
+pixel_x = MAP_ORIGIN_X + odom_x * MAP_POSE_SCALE_PX
+pixel_y = MAP_ORIGIN_Y - odom_y * MAP_POSE_SCALE_PX   (화면 Y축 반전)
 ```
 
 | Gazebo 위치 | 맵 픽셀 | 의미 |
@@ -191,11 +305,14 @@ pixel_y = MAP_ORIGIN_Y - odom_y × MAP_POSE_SCALE_PX   (화면 Y축 반전)
 
 ## 자주 나는 문제
 
-| 증상 | 원인·조치 |
+| 증상 | 원인/조치 |
 |------|-----------|
 | `{"detail":"Not authenticated"}` | `ADMIN_API_KEY` 미설정 또는 `Authorization: Bearer <key>` 헤더 누락 |
+| `{"detail":"dest_id '...' is not a valid active place"}` | dest_id가 DB places 테이블에 없음. 위 place_id 표 참조 |
 | `{"detail":"no pose cached for robot"}` | 브리지 노드가 서버에 연결되지 않음. 브리지 재실행 필요 |
 | PyQt 대시보드가 안 뜸 | `DISPLAY` 환경변수 미설정 또는 PyQt5 미설치 (`sudo apt install python3-pyqt5`) |
+| PyQt에 로봇이 안 보임 | Gazebo/브리지 노드가 서버보다 늦게 시작됨. "새로 고침" 버튼 클릭 |
+| 배터리 0% 표시 | 로봇이 battery 토픽을 publish하지 않는 상태. 시뮬레이션에서는 정상 |
 | `TCP framing error` | 브리지 노드가 연결 후 즉시 끊어짐. 서버 로그의 상세 에러 확인 |
 | `503 robot not connected` | 브리지 노드가 TCP로 연결되지 않은 상태에서 명령 전송 시도 |
 | `FOREIGN KEY constraint failed` | 존재하지 않는 `task_id`로 명령 전송. `POST /tasks`로 먼저 태스크 생성 필요 |
@@ -204,88 +321,9 @@ pixel_y = MAP_ORIGIN_Y - odom_y × MAP_POSE_SCALE_PX   (화면 Y축 반전)
 
 ---
 
-## 보안·운영 요약
+## 보안/운영 요약
 
-- 방화벽: 관제 호스트 **8000·9000·9001 인바운드**는 신뢰 네트워크만 허용.
+- 방화벽: 관제 호스트 **8000/9000/9001 인바운드**는 신뢰 네트워크만 허용.
 - 최초 기동 시 ADMIN API 키: `MRTA_ADMIN_KEY_OUT=/path/to/file`로 파일에 저장 (`chmod 600` 권장).
 - 로봇 평면 기본 무인증. 운영 시 `MRTA_REQUIRE_ROBOT_TOKEN=1` 설정.
-- `GET /health` → 인증 없이 `{"status":"ok"}`.
-
----
-
-## Admin Dashboard (PyQt5)
-
-### 주요 기능
-
-1. **관제 메인 (Map Dashboard)** — 로봇 실시간 위치 + Gazebo 맵 동기화
-2. **로봇 설정 (Robot Setting)** — TCP/UDP 파라미터 구성 및 제어
-3. **맵 설정 (Map Setting)** — 테이블 추가/삭제, 주행 경로 설정
-4. **태스크 관리 (Task Management)** — 서빙·이동 태스크 통합 관리
-5. **비전·녹화 관리 (Vision & Record)** — 녹화 기록 조회
-6. **시스템 테스트 (Network Tests)** — TCP·REST·실시간 응답 모의 테스트
-
-### 디렉토리 구조
-
-```
-ui/desktop/admin_ui/
-├── main.py              # 메인 실행 파일 (QMainWindow)
-├── components/          # 재사용 UI 컴포넌트
-├── utils/               # api_client.py, config.py 등
-└── views/
-    ├── map_view.py          # 맵 관제 대시보드
-    ├── robot_setting_view.py
-    ├── map_setting_view.py
-    ├── task_view.py
-    └── record_view.py
-```
-
-### 단독 실행 (start.sh 없이)
-
-```bash
-ADMIN_API_KEY=<key> python3 ui/desktop/admin_ui/main.py
-```
-=======
-# 📝 로봇 관제 스택: 스케줄링 시스템 
-
-이 모듈은 스마트 레스토랑 내 다수 로봇의 작업을 효율적으로 관리하고 시각화하는 **PyQt5 기반 스케줄링 엔진**입니다.
-
-## 🏗 시스템 아키텍처
-
-로봇 관제 시스템의 스케줄링은 크게 **비즈니스 로직(Scheduler)**과 **인터페이스(View)**로 분리되어 설계되었습니다.
-
-### 1. 주요 구성 파일
-- **`utils/scheduler.py`**:
-    - `Task`: 단일 작업의 메타데이터(ID, 유형, 상태, 우선순위, 예상 소요 시간 등)를 정의합니다.
-    - `TaskScheduler`: 전체 작업의 큐(Queue)를 관리하고 로봇 할당 정책을 실행하는 핵심 엔진입니다.
-- **`views/task_view.py`**:
-    - 스케줄링 데이터를 실시간으로 시각화하는 대시보드 인터페이스입니다.
-    - 3단 레이아웃: 작업 생성(Control), 실시간 모니터링/큐(Monitor), 작업 이력(Log).
-
----
-
-## 🚦 FSM (Finite State Machine) 상태 전이
-
-각 태스크는 다음의 상태 흐름을 따르며 UI 상에 실시간 인디케이터로 표출됩니다.
-
-1. **대기 (PENDING)**: 작업이 큐에 추가되었으나 로봇이 배정되지 않은 상태.
-2. **이동 중 (MOVING)**: 특정 로봇이 할당되어 목적지(테이블 등)로 이동 중인 상태.
-3. **도착 (ARRIVED)**: 로봇이 목적지에 도달한 상태.
-4. **작업 중 (WORKING)**: 로봇이 서빙, 수거 등 실제 액션을 수행 중인 상태.
-5. **완료 (COMPLETED)** / **실패 (FAILED)**: 작업의 최종 종료 상태.
-
----
-
-## 🖥 주요 기능 가이드
-
-### 실시간 모니터링 (Robot Monitor)
-- **고정 그리드**: R1, R2, R3 로봇의 상태가 고정된 위치에 표시됩니다.
-- **상태 페이드 처리**: 유휴(Idle) 로봇은 투명도가 낮게 표시되어 현재 가동 중인 로봇을 명확히 구분합니다.
-- **카운트다운**: 작업 완료까지의 남은 예상 시간을 실시간으로 계산하여 초 단위로 표시합니다.
-
-### 작업 큐 관리 (Task Queue)
-- **통합 뷰**: 현재 진행 중인 작업(Active)과 대기 중인 작업(Pending)을 한 테이블에서 통합 관리합니다.
-- **강제 할당**: 대기열의 작업을 특정 로봇에게 수동으로 즉시 부여할 수 있습니다.
-
-### 작업 이력 로그 (History Log)
-- 완료된 모든 작업의 데이터(ID, 성공 여부, 소요 시간, 예상 시간 등)를 체계적으로 기록합니다.
->>>>>>> origin/feat/scheduling
+- `GET /health` — 인증 없이 `{"status":"ok"}`.

@@ -272,6 +272,7 @@ class TaskManagementPage(QWidget):
         self._monitor_pending: int = 0
         self._monitor_active: list[str] = []
         self._real_battery: dict[str, int] = {}   # robot_id -> latest real battery %
+        self._no_robots_lbl: QLabel | None = None
         self._load_active_robots_for_monitor()
 
     def initUI(self):
@@ -467,6 +468,9 @@ class TaskManagementPage(QWidget):
             self._build_monitor_cards(self._monitor_active)
 
     def _build_monitor_cards(self, active_ids: list):
+        if self._no_robots_lbl is not None:
+            self._no_robots_lbl.deleteLater()
+            self._no_robots_lbl = None
         for card in self.robot_cards.values():
             card.deleteLater()
         self.robot_cards.clear()
@@ -490,9 +494,9 @@ class TaskManagementPage(QWidget):
             self._monitor_layout.addItem(stretch_item)
 
         if not active_ids:
-            lbl = QLabel("활성 로봇 없음")
-            lbl.setStyleSheet("color: #C0C4CC; font-style: italic;")
-            self._monitor_layout.insertWidget(self._monitor_layout.count() - 1, lbl)
+            self._no_robots_lbl = QLabel("활성 로봇 없음")
+            self._no_robots_lbl.setStyleSheet("color: #C0C4CC; font-style: italic;")
+            self._monitor_layout.insertWidget(self._monitor_layout.count() - 1, self._no_robots_lbl)
 
         # (Re)start real battery polling timer
         if hasattr(self, "_battery_timer"):
@@ -509,6 +513,7 @@ class TaskManagementPage(QWidget):
         for r_id in list(self.robot_cards.keys()):
             w = ApiWorker(self._api.get_telemetry_battery, r_id)
             w.result.connect(lambda data, rid=r_id: self._on_battery_data(rid, data))
+            w.error.connect(lambda _, rid=r_id: self._on_battery_data(rid, {}))  # 404 → 0%
             w.finished.connect(lambda: self._discard(w))
             self._workers.append(w)
             w.start()
