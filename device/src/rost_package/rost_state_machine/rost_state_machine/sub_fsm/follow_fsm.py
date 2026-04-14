@@ -62,7 +62,10 @@ class FollowFSM(FSMBase):
             )
 
         elif state == FollowState.VERIFY_REQUESTER:
-            self._node.publish_event('ArrivedAtRequester', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            # use_function_nodes=True 일 때는 follow_function_node가 이미 publish했다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtRequester', self._session_id)
             self._node.get_logger().info(
                 '[FollowFSM] 요청자 위치 도착. HQ의 FollowStart / RetryFollowRequest 대기...'
             )
@@ -93,7 +96,9 @@ class FollowFSM(FSMBase):
             )
 
         elif state == FollowState.TABLE_END_CHECK:
-            self._node.publish_event('ArrivedAtTable', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtTable', self._session_id)
             self._node.get_logger().info(
                 '[FollowFSM] 테이블 도착. HQ의 FollowEnd 또는 RestartFollowStart 대기...'
             )
@@ -183,6 +188,16 @@ class FollowFSM(FSMBase):
     # ------------------------------------------------------------------ #
     # 내부 콜백                                                             #
     # ------------------------------------------------------------------ #
+
+    def handle_event(self, event: str, session_id: str = '') -> bool:
+        """function node 도착 이벤트를 수신하여 상태 전이를 트리거한다."""
+        if event == 'ArrivedAtRequester' and self._state == FollowState.MOVE_TO_REQUESTER:
+            self._on_arrived_at_requester()
+            return True
+        if event == 'ArrivedAtTable' and self._state == FollowState.MOVE_TO_TABLE:
+            self._on_arrived_at_table()
+            return True
+        return False
 
     def _on_arrived_at_requester(self) -> None:
         if self._state == FollowState.MOVE_TO_REQUESTER:

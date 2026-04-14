@@ -55,8 +55,9 @@ class DeliveryFSM(FSMBase):
             )
 
         elif state == DeliveryState.LOADING:
-            # 주방 도착 알림
-            self._node.publish_event('ArrivedAtKitchen', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtKitchen', self._session_id)
             self._node.get_logger().info(
                 '[DeliveryFSM] 주방 도착. HQ의 StartDelivery 대기 중...'
             )
@@ -79,8 +80,9 @@ class DeliveryFSM(FSMBase):
             )
 
         elif state == DeliveryState.UNLOAD_MENU:
-            # 목적지 도착 알림
-            self._node.publish_event('ArrivedAtMenuLocation', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtMenuLocation', self._session_id)
             self._node.get_logger().info(
                 '[DeliveryFSM] 배송 목적지 도착. HQ의 StartDelivery(다음) 또는 RetryStartDelivery 대기 중...'
             )
@@ -155,6 +157,16 @@ class DeliveryFSM(FSMBase):
         self._node.get_logger().warn(
             f'[DeliveryFSM] 처리되지 않은 명령: {command} (현재 상태: {self._state})'
         )
+        return False
+
+    def handle_event(self, event: str, session_id: str = '') -> bool:
+        """function node 도착 이벤트를 수신하여 상태 전이를 트리거한다."""
+        if event == 'ArrivedAtKitchen' and self._state == DeliveryState.MOVE_TO_KITCHEN:
+            self._on_arrived_at_kitchen()
+            return True
+        if event == 'ArrivedAtMenuLocation' and self._state == DeliveryState.MOVE_TO_MENU_LOC:
+            self._on_arrived_at_menu_loc()
+            return True
         return False
 
     # ------------------------------------------------------------------ #

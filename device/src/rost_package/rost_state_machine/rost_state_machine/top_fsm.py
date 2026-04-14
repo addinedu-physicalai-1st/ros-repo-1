@@ -154,6 +154,37 @@ class TopFSM(FSMBase):
         return False
 
     # ------------------------------------------------------------------ #
+    # 이벤트 처리 (use_function_nodes=True 시 fsm_node가 호출)              #
+    # ------------------------------------------------------------------ #
+
+    def handle_event(self, event: str, session_id: str = '') -> bool:
+        """
+        function node가 publish한 /robot/event 이벤트를 처리한다.
+        도착 이벤트를 수신하여 현재 이동 상태에서 다음 상태로 전이한다.
+        """
+        # TopFSM이 직접 처리하는 이벤트
+        if event == 'ArrivedAtCharging':
+            self._on_arrived_at_charging()
+            return True
+        if event == 'ArrivedAtStandby':
+            self._on_arrived_at_standby()
+            return True
+
+        # 활성 SubFSM에 위임
+        if self._active_sub_fsm is not None:
+            handled = self._active_sub_fsm.handle_event(event, session_id)
+            if not handled:
+                self._node.get_logger().debug(
+                    f'[TopFSM] SubFSM이 처리하지 않은 이벤트: {event}'
+                )
+            return handled
+
+        self._node.get_logger().debug(
+            f'[TopFSM] 처리되지 않은 이벤트: {event} (현재 상태: {self._state})'
+        )
+        return False
+
+    # ------------------------------------------------------------------ #
     # 배터리 모니터링                                                        #
     # ------------------------------------------------------------------ #
 

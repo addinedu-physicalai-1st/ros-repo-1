@@ -55,8 +55,9 @@ class GuideFSM(FSMBase):
             )
 
         elif state == GuideState.VERIFY_AND_SELECT:
-            # 도착 이벤트 전송
-            self._node.publish_event('ArrivedAtRequester', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtRequester', self._session_id)
             self._node.get_logger().info(
                 '[GuideFSM] 요청자 위치 도착. HQ의 GuideStart 또는 RetryMoveToRequester 대기...'
             )
@@ -77,8 +78,9 @@ class GuideFSM(FSMBase):
             )
 
         elif state == GuideState.VERIFY_ARRIVAL:
-            # 목적지 도착 이벤트 전송
-            self._node.publish_event('ArrivedAtTarget', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtTarget', self._session_id)
             self._node.get_logger().info(
                 '[GuideFSM] 안내 목적지 도착. HQ의 GuideStart(다음) 또는 RetryGuideStart 대기...'
             )
@@ -160,6 +162,16 @@ class GuideFSM(FSMBase):
         self._node.get_logger().warn(
             f'[GuideFSM] 처리되지 않은 명령: {command} (현재 상태: {self._state})'
         )
+        return False
+
+    def handle_event(self, event: str, session_id: str = '') -> bool:
+        """function node 도착 이벤트를 수신하여 상태 전이를 트리거한다."""
+        if event == 'ArrivedAtRequester' and self._state == GuideState.MOVE_TO_GUIDE_REQUESTER:
+            self._on_arrived_at_requester()
+            return True
+        if event == 'ArrivedAtTarget' and self._state == GuideState.MOVE_TO_TARGET:
+            self._on_arrived_at_target()
+            return True
         return False
 
     # ------------------------------------------------------------------ #

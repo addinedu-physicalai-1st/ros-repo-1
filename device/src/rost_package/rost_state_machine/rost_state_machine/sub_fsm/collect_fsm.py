@@ -72,8 +72,9 @@ class CollectFSM(FSMBase):
             )
 
         elif state == CollectState.VERIFY_COLLECT:
-            # 도착 이벤트 전송
-            self._node.publish_event('ArrivedAtRequester', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtRequester', self._session_id)
             self._node.get_logger().info(
                 '[CollectFSM] 수거 위치 도착. HQ의 StartCollection 또는 RetryCollectRequest 대기...'
             )
@@ -96,8 +97,9 @@ class CollectFSM(FSMBase):
             )
 
         elif state == CollectState.DISHWASHING:
-            # 설거지장 도착 이벤트 전송
-            self._node.publish_event('ArrivedAtDishwashing', self._session_id)
+            # use_function_nodes=False 일 때만 FSM이 직접 이벤트를 publish한다.
+            if not self._node.get_parameter('use_function_nodes').value:
+                self._node.publish_event('ArrivedAtDishwashing', self._session_id)
             self._node.get_logger().info(
                 '[CollectFSM] 설거지장 도착. HQ의 CollectionEnd 대기 중...'
             )
@@ -176,6 +178,16 @@ class CollectFSM(FSMBase):
         self._node.get_logger().warn(
             f'[CollectFSM] 처리되지 않은 명령: {command} (현재 상태: {self._state})'
         )
+        return False
+
+    def handle_event(self, event: str, session_id: str = '') -> bool:
+        """function node 도착 이벤트를 수신하여 상태 전이를 트리거한다."""
+        if event == 'ArrivedAtRequester' and self._state == CollectState.MOVE_TO_COLLECT_LOC:
+            self._on_arrived_at_collect_loc()
+            return True
+        if event == 'ArrivedAtDishwashing' and self._state == CollectState.MOVE_TO_DISHWASH:
+            self._on_arrived_at_dishwash()
+            return True
         return False
 
     # ------------------------------------------------------------------ #
