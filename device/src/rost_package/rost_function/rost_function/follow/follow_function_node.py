@@ -8,15 +8,20 @@ HQ 명령에 반응하여 실제 이동·동행 동작을 수행하고,
 
 처리 명령 (state=FOLLOW 인 경우에만 반응):
   FollowRequest      → 요청자 위치로 이동, 도달 시 ArrivedAtRequester 퍼블리시
-  FollowStart        → 동행 시작 (추종 타이머 시작)
-  FollowEnd          → 동행 종료, 이동 중지
   RetryFollowRequest → 새 위치로 재이동, 도달 시 ArrivedAtRequester 퍼블리시
+  FollowStart        → 동행 시작 (1분 타이머는 FSM이 관리)
+  GoToTable          → 테이블 위치로 이동, 도달 시 ArrivedAtTable 퍼블리시
+  RestartFollowStart → 동행 재시작 (테이블 도착 후 다시 동행 시작)
+  FollowEnd          → 동행 종료, 이동 중지
+
+참고:
+  NearTableFor1Min 이벤트는 FollowFSM(rost_state_machine)이 퍼블리시함.
+  이 노드는 1분 타이머를 관리하지 않는다.
 
 파라미터:
-  use_nav2                    : Nav2 사용 여부 (기본 False)
-  simulated_nav_time          : 시뮬 이동 시간 (기본 3.0초)
+  use_nav2                        : Nav2 사용 여부 (기본 False)
+  simulated_nav_time              : 시뮬 이동 시간 (기본 3.0초)
   follow_table_distance_threshold : 테이블 근접 거리 임계값 m (기본 1.5)
-  follow_time_limit           : 동행 최대 시간 초 (기본 60.0)
 """
 
 import rclpy
@@ -42,16 +47,15 @@ class FollowFunctionNode(Node):
         self.declare_parameter('use_nav2', False)
         self.declare_parameter('simulated_nav_time', 3.0)
         self.declare_parameter('follow_table_distance_threshold', 1.5)
-        self.declare_parameter('follow_time_limit', 60.0)
 
         # ---------------------------------------------------------------- #
         # 내부 상태                                                          #
         # ---------------------------------------------------------------- #
         self._current_state: str = ''
         self._session_id: str = ''
-        self._target_pose: PoseStamped = None    # 요청자 위치
-        self._is_following: bool = False          # 동행 중 여부
-        self._follow_timer = None                 # 동행 시간 제한 타이머
+        self._requester_pose: PoseStamped = None   # 요청자 위치
+        self._table_pose: PoseStamped = None        # 테이블 위치 (GoToTable)
+        self._is_following: bool = False            # 동행 중 여부
 
         # ---------------------------------------------------------------- #
         # 공통 모듈                                                          #
@@ -90,12 +94,9 @@ class FollowFunctionNode(Node):
     def _on_state_enter(self, state: str) -> None:
         """상태 진입 처리"""
         if state == 'FOLLOW':
-            # 동행 태스크 시작 — HQ 명령 대기
             self.get_logger().info('[FollowFunc] FOLLOW 태스크 진입. HQ 명령 대기...')
             self._reset_session()
-
         elif state not in ('FOLLOW',):
-            # 다른 태스크로 전환 시 진행 중인 동작 중지
             if self._nav.is_navigating() or self._is_following:
                 self.get_logger().info('[FollowFunc] 태스크 종료. 이동 중지 및 세션 초기화.')
                 self._stop_all()
@@ -111,36 +112,48 @@ class FollowFunctionNode(Node):
 
         cmd = msg.command
         self._session_id = msg.session_id
-
         self.get_logger().info(f'[FollowFunc] 명령 수신: {cmd}')
 
         if cmd == 'FollowRequest':
-            # 요청자 위치로 이동
-            self._target_pose = msg.target_pose
+            self._requester_pose = msg.target_pose
             self.get_logger().info(
                 f'[FollowFunc] FollowRequest — 요청자 위치로 이동: '
                 f'({msg.target_pose.pose.position.x:.2f}, '
                 f'{msg.target_pose.pose.position.y:.2f})'
             )
-            self._nav.send_goal(self._target_pose, on_arrived=self._on_arrived_requester)
+            self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
         elif cmd == 'RetryFollowRequest':
-            # 새 위치로 재이동
-            self._target_pose = msg.target_pose
+            self._requester_pose = msg.target_pose
             self.get_logger().info(
                 f'[FollowFunc] RetryFollowRequest — 새 위치로 재이동: '
                 f'({msg.target_pose.pose.position.x:.2f}, '
                 f'{msg.target_pose.pose.position.y:.2f})'
             )
-            self._nav.send_goal(self._target_pose, on_arrived=self._on_arrived_requester)
+            self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
         elif cmd == 'FollowStart':
-            # 동행 시작
+            # 동행 시작 — 1분 타이머는 FollowFSM이 관리하므로 여기서는 상태만 기록
             self.get_logger().info('[FollowFunc] FollowStart — 동행 시작.')
-            self._start_following()
+            self._is_following = True
+
+        elif cmd == 'GoToTable':
+            # 테이블로 이동
+            self._table_pose = msg.target_pose
+            self._is_following = False
+            self.get_logger().info(
+                f'[FollowFunc] GoToTable — 테이블로 이동: '
+                f'({msg.target_pose.pose.position.x:.2f}, '
+                f'{msg.target_pose.pose.position.y:.2f})'
+            )
+            self._nav.send_goal(self._table_pose, on_arrived=self._on_arrived_table)
+
+        elif cmd == 'RestartFollowStart':
+            # 테이블 도착 후 동행 재시작
+            self.get_logger().info('[FollowFunc] RestartFollowStart — 동행 재시작.')
+            self._is_following = True
 
         elif cmd == 'FollowEnd':
-            # 동행 종료
             self.get_logger().info('[FollowFunc] FollowEnd — 동행 종료.')
             self._stop_all()
 
@@ -149,47 +162,30 @@ class FollowFunctionNode(Node):
     # ------------------------------------------------------------------ #
 
     def _on_arrived_requester(self) -> None:
-        """요청자 위치 도달 시"""
+        """요청자 위치 도달 시 ArrivedAtRequester 이벤트 퍼블리시"""
         self.get_logger().info('[FollowFunc] 요청자 위치 도착!')
         self._event_pub.publish_event('ArrivedAtRequester', self._session_id)
 
+    def _on_arrived_table(self) -> None:
+        """테이블 도달 시 ArrivedAtTable 이벤트 퍼블리시"""
+        self.get_logger().info('[FollowFunc] 테이블 도착!')
+        self._event_pub.publish_event('ArrivedAtTable', self._session_id)
+
     # ------------------------------------------------------------------ #
-    # 동행 동작                                                              #
+    # 세션 관리                                                              #
     # ------------------------------------------------------------------ #
-
-    def _start_following(self) -> None:
-        """동행 시작 — 시간 제한 타이머 가동"""
-        self._is_following = True
-        time_limit = self.get_parameter('follow_time_limit').value
-        self.get_logger().info(
-            f'[FollowFunc] 동행 중. {time_limit:.0f}초 후 NearTableOr1Min 이벤트 예정.'
-        )
-        self._stop_follow_timer()
-        self._follow_timer = self.create_timer(time_limit, self._on_follow_time_limit)
-
-    def _on_follow_time_limit(self) -> None:
-        """동행 시간 제한 도달 시 NearTableOr1Min 이벤트 퍼블리시"""
-        self._stop_follow_timer()
-        if self._is_following:
-            self.get_logger().info('[FollowFunc] 동행 시간 제한 도달 → NearTableOr1Min 이벤트')
-            self._event_pub.publish_event('NearTableOr1Min', self._session_id)
-
-    def _stop_follow_timer(self) -> None:
-        if self._follow_timer is not None:
-            self._follow_timer.cancel()
-            self._follow_timer = None
 
     def _stop_all(self) -> None:
-        """모든 동작 중지 및 세션 초기화"""
+        """모든 동작 중지"""
         self._nav.cancel_goal()
         self._is_following = False
-        self._stop_follow_timer()
 
     def _reset_session(self) -> None:
         """세션 데이터 초기화"""
         self._stop_all()
         self._session_id = ''
-        self._target_pose = None
+        self._requester_pose = None
+        self._table_pose = None
 
 
 def main(args=None):
