@@ -104,7 +104,7 @@ INFO  connection_manager  Registered TCP session for PNK01
 
 ---
 
-### 권장 기동 순서 요약
+### 권장 기동 순서 요약 (시뮬레이션)
 
 | 순서 | 터미널 | 명령 |
 |------|--------|------|
@@ -112,6 +112,108 @@ INFO  connection_manager  Registered TCP session for PNK01
 | 2 | B | `ros2 launch pinky_gz_sim launch_sim.launch.xml` |
 | 3 | C | `ros2 run rostaurant_networking rostaurant_comm_node ...` |
 | 4 | 브라우저 | `http://localhost:3000/static/table_ui/index.html?table=3` |
+
+---
+
+## 실물 로봇 구동 방법
+
+### 사전 준비
+
+| 항목 | 설명 |
+|------|------|
+| 서버 PC IP 확인 | 서버 PC에서 `hostname -I` 실행, 첫 번째 IP 사용 (예: `192.168.1.10`) |
+| 로봇 hostname 설정 | 로봇에서 `sudo hostnamectl set-hostname pnk01` (최초 1회, robot_id로 사용됨) |
+| 네트워크 | 서버 PC와 로봇이 같은 네트워크에 있어야 함. 로봇에서 `ping <서버IP>` 으로 확인 |
+| 방화벽 | 서버 PC에서 8000(REST), 9000(TCP), 9001(UDP) 포트 인바운드 허용 |
+
+### 1단계 — 서버 PC에서 관제 시스템 실행
+
+```bash
+cd /path/to/ros-repo-1/server
+ADMIN_API_KEY=<key> ./start.sh
+```
+
+### 2단계 — 로봇에 소스코드 배포 및 빌드 (최초 1회)
+
+로봇에 SSH 접속 후:
+
+```bash
+ssh pinky@<로봇IP>
+
+# 소스코드 배포 (git clone 또는 scp)
+cd ~/dev_ws/src
+git clone <repo-url> ros-repo-1
+
+# 빌드
+cd ~/dev_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select pinky_interfaces rostaurant_networking
+source install/setup.bash
+```
+
+> `pinky_bringup`, `pinky_description` 등 하드웨어 패키지는 로봇에 이미 빌드되어 있다고 가정합니다.
+
+### 3단계 — 로봇 하드웨어 노드 실행 (로봇 터미널 1)
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/dev_ws/install/setup.bash
+
+ros2 launch pinky_bringup bringup_robot.launch.xml
+```
+
+이 런치 파일이 실행하는 노드:
+- 모터 제어 (`pinky_bringup/bringup`) — diff-drive, `/odom` 발행
+- 라이다 (`sllidar_ros2`) — `/dev/ttyAMA0` 시리얼 포트
+- 배터리 (`pinky_bringup/battery_publisher`) — `battery/percent` 토픽 발행
+
+### 4단계 — 관제서버 브리지 실행 (로봇 터미널 2)
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/dev_ws/install/setup.bash
+
+ros2 launch rostaurant_networking robot.launch.py server_host:=<서버PC IP>
+```
+
+예시:
+```bash
+ros2 launch rostaurant_networking robot.launch.py server_host:=192.168.1.10
+```
+
+> `robot.launch.py`가 자동으로 `battery_topic`을 `battery/percent`로 설정하므로 별도 지정이 불필요합니다.
+
+연결 성공 시 서버 로그:
+```
+INFO  connection_manager  Registered TCP session for PNK01
+```
+
+### 5단계 — 웹 UI 접속 (태블릿/브라우저)
+
+같은 네트워크의 기기에서:
+```
+http://<서버PC IP>:3000/static/table_ui/index.html?table=3
+```
+
+### 실물 로봇 기동 순서 요약
+
+| 순서 | 위치 | 명령 |
+|------|------|------|
+| 1 | 서버 PC | `cd server && ADMIN_API_KEY=<key> ./start.sh` |
+| 2 | 로봇 터미널 1 | `ros2 launch pinky_bringup bringup_robot.launch.xml` |
+| 3 | 로봇 터미널 2 | `ros2 launch rostaurant_networking robot.launch.py server_host:=<서버IP>` |
+| 4 | 태블릿 브라우저 | `http://<서버IP>:3000/static/table_ui/index.html?table=3` |
+
+### 시뮬레이션 vs 실물 차이점
+
+| 항목 | 시뮬레이션 | 실물 |
+|------|-----------|------|
+| 로봇 노드 | Gazebo + `ros2 run rostaurant_comm_node` | `bringup_robot.launch.xml` + `robot.launch.py` |
+| server_host | `127.0.0.1` (같은 PC) | 서버 PC의 실제 LAN IP |
+| robot_id | 파라미터로 직접 지정 | hostname 자동 사용 (`hostnamectl`) |
+| battery_topic | `/battery` (기본값, 발행 노드 없음) | `battery/percent` (런치 파일에서 자동 설정) |
+| 배터리 데이터 | 없음 (Gazebo 미지원) | 실제 배터리 IC에서 읽어 publish |
+| odom 소스 | Gazebo diff-drive 플러그인 | 실물 모터 엔코더 |
 
 ---
 
