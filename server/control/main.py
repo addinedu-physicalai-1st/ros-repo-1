@@ -163,6 +163,11 @@ class PatchMenuItemBody(BaseModel):
     sort_order: Optional[int] = None
 
 
+class TaskRespondBody(BaseModel):
+    status: str                # "ok" | "retry" | "timeout"
+    next_dest: str = ""        # next waypoint place_id for multi-stop guidance
+
+
 # ──────────────────────────────────────────────────────────────────
 # Lifespan
 # ──────────────────────────────────────────────────────────────────
@@ -255,6 +260,59 @@ app = FastAPI(
 
 
 # ──────────────────────────────────────────────────────────────────
+# Internal helpers
+# ──────────────────────────────────────────────────────────────────
+
+async def _dispatch_move_to(
+    db: Any,
+    conn: Any,
+    lock: asyncio.Lock,
+    manager: Any,
+    *,
+    task_id: str,
+    robot_id: str,
+    dest_id: str,
+) -> None:
+    """Send a MOVE_TO command to robot and update the task's robot_id."""
+    cmd_id = str(uuid.uuid4())
+    now_ms = _ts_now_ms()
+    cmd_pb = pb.Command(
+        cmd_id=cmd_id,
+        task_id=task_id,
+        robot_id=robot_id,
+        command=pb.CommandType.MOVE_TO,
+        target_id=dest_id,
+        status=pb.CommandStatus.SENT,
+    )
+    cmd_pb.sent_at.FromMilliseconds(now_ms)
+
+    async with lock:
+        await db.insert_command(
+            conn,
+            cmd_id=cmd_id,
+            task_id=task_id,
+            robot_id=robot_id,
+            command=int(pb.CommandType.MOVE_TO),
+            target_id=dest_id,
+            status=int(pb.CommandStatus.SENT),
+            sent_at_ms=now_ms,
+        )
+        await db.assign_task_robot(conn, task_id, robot_id)
+        await db.update_task_status(conn, task_id=task_id, status=int(pb.TaskStatus.IN_PROGRESS))
+
+    sess = await manager.get_session(robot_id)
+    if sess is None:
+        logger.warning("Auto-dispatch: robot %s not connected", robot_id)
+        return
+    pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
+    try:
+        await manager.send_command_packet(robot_id, pkt)
+        logger.info("Auto-dispatch MOVE_TO robot=%s task=%s dest=%s", robot_id, task_id, dest_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Auto-dispatch send failed: %s", e)
+
+
+# ──────────────────────────────────────────────────────────────────
 # Tasks
 # ──────────────────────────────────────────────────────────────────
 
@@ -291,6 +349,21 @@ async def create_task(
         message="created",
     )
     logger.info("Task created %s by %s", task.task_id, user)
+
+    # Auto-dispatch: find an IDLE robot and send MOVE_TO immediately
+    manager = _get_manager(request)
+    async with lock:
+        idle_robot = await db.get_any_idle_robot(conn)
+    if idle_robot:
+        asyncio.create_task(
+            _dispatch_move_to(
+                db, conn, lock, manager,
+                task_id=task.task_id,
+                robot_id=idle_robot.robot_id,
+                dest_id=body.dest_id,
+            )
+        )
+
     return _pb_to_json(resp)
 
 
@@ -334,6 +407,109 @@ async def get_task(
         if task.requester_id != user.user_id:
             raise HTTPException(status_code=403, detail="Not your task")
     return _pb_to_json(pb.GetTaskResponse(task=task))
+
+
+@app.post("/tasks/{task_id}/respond", summary="Respond to a task arrival (ok/retry/timeout)")
+async def task_respond(
+    task_id: str,
+    body: TaskRespondBody,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.TASK_CREATE)),
+) -> dict[str, Any]:
+    """Handle user confirmation after robot arrival.
+
+    - ``ok`` + ``next_dest``  → send MOVE_TO to next waypoint
+    - ``ok`` (no next_dest)   → send RETURN_DOCK, mark task COMPLETED
+    - ``retry``               → re-send MOVE_TO to current dest
+    - ``timeout``             → send RETURN_DOCK, mark task FAILED
+    """
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    manager = _get_manager(request)
+
+    async with lock:
+        task = await db.get_task(conn, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if user.has(Permission.TASK_READ_OWN) and not user.has(Permission.TASK_READ_ALL):
+        if task.requester_id != user.user_id:
+            raise HTTPException(status_code=403, detail="Not your task")
+
+    robot_id = task.robot_id
+    if not robot_id:
+        raise HTTPException(status_code=409, detail="no robot assigned to task")
+
+    if body.status == "ok" and body.next_dest:
+        # Navigate to next waypoint in multi-stop guidance
+        asyncio.create_task(
+            _dispatch_move_to(
+                db, conn, lock, manager,
+                task_id=task_id,
+                robot_id=robot_id,
+                dest_id=body.next_dest,
+            )
+        )
+        return {"task_id": task_id, "action": "move_to", "dest": body.next_dest}
+
+    elif body.status == "ok":
+        # Final destination reached — return to dock and complete
+        cmd_id = str(uuid.uuid4())
+        now_ms = _ts_now_ms()
+        cmd_pb = pb.Command(
+            cmd_id=cmd_id, task_id=task_id, robot_id=robot_id,
+            command=pb.CommandType.RETURN_DOCK, target_id="",
+            status=pb.CommandStatus.SENT,
+        )
+        cmd_pb.sent_at.FromMilliseconds(now_ms)
+        async with lock:
+            await db.insert_command(conn, cmd_id=cmd_id, task_id=task_id,
+                robot_id=robot_id, command=int(pb.CommandType.RETURN_DOCK),
+                target_id="", status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
+            await db.update_task_status(conn, task_id=task_id,
+                status=int(pb.TaskStatus.COMPLETED), completed=True)
+        sess = await manager.get_session(robot_id)
+        if sess:
+            pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
+            try:
+                await manager.send_command_packet(robot_id, pkt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("RETURN_DOCK send failed: %s", e)
+        return {"task_id": task_id, "action": "return_dock", "task_status": "completed"}
+
+    elif body.status == "retry":
+        # Retry current destination
+        asyncio.create_task(
+            _dispatch_move_to(
+                db, conn, lock, manager,
+                task_id=task_id,
+                robot_id=robot_id,
+                dest_id=task.dest_id,
+            )
+        )
+        return {"task_id": task_id, "action": "retry", "dest": task.dest_id}
+
+    else:  # timeout or unknown
+        cmd_id = str(uuid.uuid4())
+        now_ms = _ts_now_ms()
+        cmd_pb = pb.Command(
+            cmd_id=cmd_id, task_id=task_id, robot_id=robot_id,
+            command=pb.CommandType.RETURN_DOCK, target_id="",
+            status=pb.CommandStatus.SENT,
+        )
+        cmd_pb.sent_at.FromMilliseconds(now_ms)
+        async with lock:
+            await db.insert_command(conn, cmd_id=cmd_id, task_id=task_id,
+                robot_id=robot_id, command=int(pb.CommandType.RETURN_DOCK),
+                target_id="", status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
+            await db.update_task_status(conn, task_id=task_id,
+                status=int(pb.TaskStatus.FAILED), completed=True)
+        sess = await manager.get_session(robot_id)
+        if sess:
+            pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
+            try:
+                await manager.send_command_packet(robot_id, pkt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("RETURN_DOCK send failed: %s", e)
+        return {"task_id": task_id, "action": "return_dock", "task_status": "failed"}
 
 
 # ──────────────────────────────────────────────────────────────────

@@ -157,6 +157,15 @@ async def _control_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     return resp.json()
 
 
+async def _control_get(path: str) -> dict[str, Any]:
+    url = f"{CONTROL_BASE_URL}{path}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url, headers=_control_headers())
+    if not resp.is_success:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return resp.json()
+
+
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/api/checkout")
@@ -237,6 +246,21 @@ async def api_request(request: Request) -> JSONResponse:
     except HTTPException as exc:
         logger.warning("Table request failed: %s", exc.detail)
         return JSONResponse({"ok": False, "detail": exc.detail}, status_code=exc.status_code)
+
+
+@app.get("/api/menu-items")
+async def api_menu_items() -> JSONResponse:
+    """Proxy: fetch menu items from control server and forward to browser."""
+    result = await _control_get("/menu-items")
+    return JSONResponse(result)
+
+
+@app.post("/api/tasks/{task_id}/respond")
+async def api_task_respond(task_id: str, request: Request) -> JSONResponse:
+    """Proxy: forward user OK/RETRY/TIMEOUT response to control server."""
+    body = await request.json()
+    result = await _control_post(f"/tasks/{task_id}/respond", body)
+    return JSONResponse(result)
 
 
 @app.get("/health")

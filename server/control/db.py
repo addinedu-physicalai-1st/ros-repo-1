@@ -462,6 +462,17 @@ class Database:
         rows = await cur.fetchall()
         return [self._row_to_robot(r) for r in rows]
 
+    async def get_any_idle_robot(self, conn: aiosqlite.Connection) -> Optional[pb.Robot]:
+        """Return any robot with IDLE status that has an active TCP session registered."""
+        cur = await conn.execute(
+            "SELECT * FROM robots WHERE status = ? LIMIT 1",
+            (int(pb.RobotStatus.IDLE),),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_robot(row)
+
     async def get_robot_connection_token_hash(
         self, conn: aiosqlite.Connection, robot_id: str
     ) -> Optional[str]:
