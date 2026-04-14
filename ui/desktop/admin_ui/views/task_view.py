@@ -1,12 +1,16 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
                              QAbstractItemView, QGridLayout, QDialog, QDialogButtonBox,
-                             QComboBox, QMessageBox, QFormLayout)
+                             QComboBox, QMessageBox, QFormLayout,
+                             QProgressBar, QScrollArea, QLineEdit, QGraphicsOpacityEffect, QMenu)
 from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtCore import Qt, QTimer
 
 from utils.api_client import (ApiClient, ApiWorker,
                               TASK_STATUS_LABELS, TASK_TYPE_LABELS)
+from utils.config import COLOR_MOVING, COLOR_WAITING, COLOR_COLLECT, COLOR_CHARGING, CARD_STYLE
+from utils.scheduler import TaskScheduler, TaskType, TaskStatus
+from components.widgets import BatteryWidget
 
 
 _TASK_TYPE_OPTIONS = [
@@ -19,13 +23,23 @@ _TASK_TYPE_OPTIONS = [
     (7, "도킹 복귀 (RETURN_TO_DOCK)"),
 ]
 
+# Maps scheduling TaskType constants to server task_type int for CreateTaskDialog
+_TASK_TYPE_MAP = {
+    TaskType.COLLECT: 4,
+    TaskType.GUIDE:   6,
+    TaskType.FOLLOW:  6,
+    TaskType.SERVING: 1,
+}
+
 _TASK_CARD_INFO = [
-    ("🍽 식기 수거 (Collect)",    "지정된 테이블에서 다트(트레이)를 수거합니다.", "#4A88D4", 4),
-    ("🔌 충전 복귀 (Charge)",     "배터리 부족 로봇을 충전 스테이션으로 보냅니다.", "#E6A23C", 7),
-    ("👥 동행 이동 (Follow)",     "작업자를 따라다니며 보조 업무를 수행합니다.", "#9C27B0", 6),
-    ("💁 고객 안내 (Guide)",      "목적지(테이블/입구)까지 고객을 에스코트합니다.", "#67C23A", 6),
+    (TaskType.SERVING, "🥘", "서빙 요청",      COLOR_MOVING,   1),
+    (TaskType.FOLLOW,  "👥", "동행 이동",      QColor("#9C27B0"), 6),
+    (TaskType.GUIDE,   "💁", "고객 안내",      QColor("#67C23A"), 6),
+    (TaskType.COLLECT, "🧺", "식기 수거 (우선)", COLOR_COLLECT,  4),
 ]
 
+
+# ── CreateTaskDialog ──────────────────────────────────────────────────────────
 
 class CreateTaskDialog(QDialog):
     """Dialog to create a new task via POST /tasks."""
@@ -36,13 +50,11 @@ class CreateTaskDialog(QDialog):
         self.setFixedWidth(420)
 
         layout = QVBoxLayout(self)
-
         form = QFormLayout()
 
         self.combo_type = QComboBox()
         for val, label in _TASK_TYPE_OPTIONS:
             self.combo_type.addItem(label, val)
-        # Pre-select the hint type
         for i, (val, _) in enumerate(_TASK_TYPE_OPTIONS):
             if val == task_type_hint:
                 self.combo_type.setCurrentIndex(i)
@@ -71,72 +83,305 @@ class CreateTaskDialog(QDialog):
         return self.combo_dest.currentData() or ""
 
 
+# ── FsmIndicator ─────────────────────────────────────────────────────────────
+
+class FsmIndicator(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.initUI()
+
+    def initUI(self):
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 5, 0, 5)
+        self.layout.setSpacing(5)
+        self.steps = ["대기", "이동", "도착", "작업", "완료"]
+        self.labels = []
+        for s in self.steps:
+            lbl = QLabel(s)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet("color: #C0C4CC; font-size: 10px; padding: 2px 5px; border: 1px solid #DCDFE6; border-radius: 4px;")
+            self.labels.append(lbl)
+            self.layout.addWidget(lbl)
+            if s != "완료":
+                self.layout.addWidget(QLabel("→"))
+
+    def set_status(self, status):
+        idx = -1
+        if status == TaskStatus.RETURNING_TO_CHARGER:
+            self.labels[0].setText("복귀")
+            self.labels[1].setText("이동")
+            idx = 1
+        elif status == TaskStatus.CHARGING:
+            self.labels[0].setText("복귀")
+            self.labels[1].setText("이동")
+            self.labels[2].setText("충전중")
+            idx = 2
+        else:
+            self.labels[0].setText("대기")
+            self.labels[1].setText("이동")
+            self.labels[2].setText("도착")
+            if status == TaskStatus.PENDING: idx = 0
+            elif status == TaskStatus.MOVING: idx = 1
+            elif status == TaskStatus.ARRIVED: idx = 2
+            elif status == TaskStatus.WORKING: idx = 3
+            elif status == TaskStatus.COMPLETED: idx = 4
+
+        for i, lbl in enumerate(self.labels):
+            if i == idx:
+                lbl.setStyleSheet("background-color: #4A88D4; color: white; font-size: 10px; padding: 2px 5px; border-radius: 4px; font-weight: bold;")
+            elif i < idx and idx != -1:
+                lbl.setStyleSheet("background-color: #E1F3D8; color: #67C23A; font-size: 10px; padding: 2px 5px; border-radius: 4px;")
+            else:
+                lbl.setStyleSheet("color: #C0C4CC; font-size: 10px; padding: 2px 5px; border: 1px solid #DCDFE6; border-radius: 4px;")
+
+
+# ── RobotStatusCard ───────────────────────────────────────────────────────────
+
+class RobotStatusCard(QFrame):
+    def __init__(self, robot_id, scheduler, parent=None):
+        super().__init__(parent)
+        self.robot_id = robot_id
+        self.scheduler = scheduler
+        self.initUI()
+
+    def initUI(self):
+        self.setStyleSheet(CARD_STYLE)
+        self.layout = QVBoxLayout(self)
+
+        header = QHBoxLayout()
+        self.id_lbl = QLabel(f"🤖 {self.robot_id}")
+        self.id_lbl.setFont(QFont("Malgun Gothic", 12, QFont.Bold))
+
+        self.collector_badge = QLabel("수거 전담")
+        self.collector_badge.setStyleSheet("background-color: #F56C6C; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;")
+        self.collector_badge.setVisible(False)
+
+        self.battery_ui = BatteryWidget(100)
+
+        header.addWidget(self.id_lbl)
+        header.addWidget(self.collector_badge)
+        header.addStretch()
+        header.addWidget(self.battery_ui)
+
+        self.info_stack = QWidget()
+        self.info_layout = QVBoxLayout(self.info_stack)
+        self.info_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.active_widget = QWidget()
+        active_lay = QVBoxLayout(self.active_widget)
+        active_lay.setContentsMargins(0, 0, 0, 0)
+
+        self.task_type_lbl = QLabel("")
+        self.task_type_lbl.setFont(QFont("Malgun Gothic", 10, QFont.Bold))
+        self.fsm = FsmIndicator()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setStyleSheet("QProgressBar { border-radius: 4px; background: #EBEEF5; } QProgressBar::chunk { background: #4A88D4; border-radius: 4px; }")
+
+        self.action_row = QHBoxLayout()
+        self.btn_cancel = QPushButton("취소")
+        self.btn_cancel.setStyleSheet("background: #FEF0F0; color: #F56C6C; border: 1px solid #FBC4C4; border-radius: 4px; padding: 3px 8px;")
+        self.btn_cancel.clicked.connect(self.cancel_task)
+        self.btn_assign = QPushButton("▼ 수동 할당")
+        self.btn_assign.setStyleSheet("background: #f0f9eb; color: #67c23a; border: 1px solid #c2e7b0; border-radius: 4px; padding: 3px 8px;")
+        self.btn_assign.clicked.connect(self.show_assign_menu)
+        self.action_row.addWidget(self.btn_cancel)
+        self.action_row.addWidget(self.btn_assign)
+
+        active_lay.addWidget(self.task_type_lbl)
+        active_lay.addWidget(self.fsm)
+        active_lay.addWidget(self.progress_bar)
+        active_lay.addLayout(self.action_row)
+
+        self.idle_widget = QWidget()
+        idle_lay = QVBoxLayout(self.idle_widget)
+        idle_lay.setContentsMargins(0, 0, 0, 0)
+        idle_lbl = QLabel("대기 중 — 태스크 없음")
+        idle_lbl.setStyleSheet("color: #C0C4CC; font-style: italic;")
+        idle_lay.addWidget(idle_lbl)
+
+        self.info_layout.addWidget(self.active_widget)
+        self.info_layout.addWidget(self.idle_widget)
+
+        self.opacity_effect = QGraphicsOpacityEffect()
+        self.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(1.0)
+
+        self.layout.addLayout(header)
+        self.layout.addWidget(self.info_stack)
+
+    def cancel_task(self):
+        self.scheduler.cancel_task_by_robot(self.robot_id)
+
+    def show_assign_menu(self):
+        menu = QMenu(self)
+        pending = self.scheduler.pending_queue
+        if not pending:
+            menu.addAction("(대기 중인 태스크 없음)").setEnabled(False)
+        else:
+            for task in pending:
+                action = menu.addAction(f"{task.id} — {task.type}")
+                action.triggered.connect(lambda checked, tid=task.id: self.scheduler.manual_assign(tid, self.robot_id))
+        menu.exec_(self.btn_assign.mapToGlobal(self.btn_assign.rect().bottomLeft()))
+
+    def update_state(self, task, stats):
+        battery = stats.get("battery", 100)
+        self.battery_ui.setLevel(battery)
+
+        if task:
+            self.opacity_effect.setOpacity(1.0)
+            self.active_widget.setVisible(True)
+            self.idle_widget.setVisible(False)
+            self.task_type_lbl.setText(f"작업: {task.type}")
+            self.fsm.set_status(task.status)
+            self.progress_bar.setValue(int(task.progress))
+            is_collector = (self.robot_id == self.scheduler.collector_robot_id and task.type == TaskType.COLLECT)
+            self.collector_badge.setVisible(is_collector)
+        else:
+            self.opacity_effect.setOpacity(0.5)
+            self.active_widget.setVisible(False)
+            self.idle_widget.setVisible(True)
+            self.collector_badge.setVisible(False)
+
+
+# ── TaskManagementPage ────────────────────────────────────────────────────────
+
 class TaskManagementPage(QWidget):
     def __init__(self):
         super().__init__()
+        # Real API client
         self._api = ApiClient()
         self._workers: list[ApiWorker] = []
-        self._places: list[dict] = []   # cached for task creation dialog
+        self._places: list[dict] = []
+
+        # Mock scheduler for robot card simulation
+        self.scheduler = TaskScheduler()
+        self.scheduler.task_updated.connect(self.update_ui)
+
         self.initUI()
+
+        # Simulation timer (mock robot cards)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.simulation_step)
+        self.timer.start(1000)
+
+        # Load real tasks and places from server
         self._load_places_then_tasks()
+        # Load active robots for monitor panel
+        self._monitor_pending: int = 0
+        self._monitor_active: list[str] = []
+        self._real_battery: dict[str, int] = {}   # robot_id -> latest real battery %
+        self._load_active_robots_for_monitor()
 
     def initUI(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(30, 30, 30, 30)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
+        self.main_layout.setSpacing(20)
 
-        title_lbl = QLabel("📝 태스크(작업) 통합 관리")
-        title_lbl.setFont(QFont("Malgun Gothic", 18, QFont.Bold))
-        main_layout.addWidget(title_lbl)
+        # ── 1. Top Panel: Task Creation Buttons ───────────────────────────────
+        top_panel = QFrame()
+        top_layout = QGridLayout(top_panel)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(15)
 
-        # Quick-action cards (each opens CreateTaskDialog with a pre-selected type)
-        grid_frame = QFrame()
-        grid_frame.setStyleSheet("background-color: transparent;")
-        grid_layout = QGridLayout(grid_frame)
-        grid_layout.setContentsMargins(0, 0, 0, 0)
-        grid_layout.setSpacing(15)
-
-        for i, (name, desc, color, task_type) in enumerate(_TASK_CARD_INFO):
+        for i, (task_type_name, icon, desc, color, task_type_int) in enumerate(_TASK_CARD_INFO):
             card = QFrame()
-            card.setStyleSheet(f"background-color: white; border: 2px solid {color}; border-radius: 8px;")
+            if isinstance(color, QColor):
+                color_name = color.name()
+            else:
+                color_name = color
+            card.setStyleSheet(f"background-color: white; border: 2px solid {color_name}; border-radius: 12px;")
             c_layout = QVBoxLayout(card)
 
-            n_lbl = QLabel(name)
-            n_lbl.setFont(QFont("Malgun Gothic", 14, QFont.Bold))
-            n_lbl.setStyleSheet(f"color: {color}; border: none;")
+            i_lbl = QLabel(icon)
+            i_lbl.setFont(QFont("Arial", 24))
+            i_lbl.setAlignment(Qt.AlignCenter)
 
-            d_lbl = QLabel(desc)
-            d_lbl.setStyleSheet("color: #606266; border: none;")
-            d_lbl.setWordWrap(True)
+            n_lbl = QLabel(desc)
+            n_lbl.setFont(QFont("Malgun Gothic", 13, QFont.Bold))
+            n_lbl.setAlignment(Qt.AlignCenter)
+            n_lbl.setStyleSheet(f"color: {color_name}; border: none;")
 
             btn = QPushButton("작업 지시")
-            btn.setStyleSheet(f"background-color: {color}; color: white; padding: 10px; border-radius: 4px; font-weight: bold;")
-            btn.clicked.connect(lambda _, tt=task_type: self._open_create_dialog(tt))
+            btn.setStyleSheet(f"background-color: {color_name}; color: white; padding: 10px; border-radius: 6px; font-weight: bold;")
+            btn.clicked.connect(lambda checked, tt=task_type_int: self._open_create_dialog(tt))
 
+            c_layout.addWidget(i_lbl)
             c_layout.addWidget(n_lbl)
-            c_layout.addWidget(d_lbl)
             c_layout.addStretch()
             c_layout.addWidget(btn)
+            top_layout.addWidget(card, 0, i)
 
-            row, col = divmod(i, 2)
-            grid_layout.addWidget(card, row, col)
+        self.main_layout.addWidget(top_panel)
 
-        main_layout.addWidget(grid_frame)
-        main_layout.addSpacing(20)
+        # ── 2. Middle Panel: Robot Monitor + Queue ────────────────────────────
+        mid_panel = QHBoxLayout()
 
-        # Task queue header
-        header_row = QHBoxLayout()
-        t_lbl = QLabel("▶ 현재 진행 중인 태스크 대기열")
-        t_lbl.setFont(QFont("Malgun Gothic", 12, QFont.Bold))
-        header_row.addWidget(t_lbl)
-        header_row.addStretch()
+        # 2a. Robot Status Cards
+        monitor_frame = QFrame()
+        monitor_frame.setStyleSheet(CARD_STYLE)
+        monitor_layout = QVBoxLayout(monitor_frame)
+
+        mon_header = QHBoxLayout()
+        mon_title = QLabel("🤖 로봇 상태 모니터 (시뮬)")
+        mon_title.setFont(QFont("Malgun Gothic", 12, QFont.Bold))
+        mon_header.addWidget(mon_title)
+        mon_header.addStretch()
+        self._monitor_refresh_btn = QPushButton("🔄 새로 고침")
+        self._monitor_refresh_btn.setStyleSheet(
+            "background-color: #409EFF; color: white; padding: 4px 10px; border-radius: 4px;"
+        )
+        self._monitor_refresh_btn.clicked.connect(self._load_active_robots_for_monitor)
+        mon_header.addWidget(self._monitor_refresh_btn)
+        monitor_layout.addLayout(mon_header)
+
+        self.robot_cards: dict[str, RobotStatusCard] = {}
+        self._monitor_layout = monitor_layout   # card insertion reference
+        self._monitor_status_lbl = QLabel("활성 로봇 확인 중...")
+        self._monitor_status_lbl.setStyleSheet("color: #909399; font-style: italic;")
+        monitor_layout.addWidget(self._monitor_status_lbl)
+        monitor_layout.addStretch()
+        mid_panel.addWidget(monitor_frame, 2)
+
+        # 2b. Task Queue Table
+        queue_frame = QFrame()
+        queue_frame.setStyleSheet(CARD_STYLE)
+        queue_layout = QVBoxLayout(queue_frame)
+
+        queue_header = QHBoxLayout()
+        queue_header.addWidget(QLabel("📋 태스크 대기열 (시뮬)"))
+        queue_header.addStretch()
+        queue_layout.addLayout(queue_header)
+
+        self.queue_table = QTableWidget(0, 4)
+        self.queue_table.setHorizontalHeaderLabels(["ID", "유형", "로봇", "액션"])
+        self.queue_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.queue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.queue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.queue_table.setStyleSheet("border: none;")
+        queue_layout.addWidget(self.queue_table)
+
+        mid_panel.addWidget(queue_frame, 3)
+        self.main_layout.addLayout(mid_panel, 2)
+
+        # ── 3. Real Task Table from API ───────────────────────────────────────
+        api_frame = QFrame()
+        api_frame.setStyleSheet(CARD_STYLE)
+        api_layout = QVBoxLayout(api_frame)
+
+        api_header = QHBoxLayout()
+        api_title = QLabel("▶ 현재 진행 중인 태스크 (서버)")
+        api_title.setFont(QFont("Malgun Gothic", 12, QFont.Bold))
+        api_header.addWidget(api_title)
+        api_header.addStretch()
 
         refresh_btn = QPushButton("🔄 새로 고침")
         refresh_btn.setStyleSheet("background-color: #409EFF; color: white; padding: 6px 12px; border-radius: 4px; font-weight: bold;")
         refresh_btn.clicked.connect(self._load_tasks)
-        header_row.addWidget(refresh_btn)
-        main_layout.addLayout(header_row)
+        api_header.addWidget(refresh_btn)
+        api_layout.addLayout(api_header)
 
-        # Task table
         self.task_table = QTableWidget(0, 5)
         self.task_table.setHorizontalHeaderLabels(["작업 ID", "작업 유형", "할당된 로봇", "진행 상태", "관리"])
         self.task_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -147,19 +392,139 @@ class TaskManagementPage(QWidget):
         self.task_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.task_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.task_table.setStyleSheet("QTableWidget { gridline-color: #E4E7ED; border: 1px solid #E4E7ED; background: white; }")
-        main_layout.addWidget(self.task_table)
+        api_layout.addWidget(self.task_table)
 
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet("color: #909399; font-style: italic;")
-        main_layout.addWidget(self._status_lbl)
+        api_layout.addWidget(self._status_lbl)
 
-    # ── data loading ──────────────────────────────────────────────────────────
+        self.main_layout.addWidget(api_frame, 2)
+
+        # ── 4. Bottom: History Log ─────────────────────────────────────────────
+        log_frame = QFrame()
+        log_frame.setStyleSheet(CARD_STYLE)
+        log_layout = QVBoxLayout(log_frame)
+
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("📜 전체 작업 이력 로그 (시뮬)"))
+        log_header.addStretch()
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("ID 또는 로봇 검색...")
+        self.search_input.setFixedWidth(200)
+        log_header.addWidget(self.search_input)
+
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["전체 유형", TaskType.SERVING, TaskType.COLLECT, TaskType.GUIDE, TaskType.FOLLOW])
+        log_header.addWidget(self.filter_combo)
+        log_layout.addLayout(log_header)
+
+        self.log_table = QTableWidget(0, 7)
+        self.log_table.setHorizontalHeaderLabels(["ID", "유형", "요청시간", "로봇", "상태", "수행시간(예상)", "순위"])
+        self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.log_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.log_table.setStyleSheet("border: none;")
+        log_layout.addWidget(self.log_table)
+
+        self.main_layout.addWidget(log_frame, 2)
+
+    # ── Active robot monitor ──────────────────────────────────────────────────
+
+    def _load_active_robots_for_monitor(self):
+        """Fetch DB robot list then keep only those with live pose telemetry."""
+        self._monitor_pending = 0
+        self._monitor_active = []
+        self._monitor_status_lbl.setText("활성 로봇 확인 중...")
+        self._monitor_status_lbl.setVisible(True)
+        w = ApiWorker(self._api.get_robots)
+        w.result.connect(self._on_monitor_robots_loaded)
+        w.error.connect(lambda _: self._monitor_status_lbl.setText("로봇 목록 로드 실패"))
+        w.finished.connect(lambda: self._discard(w))
+        self._workers.append(w)
+        w.start()
+
+    def _on_monitor_robots_loaded(self, data: dict):
+        all_robots = data.get("robots", [])
+        self._monitor_pending = len(all_robots)
+        self._monitor_active = []
+        if not all_robots:
+            self._build_monitor_cards([])
+            return
+        for robot in all_robots:
+            r_id = robot.get("robot_id", "")
+            w = ApiWorker(self._api.get_telemetry_pose, r_id)
+            w.result.connect(lambda _, rid=r_id: self._on_monitor_pose_done(rid, active=True))
+            w.error.connect(lambda _, rid=r_id: self._on_monitor_pose_done(rid, active=False))
+            w.finished.connect(lambda: self._discard(w))
+            self._workers.append(w)
+            w.start()
+
+    def _on_monitor_pose_done(self, r_id: str, active: bool):
+        if active:
+            self._monitor_active.append(r_id)
+        self._monitor_pending -= 1
+        if self._monitor_pending <= 0:
+            self._build_monitor_cards(self._monitor_active)
+
+    def _build_monitor_cards(self, active_ids: list):
+        for card in self.robot_cards.values():
+            card.deleteLater()
+        self.robot_cards.clear()
+        self._monitor_status_lbl.setVisible(False)
+
+        # Sync scheduler robot list with real active robots
+        self.scheduler.robots = list(active_ids)
+        for rid in active_ids:
+            if rid not in self.scheduler.robot_stats:
+                self.scheduler.robot_stats[rid] = {
+                    "battery": 100, "status": "Idle", "is_emergency": False
+                }
+
+        # Remove stretch, insert cards, re-add stretch
+        stretch_item = self._monitor_layout.takeAt(self._monitor_layout.count() - 1)
+        for rid in active_ids:
+            card = RobotStatusCard(rid, self.scheduler)
+            self.robot_cards[rid] = card
+            self._monitor_layout.addWidget(card)
+        if stretch_item:
+            self._monitor_layout.addItem(stretch_item)
+
+        if not active_ids:
+            lbl = QLabel("활성 로봇 없음")
+            lbl.setStyleSheet("color: #C0C4CC; font-style: italic;")
+            self._monitor_layout.insertWidget(self._monitor_layout.count() - 1, lbl)
+
+        # (Re)start real battery polling timer
+        if hasattr(self, "_battery_timer"):
+            self._battery_timer.stop()
+        if active_ids:
+            self._battery_timer = QTimer(self)
+            self._battery_timer.timeout.connect(self._poll_real_battery)
+            self._battery_timer.start(5000)
+            self._poll_real_battery()
+
+    # ── Real battery polling ──────────────────────────────────────────────────
+
+    def _poll_real_battery(self):
+        for r_id in list(self.robot_cards.keys()):
+            w = ApiWorker(self._api.get_telemetry_battery, r_id)
+            w.result.connect(lambda data, rid=r_id: self._on_battery_data(rid, data))
+            w.finished.connect(lambda: self._discard(w))
+            self._workers.append(w)
+            w.start()
+
+    def _on_battery_data(self, r_id: str, data: dict):
+        self._real_battery[r_id] = int(data.get("battery_percent", 0))
+        card = self.robot_cards.get(r_id)
+        if card is not None:
+            card.battery_ui.setLevel(self._real_battery[r_id])
+
+    # ── Real API: data loading ────────────────────────────────────────────────
 
     def _load_places_then_tasks(self):
-        """Load places first (needed for task creation dialog), then tasks."""
         w = ApiWorker(self._api.get_places)
         w.result.connect(self._on_places_loaded)
-        w.error.connect(lambda _: self._load_tasks())  # fallback: load tasks anyway
+        w.error.connect(lambda _: self._load_tasks())
         w.finished.connect(lambda: self._discard(w))
         self._workers.append(w)
         w.start()
@@ -206,13 +571,11 @@ class TaskManagementPage(QWidget):
 
             cancel_btn = QPushButton("강제 취소")
             cancel_btn.setStyleSheet("background-color: #F56C6C; color: white; padding: 4px 10px; border-radius: 3px;")
-            # Cancellation not currently exposed via a dedicated endpoint;
-            # show a notice for now
             cancel_btn.clicked.connect(lambda _, tid=task_id: QMessageBox.information(
                 self, "알림", f"태스크 {tid[:8]}…\n취소 기능은 로봇 명령 탭에서 CANCEL 명령으로 처리하세요."))
             self.task_table.setCellWidget(row, 4, cancel_btn)
 
-    # ── task creation ─────────────────────────────────────────────────────────
+    # ── Real API: task creation ───────────────────────────────────────────────
 
     def _open_create_dialog(self, task_type_hint: int):
         dlg = CreateTaskDialog(task_type_hint, self._places, self)
@@ -236,6 +599,80 @@ class TaskManagementPage(QWidget):
             self, "태스크 생성 완료",
             f"태스크가 생성되었습니다.\n태스크 ID: {task_id}")
         QTimer.singleShot(500, self._load_tasks)
+
+    # ── Mock scheduler simulation ─────────────────────────────────────────────
+
+    def simulation_step(self):
+        self.scheduler.update_progress()
+        active_ids = [t.robot_id for t in self.scheduler.active_tasks]
+        for rid in self.scheduler.robots:
+            if rid not in active_ids and self.scheduler.pending_queue:
+                self.scheduler.assign_task(rid)
+
+    def manual_assign_handler(self, task_id, combo):
+        rid = combo.currentText()
+        self.scheduler.manual_assign(task_id, rid)
+
+    def update_ui(self):
+        # Update Robot Cards
+        active_map = {t.robot_id: t for t in self.scheduler.active_tasks}
+        for rid, card in self.robot_cards.items():
+            task  = active_map.get(rid)
+            stats = dict(self.scheduler.robot_stats.get(rid, {}))
+            # Override mock battery with real telemetry value if available
+            if rid in self._real_battery:
+                stats["battery"] = self._real_battery[rid]
+            card.update_state(task, stats)
+
+        # Update Queue Table
+        all_tasks = self.scheduler.active_tasks + self.scheduler.pending_queue
+        self.queue_table.setRowCount(len(all_tasks))
+
+        for i, task in enumerate(all_tasks):
+            is_active = task in self.scheduler.active_tasks
+
+            id_text  = f"▶ {task.id} (진행중)" if is_active else task.id
+            item_id  = QTableWidgetItem(id_text)
+            if is_active:
+                item_id.setForeground(QColor("#409EFF"))
+                item_id.setFont(QFont("Malgun Gothic", 9, QFont.Bold))
+            self.queue_table.setItem(i, 0, item_id)
+
+            pct_str  = f"({int(task.progress)}%)" if is_active else f"(~{task.est_duration}s)"
+            self.queue_table.setItem(i, 1, QTableWidgetItem(f"{task.type} {pct_str}"))
+
+            if is_active:
+                lbl_bot = QLabel(f"🤖 {task.robot_id}")
+                lbl_bot.setAlignment(Qt.AlignCenter)
+                lbl_bot.setStyleSheet("color: #409EFF; font-weight: bold;")
+                self.queue_table.setCellWidget(i, 2, lbl_bot)
+
+                btn_cancel = QPushButton("취소")
+                btn_cancel.setStyleSheet("background-color: #FEF0F0; color: #F56C6C; border: 1px solid #FBC4C4; border-radius: 4px;")
+                btn_cancel.clicked.connect(lambda checked, rid=task.robot_id: self.scheduler.cancel_task_by_robot(rid))
+                self.queue_table.setCellWidget(i, 3, btn_cancel)
+            else:
+                combo = QComboBox()
+                combo.addItems(self.scheduler.robots)
+                self.queue_table.setCellWidget(i, 2, combo)
+
+                btn_assign = QPushButton("강제 할당")
+                btn_assign.setStyleSheet("background-color: #f0f9eb; color: #67c23a; border: 1px solid #c2e7b0; border-radius: 4px;")
+                btn_assign.clicked.connect(lambda checked, tid=task.id, c=combo: self.manual_assign_handler(tid, c))
+                self.queue_table.setCellWidget(i, 3, btn_assign)
+
+        # Update History Log
+        self.log_table.setRowCount(len(self.scheduler.history))
+        for i, task in enumerate(self.scheduler.history):
+            data = task.to_list()
+            for j, val in enumerate(data):
+                item = QTableWidgetItem(val)
+                if j == 4:
+                    if val == TaskStatus.COMPLETED:
+                        item.setForeground(QColor("#67C23A"))
+                    elif val == TaskStatus.FAILED:
+                        item.setForeground(QColor("#F56C6C"))
+                self.log_table.setItem(i, j, item)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

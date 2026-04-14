@@ -53,7 +53,10 @@ class RobotSettingPage(QWidget):
         self.test_data = test_data_manager
         self._api = ApiClient()
         self._workers: list[ApiWorker] = []
-        self._robots: list[dict] = []   # latest robot data from API
+        self._robots: list[dict] = []        # active (pose-sending) robots only
+        self._robot_meta: dict[str, dict] = {}
+        self._pose_pending: int = 0
+        self._active_robots: list[dict] = []
         self.initUI()
         self._load_robots()
 
@@ -204,17 +207,43 @@ class RobotSettingPage(QWidget):
         self._status_lbl.setStyleSheet("color: #F56C6C; font-style: italic;")
 
     def _on_robots_loaded(self, data: dict):
-        self._robots = data.get("robots", [])
-        self._status_lbl.setText(f"총 {len(self._robots)}대 조회됨")
+        all_robots = data.get("robots", [])
+        self._robot_meta = {r["robot_id"]: r for r in all_robots}
+        self._pose_pending = len(all_robots)
+        self._active_robots = []
+        if not all_robots:
+            self._robots = []
+            self._rebuild_table()
+            self._update_summary()
+            self._status_lbl.setText("등록된 로봇 없음")
+            return
+        self._status_lbl.setText("활성 로봇 확인 중...")
         self._status_lbl.setStyleSheet("color: #909399; font-style: italic;")
-        self._rebuild_table()
-        self._update_summary()
+        for robot in all_robots:
+            r_id = robot["robot_id"]
+            w = ApiWorker(self._api.get_telemetry_pose, r_id)
+            w.result.connect(lambda _, rid=r_id: self._on_pose_checked(rid, True))
+            w.error.connect(lambda _, rid=r_id: self._on_pose_checked(rid, False))
+            w.finished.connect(lambda: self._discard(w))
+            self._workers.append(w)
+            w.start()
+
+    def _on_pose_checked(self, r_id: str, active: bool):
+        if active:
+            self._active_robots.append(self._robot_meta[r_id])
+        self._pose_pending -= 1
+        if self._pose_pending <= 0:
+            self._robots = self._active_robots
+            self._rebuild_table()
+            self._update_summary()
+            self._status_lbl.setText(f"활성 로봇 {len(self._robots)}대")
 
     def _update_summary(self):
-        total    = len(self._robots)
+        # total = all robots in DB; _robots = only pose-active ones
+        total    = len(self._robot_meta) if self._robot_meta else len(self._robots)
         charging = sum(1 for r in self._robots if r.get("status") == 4)
-        error    = sum(1 for r in self._robots if r.get("status") in (5, 6))
-        active   = total - charging - error
+        active   = len(self._robots) - charging
+        error    = total - active - charging   # offline = DB total - active - charging
 
         self._summary_labels["total"].setText(f"{total}대")
         self._summary_labels["active"].setText(f"{active}대")
