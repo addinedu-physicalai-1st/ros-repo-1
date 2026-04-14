@@ -101,6 +101,7 @@ class RostaurantCommNode(Node):
         self._last_pose_wall = 0.0
         self._last_battery_wall = 0.0
         self._tcp_seq = 0
+        self._pending_cmd_id: str = ""  # cmd_id of last received Command, cleared after EXECUTED ACK
 
         self._cmd_queue: queue.Queue[RobotCommand] = queue.Queue(maxsize=200)
 
@@ -164,10 +165,7 @@ class RostaurantCommNode(Node):
         st = pb.TelemetryState(
             robot_id=self._robot_id,
             battery_percent=int(round(float(msg.data))),
-            current_state=pb.RobotStatus.IDLE,
-            current_fsm=pb.FsmState.FSM_IDLE,
-            current_step="",
-            task_id="",
+            # state fields omitted — actual state is reported via TCP StatusReport only
         )
         st.timestamp.FromMilliseconds(int(time.time() * 1000))
         pkt = pb.UdpTelemetryPacket(robot_id=self._robot_id, state=st)
@@ -191,7 +189,42 @@ class RostaurantCommNode(Node):
 
         self._schedule(_send())
 
+        # Send EXECUTED ACK when robot reports FSM_ARRIVED (=5)
+        if int(msg.fsm_state) == int(pb.FsmState.FSM_ARRIVED) and self._pending_cmd_id:
+            cmd_id = self._pending_cmd_id
+            self._pending_cmd_id = ""  # consume so we don't send twice
+
+            async def _send_executed() -> None:
+                ack = pb.CommandAck(
+                    cmd_id=cmd_id,
+                    robot_id=self._robot_id,
+                    status=pb.AckStatus.EXECUTED,
+                )
+                ack.acked_at.FromMilliseconds(int(time.time() * 1000))
+                self._tcp_seq += 1
+                pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, ack_payload=ack)
+                await self._tcp.send_packet(pkt)
+                logger.info("CommandAck EXECUTED cmd_id=%s", cmd_id)
+
+            self._schedule(_send_executed())
+
     def enqueue_command(self, cmd: pb.Command) -> None:
+        self._pending_cmd_id = cmd.cmd_id
+
+        async def _send_accepted() -> None:
+            ack = pb.CommandAck(
+                cmd_id=cmd.cmd_id,
+                robot_id=self._robot_id,
+                status=pb.AckStatus.ACCEPTED,
+            )
+            ack.acked_at.FromMilliseconds(int(time.time() * 1000))
+            self._tcp_seq += 1
+            pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, ack_payload=ack)
+            await self._tcp.send_packet(pkt)
+            logger.info("CommandAck ACCEPTED cmd_id=%s", cmd.cmd_id)
+
+        self._schedule(_send_accepted())
+
         ros_cmd = RobotCommand(
             cmd_id=cmd.cmd_id,
             task_id=cmd.task_id,

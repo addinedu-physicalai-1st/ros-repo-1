@@ -39,9 +39,10 @@ def generate_launch_description() -> LaunchDescription:
             package="rostaurant_networking",
             executable="rostaurant_comm_node",
             parameters=[{
-                "server_host": LaunchConfiguration("server_host"),
-                "tcp_port":    LaunchConfiguration("tcp_port"),
-                "udp_port":    LaunchConfiguration("udp_port"),
+                "server_host":    LaunchConfiguration("server_host"),
+                "tcp_port":       LaunchConfiguration("tcp_port"),
+                "udp_port":       LaunchConfiguration("udp_port"),
+                "battery_topic":  "battery/percent",  # matches battery_publisher.py
             }],
             output="screen",
         ),
