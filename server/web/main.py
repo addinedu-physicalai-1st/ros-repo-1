@@ -233,7 +233,10 @@ async def api_request(request: Request) -> JSONResponse:
         # Staff call or unknown — acknowledge without creating a robot task
         return JSONResponse({"ok": True, "task_id": None, "note": "staff notified"})
 
-    dest_id = f"TBL_{table.zfill(2)}" if table.isdigit() else table
+    # Frontend can supply an explicit dest_id (e.g., "DISP_01" for menu guidance)
+    dest_id: str = body.get("dest_id", "")
+    if not dest_id:
+        dest_id = f"TBL_{table.zfill(2)}" if table.isdigit() else table
     payload = {
         "task_type":    task_type,
         "dest_id":      dest_id,

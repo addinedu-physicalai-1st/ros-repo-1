@@ -1,4 +1,4 @@
-import { sendRequest } from '../api/mock'
+import { sendRequest } from '../api/client'
 import type { ToastMessage } from '../components/Toast'
 
 interface Props {

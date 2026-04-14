@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import queue
+import socket
 import threading
 import time
 from typing import Coroutine, Optional
@@ -28,6 +30,38 @@ from rostaurant_networking.udp_sender import UdpSender
 logger = logging.getLogger(__name__)
 
 
+def _resolve_robot_id() -> str:
+    """Determine robot_id without any command-line arguments.
+
+    Priority:
+      1. ``ROBOT_ID`` environment variable  — useful for CI, overrides, or
+         simulation where multiple nodes run on the same host.
+      2. System hostname  — set once per physical device with
+         ``sudo hostnamectl set-hostname pnk01``.
+      3. Hard-coded fallback ``"PNK01"``.
+
+    The returned value is always upper-cased (e.g. ``pnk02`` → ``PNK02``).
+    """
+    env_id = os.environ.get("ROBOT_ID", "").strip()
+    if env_id:
+        return env_id.upper()
+
+    hostname = socket.gethostname().strip()
+    if hostname:
+        upper = hostname.upper()
+        if not upper.startswith("PNK"):
+            logger.warning(
+                "Hostname '%s' does not start with 'pnk'. "
+                "Using it as robot_id anyway. "
+                "Set ROBOT_ID env var or run: sudo hostnamectl set-hostname pnkXX",
+                hostname,
+            )
+        return upper
+
+    logger.warning("Could not determine robot_id; falling back to 'PNK01'.")
+    return "PNK01"
+
+
 def _yaw_from_quat(q: Quaternion) -> float:
     siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
     cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
@@ -38,10 +72,11 @@ class RostaurantCommNode(Node):
     """ROS subscriptions in executor thread; schedule UDP/TCP coroutines on asyncio loop."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
-        super().__init__("rostaurant_comm_node")
+        _robot_id_default = _resolve_robot_id()
+        super().__init__(f"rostaurant_comm_{_robot_id_default.lower()}")
         self._loop = loop
 
-        self.declare_parameter("robot_id", "PNK01")
+        self.declare_parameter("robot_id", _robot_id_default)
         self.declare_parameter("server_host", "127.0.0.1")
         self.declare_parameter("tcp_port", 9000)
         self.declare_parameter("udp_port", 9001)

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Screen, Flow, MenuItem } from './types'
-import { mockDispatchRobot } from './api/mock'
+import { sendRequest, respondTask } from './api/client'
+import { useTaskEvents } from './hooks/useTaskEvents'
 
 import Toast from './components/Toast'
 import type { ToastMessage } from './components/Toast'
@@ -25,6 +26,9 @@ export default function App() {
   const [flow, setFlow] = useState<Flow>(null)
   const [toast, setToast] = useState<ToastMessage | null>(null)
 
+  // Task state
+  const [taskId, setTaskId] = useState<string | null>(null)
+
   // Multi-waypoint state (menu flow)
   const [selectedMenus, setSelectedMenus] = useState<MenuItem[]>([])
   const [waypointIndex, setWaypointIndex] = useState(0)
@@ -36,34 +40,74 @@ export default function App() {
   const currentWaypoint = selectedMenus[waypointIndex] ?? null
   const totalWaypoints = selectedMenus.length
 
-  // ── Toilet flow ──────────────────────────────────────────────
+  // WebSocket: fires when the robot assigned to our task reports ARRIVED
+  useTaskEvents(
+    screen === 'callingRobot' ? taskId : null,
+    () => go('robotArrived'),
+  )
+
+  // ── Toilet flow ──────────────────────────────────────────────────
   const startToiletRobotGuide = async () => {
     go('callingRobot')
-    await mockDispatchRobot('toilet')
+    const toiDest = 'TOILET_01'
+    const res = await sendRequest('toilet', toiDest)
+    if (res.task_id) {
+      setTaskId(res.task_id)
+    } else if (!res.ok) {
+      setToast({ id: Date.now(), text: '로봇 요청 실패', type: 'error' })
+      go('restroomOptions')
+    }
   }
 
-  // ── Menu flow ────────────────────────────────────────────────
+  // ── Menu flow ────────────────────────────────────────────────────
   const startMenuRobotGuide = async (menus: MenuItem[], index = 0) => {
     go('callingRobot')
-    await mockDispatchRobot('menu', menus[index]?.id)
+    const dest = menus[index]?.id ?? ''
+    const res = await sendRequest(`menu:${dest}`, dest)
+    if (res.task_id) {
+      setTaskId(res.task_id)
+    } else if (!res.ok) {
+      setToast({ id: Date.now(), text: '로봇 요청 실패', type: 'error' })
+      go('menuOptions')
+    }
   }
 
-  // Advance to next waypoint or finish
-  const handleMenuInProgressOk = () => {
-    if (waypointIndex + 1 < totalWaypoints) {
-      const nextIndex = waypointIndex + 1
+  // ── Task respond helpers ─────────────────────────────────────────
+  const handleRetry = async () => {
+    if (!taskId) return
+    await respondTask(taskId, { status: 'retry' })
+    go('callingRobot')
+  }
+
+  // Called from InProgressScreen OK button
+  const handleMenuInProgressOk = async () => {
+    const nextIndex = waypointIndex + 1
+    if (nextIndex < totalWaypoints && taskId) {
+      const nextDest = selectedMenus[nextIndex]?.id ?? ''
+      await respondTask(taskId, { status: 'ok', next_dest: nextDest })
       setWaypointIndex(nextIndex)
-      startMenuRobotGuide(selectedMenus, nextIndex)
+      go('callingRobot')
     } else {
+      if (taskId) {
+        await respondTask(taskId, { status: 'ok' })
+      }
       go('guideComplete')
     }
   }
 
-  // Reset all menu state
+  const handleToiletInProgressOk = async () => {
+    if (taskId) {
+      await respondTask(taskId, { status: 'ok' })
+    }
+    go('guideComplete')
+  }
+
+  // Reset all menu/task state when returning home
   const resetMenuState = () => {
     setSelectedMenus([])
     setWaypointIndex(0)
     setFlow(null)
+    setTaskId(null)
   }
 
   const renderScreen = () => {
@@ -119,7 +163,6 @@ export default function App() {
         return (
           <CallingRobotScreen
             flow={flow}
-            onArrived={() => go('robotArrived')}
             currentWaypoint={flow === 'menu' ? currentWaypoint : null}
             waypointIndex={waypointIndex}
             totalWaypoints={totalWaypoints}
@@ -131,7 +174,7 @@ export default function App() {
           <RobotArrivedScreen
             flow={flow}
             onOk={() => go('guideStarting')}
-            onRetry={() => go('callingRobot')}
+            onRetry={handleRetry}
             currentWaypoint={flow === 'menu' ? currentWaypoint : null}
             waypointIndex={waypointIndex}
             totalWaypoints={totalWaypoints}
@@ -152,8 +195,8 @@ export default function App() {
         return (
           <InProgressScreen
             flow={flow}
-            onOk={flow === 'menu' ? handleMenuInProgressOk : () => go('guideComplete')}
-            onRetry={() => go('guideStarting')}
+            onOk={flow === 'menu' ? handleMenuInProgressOk : handleToiletInProgressOk}
+            onRetry={handleRetry}
             currentWaypoint={flow === 'menu' ? currentWaypoint : null}
             waypointIndex={waypointIndex}
             totalWaypoints={totalWaypoints}

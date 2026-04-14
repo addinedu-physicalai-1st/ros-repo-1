@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { mockStartGuide, mockRetryDispatch } from '../api/mock'
 import type { Flow, MenuItem } from '../types'
 
 const COUNTDOWN_SEC = 15
@@ -24,6 +23,10 @@ export default function RobotArrivedScreen({
   const [countdown, setCountdown] = useState(COUNTDOWN_SEC)
 
   useEffect(() => {
+    setCountdown(COUNTDOWN_SEC)
+  }, [waypointIndex])
+
+  useEffect(() => {
     if (countdown <= 0) {
       onOk()
       return
@@ -31,16 +34,6 @@ export default function RobotArrivedScreen({
     const id = setInterval(() => setCountdown(c => c - 1), 1000)
     return () => clearInterval(id)
   }, [countdown])
-
-  const handleOk = async () => {
-    await mockStartGuide()
-    onOk()
-  }
-
-  const handleRetry = async () => {
-    await mockRetryDispatch(flow ?? 'toilet')
-    onRetry()
-  }
 
   const isMulti = flow === 'menu' && totalWaypoints > 1
   const progressPct = ((COUNTDOWN_SEC - countdown) / COUNTDOWN_SEC) * 100
@@ -115,13 +108,13 @@ export default function RobotArrivedScreen({
       {/* Buttons */}
       <div className="grid grid-cols-2 gap-3 mt-6">
         <button
-          onClick={handleRetry}
+          onClick={onRetry}
           className="bg-white border border-gray-200 rounded-2xl py-5 text-base font-bold text-gray-700 active:scale-95 transition-transform"
         >
           RETRY
         </button>
         <button
-          onClick={handleOk}
+          onClick={onOk}
           className="bg-gray-900 text-white rounded-2xl py-5 text-base font-bold active:scale-95 transition-transform"
         >
           {okLabel}

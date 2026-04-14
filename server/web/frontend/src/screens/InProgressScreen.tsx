@@ -1,4 +1,3 @@
-import { mockEndGuide, mockStartGuide } from '../api/mock'
 import type { Flow, MenuItem } from '../types'
 
 interface Props {
@@ -35,16 +34,6 @@ export default function InProgressScreen({
 
   const okLabel = flow === 'menu' && isMulti && !isLastWaypoint ? '다음 목적지 →' : '완료'
   const retryLabel = flow === 'menu' ? '재이동 요청' : '재안내 요청'
-
-  const handleOk = async () => {
-    await mockEndGuide()
-    onOk()
-  }
-
-  const handleRetry = async () => {
-    await mockStartGuide()
-    onRetry()
-  }
 
   return (
     <div className="flex flex-col min-h-full bg-[#f7f5f2] px-5 pt-12 pb-8">
@@ -103,14 +92,14 @@ export default function InProgressScreen({
       {/* Buttons */}
       <div className="grid grid-cols-2 gap-3 mt-6">
         <button
-          onClick={handleRetry}
+          onClick={onRetry}
           className="bg-white border border-gray-200 rounded-2xl py-5 flex flex-col items-center gap-1 active:scale-95 transition-transform"
         >
           <span className="text-base font-bold text-gray-700">RETRY</span>
           <span className="text-xs text-gray-400">{retryLabel}</span>
         </button>
         <button
-          onClick={handleOk}
+          onClick={onOk}
           className="bg-gray-900 text-white rounded-2xl py-5 flex flex-col items-center gap-1 active:scale-95 transition-transform"
         >
           <span className="text-base font-bold">{okLabel}</span>

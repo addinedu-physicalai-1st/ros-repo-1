@@ -1,10 +1,7 @@
-import { useEffect } from 'react'
-import { mockWaitArrival } from '../api/mock'
 import type { Flow, MenuItem } from '../types'
 
 interface Props {
   flow: Flow
-  onArrived: () => void
   currentWaypoint?: MenuItem | null
   waypointIndex?: number
   totalWaypoints?: number
@@ -12,19 +9,10 @@ interface Props {
 
 export default function CallingRobotScreen({
   flow,
-  onArrived,
   currentWaypoint,
   waypointIndex = 0,
   totalWaypoints = 1,
 }: Props) {
-  useEffect(() => {
-    let cancelled = false
-    mockWaitArrival().then(() => {
-      if (!cancelled) onArrived()
-    })
-    return () => { cancelled = true }
-  }, [waypointIndex]) // re-trigger when waypoint changes
-
   const isMulti = flow === 'menu' && totalWaypoints > 1
   const label = flow === 'menu' ? '로봇 대기중...' : '로봇 호출 중...'
   const sub = flow === 'menu'
