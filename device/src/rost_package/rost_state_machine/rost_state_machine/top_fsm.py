@@ -8,6 +8,7 @@ Top FSM
   CHARGING           → 충전소 진입점 (배터리 평가 후 즉시 전이)
   CHARGING_NO_TASK   → 충전 중, 투입 불가 (배터리 < 20%)
   CHARGING_WITH_TASK → 충전 중, 투입 가능 (배터리 60~80%)
+  MOVE_TO_CHARGING   → 충전소로 이동 중 (배터리 부족 감지 시)
   MOVE_TO_STANDBY    → 대기장소로 이동 (배터리 > 80%)
   STANDBY            → 작업 대기
   FOLLOW             → 동행 Sub FSM 실행
@@ -30,6 +31,7 @@ class TopState(Enum):
     CHARGING = auto()            # 충전소 진입 (평가 포인트)
     CHARGING_NO_TASK = auto()    # 충전 중, 배터리 < 20%
     CHARGING_WITH_TASK = auto()  # 충전 중, 배터리 60~80%
+    MOVE_TO_CHARGING = auto()    # 충전소로 이동 중 (배터리 부족)
     MOVE_TO_STANDBY = auto()     # 대기장소로 이동 중
     STANDBY = auto()             # 작업 대기
     FOLLOW = auto()              # 동행 Sub FSM 실행 중
@@ -62,6 +64,8 @@ class TopFSM(FSMBase):
         # 작업 시작 시 SubFSM에 전달할 초기 명령
         self._pending_command: Optional[str] = None
         self._pending_msg = None
+        # 최초 CHARGING 평가 여부 (시작 시 저배터리면 충전소로 이동)
+        self._is_first_charging_eval: bool = True
 
     # ------------------------------------------------------------------ #
     # 시작                                                                 #
@@ -92,6 +96,15 @@ class TopFSM(FSMBase):
             self._node.get_logger().info(
                 f'[TopFSM] 충전 중 (투입 가능). 배터리={self._battery_level:.1f}% '
                 '(> 80% 시 MOVE_TO_STANDBY, 작업 요청 시 즉시 수행)'
+            )
+
+        elif state == TopState.MOVE_TO_CHARGING:
+            self._node.get_logger().info(
+                f'[TopFSM] 배터리 부족({self._battery_level:.1f}%). 충전소로 이동 중...'
+            )
+            self._node.navigate_to(
+                label='MOVE_TO_CHARGING',
+                on_arrived=self._on_arrived_at_charging
             )
 
         elif state == TopState.MOVE_TO_STANDBY:
@@ -152,7 +165,12 @@ class TopFSM(FSMBase):
         if isinstance(self._active_sub_fsm, CollectFSM):
             self._active_sub_fsm.update_battery(level)
 
-        self._check_battery_transitions()
+        # CHARGING 상태에서 배터리 데이터가 수신되면 즉시 평가
+        # (use_sim_time 환경에서 타이머가 늦게 발동되는 경우 대비)
+        if self._state == TopState.CHARGING:
+            self._do_charging_battery_eval()
+        else:
+            self._check_battery_transitions()
 
     def _check_battery_transitions(self) -> None:
         """현재 배터리 레벨에 따라 충전 상태 전이를 트리거한다."""
@@ -173,6 +191,13 @@ class TopFSM(FSMBase):
                     f'[TopFSM] 배터리 {self._battery_level:.1f}% > {high}% → MOVE_TO_STANDBY'
                 )
                 self._change_state(TopState.MOVE_TO_STANDBY)
+
+        elif self._state in (TopState.STANDBY, TopState.MOVE_TO_STANDBY):
+            if self._battery_level < low:
+                self._node.get_logger().info(
+                    f'[TopFSM] 배터리 {self._battery_level:.1f}% < {low}% → MOVE_TO_CHARGING'
+                )
+                self._change_state(TopState.MOVE_TO_CHARGING)
 
     # ------------------------------------------------------------------ #
     # Sub FSM 시작                                                          #
@@ -233,15 +258,30 @@ class TopFSM(FSMBase):
 
         low = self._node.get_parameter('battery_low').value
         if self._battery_level < low:
-            self._node.get_logger().info(
-                f'[TopFSM] 배터리 {self._battery_level:.1f}% < {low}% → CHARGING_NO_TASK'
-            )
-            self._change_state(TopState.CHARGING_NO_TASK)
+            if self._is_first_charging_eval:
+                # 시작 시 저배터리: 충전소로 이동 후 충전 시작
+                self._node.get_logger().info(
+                    f'[TopFSM] 배터리 {self._battery_level:.1f}% < {low}% (시작) → MOVE_TO_CHARGING'
+                )
+                self._change_state(TopState.MOVE_TO_CHARGING)
+            else:
+                # 충전소 복귀 후 저배터리: 충전 시작
+                self._node.get_logger().info(
+                    f'[TopFSM] 배터리 {self._battery_level:.1f}% < {low}% → CHARGING_NO_TASK'
+                )
+                self._change_state(TopState.CHARGING_NO_TASK)
         else:
             self._node.get_logger().info(
                 f'[TopFSM] 배터리 {self._battery_level:.1f}% >= {low}% → MOVE_TO_STANDBY'
             )
             self._change_state(TopState.MOVE_TO_STANDBY)
+        self._is_first_charging_eval = False
+
+    def _on_arrived_at_charging(self) -> None:
+        """MOVE_TO_CHARGING 완료 → CHARGING"""
+        if self._state == TopState.MOVE_TO_CHARGING:
+            self._node.get_logger().info('[TopFSM] 충전소 도착. CHARGING으로 진입.')
+            self._change_state(TopState.CHARGING)
 
     def _on_arrived_at_standby(self) -> None:
         """MOVE_TO_STANDBY 완료 → STANDBY"""
@@ -249,9 +289,17 @@ class TopFSM(FSMBase):
             self._change_state(TopState.STANDBY)
 
     def _on_sub_done(self) -> None:
-        """Sub FSM 완료 → CHARGING으로 복귀"""
-        self._node.get_logger().info(
-            f'[TopFSM] Sub FSM 완료. CHARGING으로 복귀.'
-        )
+        """Sub FSM 완료 → 배터리 체크 후 충전소 또는 CHARGING으로 복귀"""
         self._active_sub_fsm = None
-        self._change_state(TopState.CHARGING)
+        low = self._node.get_parameter('battery_low').value
+        if self._battery_level < low:
+            self._node.get_logger().info(
+                f'[TopFSM] Sub FSM 완료. 배터리 부족({self._battery_level:.1f}% < {low}%) '
+                '→ MOVE_TO_CHARGING'
+            )
+            self._change_state(TopState.MOVE_TO_CHARGING)
+        else:
+            self._node.get_logger().info(
+                f'[TopFSM] Sub FSM 완료. 배터리 정상({self._battery_level:.1f}%) → CHARGING'
+            )
+            self._change_state(TopState.CHARGING)

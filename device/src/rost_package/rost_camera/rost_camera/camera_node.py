@@ -55,7 +55,7 @@ from sensor_msgs.msg import CompressedImage
 IMAGE_TOPIC = '/image'
 
 # ── Default constants ──────────────────────────────────────────────────────────
-DEFAULT_CAMERA_INDEX = 2
+DEFAULT_CAMERA_INDEX = 0
 DEFAULT_FPS = 10.0
 DEFAULT_JPEG_QUALITY = 90   # YOLO 성능 저하를 막기 위해 90 이상 권장
 

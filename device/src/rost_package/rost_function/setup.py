@@ -11,6 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/robot_function.launch.py']),
+        ('share/' + package_name + '/config', ['config/robot_function.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

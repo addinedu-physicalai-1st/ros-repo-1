@@ -31,6 +31,12 @@ from rost_state_machine.msg import RobotCommand, RobotEvent
 from rost_state_machine.srv import TaskRequest
 from rost_state_machine.top_fsm import TopFSM, TopState
 
+try:
+    from pinkylib import Battery as _PinkyBattery
+    _battery_hw = _PinkyBattery()
+except Exception:
+    _battery_hw = None
+
 
 class StateMachineNode(Node):
     """레스토랑 서빙 로봇 상태 기계 노드"""
@@ -51,6 +57,7 @@ class StateMachineNode(Node):
         # 내부 상태                                                          #
         # ---------------------------------------------------------------- #
         self._battery_level: float = 85.0   # 초기 배터리 (충분히 높음)
+        self._battery_hw = _battery_hw
         self._current_state: str = 'INIT'
         self._nav_timer = None              # 내비게이션 시뮬 타이머
         self._nav_callback = None           # 내비게이션 완료 콜백
@@ -114,6 +121,11 @@ class StateMachineNode(Node):
         self._state_pub_timer = self.create_timer(1.0, self._publish_state)
         # 배터리 퍼블리시 (1 Hz)
         self._battery_pub_timer = self.create_timer(1.0, self._publish_battery)
+        # 초기 배터리 평가 트리거: 노드 시작 직후 FSM에 현재 배터리 레벨을 전달하여
+        # use_sim_time 환경에서 타이머 지연과 무관하게 초기 상태를 결정한다.
+        self._init_battery_trigger = self.create_timer(
+            0.5, self._trigger_initial_battery_eval
+        )
 
         # ---------------------------------------------------------------- #
         # FSM 시작                                                           #
@@ -196,6 +208,15 @@ class StateMachineNode(Node):
         """HQ로부터 내비게이션 목표 수신 (실제 로봇 연동 시 활용)"""
         self.get_logger().debug(f'[NAV GOAL] {msg.pose.position}')
 
+    def _trigger_initial_battery_eval(self) -> None:
+        """노드 시작 직후 1회만 실행 — FSM 초기 배터리 평가를 강제 트리거"""
+        self._init_battery_trigger.cancel()
+        self._init_battery_trigger = None
+        self.get_logger().info(
+            f'[FSM] 초기 배터리 평가 트리거. 현재 레벨: {self._battery_level:.1f}%'
+        )
+        self._top_fsm.update_battery(self._battery_level)
+
     def _on_battery_sim(self, msg: Float32) -> None:
         """시뮬레이션용 배터리 오버라이드 수신"""
         old = self._battery_level
@@ -259,9 +280,21 @@ class StateMachineNode(Node):
 
     def _publish_battery(self) -> None:
         """배터리 상태를 주기적으로 퍼블리시"""
+        if self._battery_hw is not None:
+            try:
+                voltage = float(self._battery_hw.get_voltage())
+                percent_raw = self._battery_hw.battery_percentage()  # 0~100
+                self._battery_level = float(percent_raw)             # % 단위 유지
+                self._top_fsm.update_battery(self._battery_level)
+            except Exception as e:
+                self.get_logger().warn(f'[FSM] 배터리 읽기 실패: {e}')
+                voltage = 0.0
+        else:
+            voltage = 0.0
+
         msg = BatteryState()
         msg.percentage = self._battery_level / 100.0  # 0.0 ~ 1.0
-        msg.voltage = 24.0  # 예시 전압
+        msg.voltage = voltage
         msg.present = True
         self._battery_pub.publish(msg)
 

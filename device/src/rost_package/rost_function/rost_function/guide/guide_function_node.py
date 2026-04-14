@@ -5,7 +5,7 @@ guide_function_node.py
 
 처리 명령 (state=GUIDE 인 경우에만 반응):
   MoveToRequester    → 요청자 위치로 이동, 도달 시 ArrivedAtRequester 퍼블리시
-  RetryMoveRequester → 새 요청자 위치로 재이동, 도달 시 ArrivedAtRequester 퍼블리시
+  RetryMoveToRequester → 새 요청자 위치로 재이동, 도달 시 ArrivedAtRequester 퍼블리시
   GuideStart         → 안내 목적지로 이동, 도달 시 ArrivedAtTarget 퍼블리시
   RetryGuideStart    → 동일 안내 목적지로 재이동, 도달 시 ArrivedAtTarget 퍼블리시
   GuideEnd           → 안내 종료, 이동 중지, 세션 초기화
@@ -114,12 +114,12 @@ class GuideFunctionNode(Node):
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
-        elif cmd == 'RetryMoveRequester':
+        elif cmd == 'RetryMoveToRequester':
             # 새 요청자 위치로 재이동
             self._requester_pose = msg.target_pose
             self._guide_phase = 'to_requester'
             self.get_logger().info(
-                f'[GuideFunc] RetryMoveRequester — 요청자 재이동: '
+                f'[GuideFunc] RetryMoveToRequester — 요청자 재이동: '
                 f'({msg.target_pose.pose.position.x:.2f}, '
                 f'{msg.target_pose.pose.position.y:.2f})'
             )

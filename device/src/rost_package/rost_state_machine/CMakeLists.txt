@@ -34,6 +34,11 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+# 설정 파일 설치
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
 # 리소스 파일 설치
 install(DIRECTORY resource/
   DESTINATION share/ament_index/resource_index/packages

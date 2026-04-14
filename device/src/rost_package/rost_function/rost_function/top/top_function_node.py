@@ -5,14 +5,13 @@ Top FSM 기능 노드.
 
 담당 상태:
   CHARGING           - 충전 중 (배터리 모니터링)
-  CHARGING_NO_TASK   - 배터리 < 20%, 충전 중 (충전 증가 시뮬)
+  CHARGING_NO_TASK   - 배터리 < 20%, 충전 중
   CHARGING_WITH_TASK - 배터리 60~80%, 충전 중
   MOVE_TO_STANDBY    - 대기장소(standby_pos)로 이동
   STANDBY            - 작업 대기
 
 기능:
-  - /robot/battery 배터리 상태 주기 퍼블리시 (1 Hz)
-  - 충전 중: 배터리 +0.5%/초, 작업 중: -0.2%/초
+  - /robot/battery 구독하여 배터리 상태 수신 (fsm_node에서 publish)
   - MOVE_TO_STANDBY: NavigationClient로 대기장소 이동
   - 대기장소 도달 시 "ArrivedAtStandby" 이벤트 퍼블리시
 
@@ -20,7 +19,6 @@ Top FSM 기능 노드.
   use_nav2              : Nav2 사용 여부 (기본 False)
   simulated_nav_time    : 시뮬 이동 시간 (기본 3.0초)
   standby_pos_x/y/theta : 대기장소 좌표
-  battery_level         : 초기 배터리 레벨 (0.0~1.0, 기본 0.8)
 """
 
 import math
@@ -30,7 +28,7 @@ from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import BatteryState
-from std_msgs.msg import String, Float32
+from std_msgs.msg import String
 
 from rost_state_machine.msg import RobotCommand
 from rost_function.core.navigation_client import NavigationClient
@@ -56,13 +54,16 @@ class TopFunctionNode(Node):
         self.declare_parameter('standby_pos_x', 0.0)
         self.declare_parameter('standby_pos_y', 0.0)
         self.declare_parameter('standby_pos_theta', 0.0)
-        self.declare_parameter('battery_level', 0.8)        # 초기 배터리 레벨
+        self.declare_parameter('charging_pos_x', 0.0)
+        self.declare_parameter('charging_pos_y', 0.0)
+        self.declare_parameter('charging_pos_theta', 0.0)
 
         # ---------------------------------------------------------------- #
         # 내부 상태                                                          #
         # ---------------------------------------------------------------- #
         self._current_state: str = ''
-        self._battery_level: float = self.get_parameter('battery_level').value
+        self._battery_level: float = 0.0   # /robot/battery 에서 수신한 값 (0.0~1.0)
+        self._battery_voltage: float = 0.0
 
         # ---------------------------------------------------------------- #
         # 공통 모듈                                                          #
@@ -73,13 +74,6 @@ class TopFunctionNode(Node):
         self._event_pub = EventPublisher(self)
 
         # ---------------------------------------------------------------- #
-        # 퍼블리셔                                                           #
-        # ---------------------------------------------------------------- #
-        self._battery_pub = self.create_publisher(BatteryState, '/robot/battery', 10)
-        # rost_state_machine이 /sim/battery_level을 구독하므로 통합 지원
-        self._battery_sim_pub = self.create_publisher(Float32, '/sim/battery_level', 10)
-
-        # ---------------------------------------------------------------- #
         # 서브스크라이버                                                      #
         # ---------------------------------------------------------------- #
         self._state_sub = self.create_subscription(
@@ -88,14 +82,20 @@ class TopFunctionNode(Node):
         self._cmd_sub = self.create_subscription(
             RobotCommand, '/hq/command', self._on_command, 10
         )
-
-        # ---------------------------------------------------------------- #
-        # 주기 타이머                                                         #
-        # ---------------------------------------------------------------- #
-        # 배터리 업데이트 및 퍼블리시 (1 Hz)
-        self._battery_timer = self.create_timer(1.0, self._battery_tick)
+        self._battery_sub = self.create_subscription(
+            BatteryState, '/robot/battery', self._on_battery, 10
+        )
 
         self.get_logger().info('top_function_node 시작.')
+
+    # ------------------------------------------------------------------ #
+    # /robot/battery 콜백                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _on_battery(self, msg: BatteryState) -> None:
+        """fsm_node가 publish하는 배터리 상태 수신"""
+        self._battery_level = msg.percentage   # 0.0~1.0
+        self._battery_voltage = msg.voltage
 
     # ------------------------------------------------------------------ #
     # /robot/state 콜백                                                    #
@@ -113,12 +113,16 @@ class TopFunctionNode(Node):
 
     def _on_state_enter(self, state: str) -> None:
         """상태 진입 시 처리"""
-        if state == 'MOVE_TO_STANDBY':
+        if state == 'MOVE_TO_CHARGING':
+            self._navigate_to_charging()
+
+        elif state == 'MOVE_TO_STANDBY':
             self._navigate_to_standby()
 
         elif state in _CHARGING_STATES:
             self.get_logger().info(
-                f'[TopFunc] {state}: 충전 중. 배터리={self._battery_level*100:.1f}%'
+                f'[TopFunc] {state}: 충전 중. '
+                f'배터리={self._battery_level*100:.1f}% ({self._battery_voltage:.2f}V)'
             )
 
         elif state == 'STANDBY':
@@ -126,7 +130,8 @@ class TopFunctionNode(Node):
 
         elif state in _TASK_STATES:
             self.get_logger().info(
-                f'[TopFunc] {state}: 작업 중. 배터리 소모 시뮬 시작.'
+                f'[TopFunc] {state}: 작업 중. '
+                f'배터리={self._battery_level*100:.1f}% ({self._battery_voltage:.2f}V)'
             )
 
     # ------------------------------------------------------------------ #
@@ -140,6 +145,23 @@ class TopFunctionNode(Node):
     # ------------------------------------------------------------------ #
     # 내비게이션                                                             #
     # ------------------------------------------------------------------ #
+
+    def _navigate_to_charging(self) -> None:
+        """파라미터로 설정된 충전소로 이동"""
+        x = self.get_parameter('charging_pos_x').value
+        y = self.get_parameter('charging_pos_y').value
+        theta = self.get_parameter('charging_pos_theta').value
+
+        pose = self._make_pose(x, y, theta)
+        self.get_logger().info(
+            f'[TopFunc] 충전소로 이동: ({x:.2f}, {y:.2f}, θ={theta:.2f}rad)'
+        )
+        self._nav.send_goal(pose, on_arrived=self._on_arrived_charging)
+
+    def _on_arrived_charging(self) -> None:
+        """충전소 도달 시 처리"""
+        self.get_logger().info('[TopFunc] 충전소 도착!')
+        self._event_pub.publish_event('ArrivedAtCharging', session_id='')
 
     def _navigate_to_standby(self) -> None:
         """파라미터로 설정된 대기장소로 이동"""
@@ -157,32 +179,6 @@ class TopFunctionNode(Node):
         """대기장소 도달 시 처리"""
         self.get_logger().info('[TopFunc] 대기장소 도착!')
         self._event_pub.publish_event('ArrivedAtStandby', session_id='')
-
-    # ------------------------------------------------------------------ #
-    # 배터리 시뮬레이션                                                       #
-    # ------------------------------------------------------------------ #
-
-    def _battery_tick(self) -> None:
-        """1초마다 배터리 레벨 업데이트 및 퍼블리시"""
-        # 상태에 따라 배터리 증감
-        if self._current_state in _CHARGING_STATES:
-            # 충전 중: 0.5%/초 증가
-            self._battery_level = min(1.0, self._battery_level + 0.005)
-        elif self._current_state in _TASK_STATES:
-            # 작업 중: 0.2%/초 감소
-            self._battery_level = max(0.0, self._battery_level - 0.002)
-
-        # /robot/battery 퍼블리시
-        battery_msg = BatteryState()
-        battery_msg.percentage = self._battery_level
-        battery_msg.voltage = 24.0
-        battery_msg.present = True
-        self._battery_pub.publish(battery_msg)
-
-        # /sim/battery_level 퍼블리시 (rost_state_machine 통합용)
-        sim_msg = Float32()
-        sim_msg.data = self._battery_level * 100.0  # % 단위
-        self._battery_sim_pub.publish(sim_msg)
 
     # ------------------------------------------------------------------ #
     # 헬퍼                                                                  #
