@@ -183,6 +183,9 @@ message Command {
   CommandStatus status  = 6;
   google.protobuf.Timestamp sent_at  = 7;
   google.protobuf.Timestamp acked_at = 8;
+  double      target_x     = 9;
+  double      target_y     = 10;
+  double      target_theta = 11;
 }
 
 message Heartbeat {

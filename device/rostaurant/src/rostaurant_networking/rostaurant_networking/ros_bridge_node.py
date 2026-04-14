@@ -231,6 +231,9 @@ class RostaurantCommNode(Node):
             robot_id=cmd.robot_id,
             command=int(cmd.command),
             target_id=cmd.target_id,
+            target_x=cmd.target_x,
+            target_y=cmd.target_y,
+            target_theta=cmd.target_theta,
         )
         try:
             self._cmd_queue.put_nowait(ros_cmd)

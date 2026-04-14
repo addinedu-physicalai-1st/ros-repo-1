@@ -274,6 +274,12 @@ async def _dispatch_move_to(
     dest_id: str,
 ) -> None:
     """Send a MOVE_TO command to robot and update the task's robot_id."""
+    async with lock:
+        place = await db.get_place(conn, dest_id)
+    target_x = float(place["x"]) if place and place.get("x") is not None else 0.0
+    target_y = float(place["y"]) if place and place.get("y") is not None else 0.0
+    target_theta = float(place["theta"]) if place and place.get("theta") is not None else 0.0
+
     cmd_id = str(uuid.uuid4())
     now_ms = _ts_now_ms()
     cmd_pb = pb.Command(
@@ -282,6 +288,9 @@ async def _dispatch_move_to(
         robot_id=robot_id,
         command=pb.CommandType.MOVE_TO,
         target_id=dest_id,
+        target_x=target_x,
+        target_y=target_y,
+        target_theta=target_theta,
         status=pb.CommandStatus.SENT,
     )
     cmd_pb.sent_at.FromMilliseconds(now_ms)
@@ -307,7 +316,10 @@ async def _dispatch_move_to(
     pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
     try:
         await manager.send_command_packet(robot_id, pkt)
-        logger.info("Auto-dispatch MOVE_TO robot=%s task=%s dest=%s", robot_id, task_id, dest_id)
+        logger.info(
+            "Auto-dispatch MOVE_TO robot=%s task=%s dest=%s (x=%.3f y=%.3f θ=%.3f)",
+            robot_id, task_id, dest_id, target_x, target_y, target_theta,
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("Auto-dispatch send failed: %s", e)
 
