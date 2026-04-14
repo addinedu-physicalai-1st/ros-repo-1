@@ -1,0 +1,21 @@
+{
+  "name": "buffet-control-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SQLite-backed API for buffet admin",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^11.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
