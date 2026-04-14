@@ -49,6 +49,11 @@ class MapWidget(QGraphicsView):
         self.scene.addItem(robot)
         self.robots[r_id] = robot
 
+    def remove_robot(self, r_id: str) -> None:
+        item = self.robots.pop(r_id, None)
+        if item is not None:
+            self.scene.removeItem(item)
+
     def update_robot_pos(self, r_id: str, x: float, y: float) -> None:
         """Move a robot marker using ROS /odom pose coordinates (metres).
 
@@ -163,11 +168,11 @@ class MapDashboard(QWidget):
 
     def _on_robots_loaded(self, data: dict):
         robots = data.get("robots", [])
-        count = len(robots)
-        self.right_title.setText(f"로봇 목록 ({count}대)")
+        # Start with 0 — only robots actively sending pose will be shown
+        self.right_title.setText("로봇 목록 (0대)")
         self.right_title.setStyleSheet("")
 
-        # Clear map scene (re-add background) and robot list
+        # Clear map scene (re-add background), cards, and meta
         self.map_view.scene.clear()
         self.map_view.scene.addPixmap(self.map_view.bg_pixmap)
         self.map_view.robots.clear()
@@ -179,36 +184,14 @@ class MapDashboard(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        w_img = self.map_view.bg_pixmap.width()
-        h_img = self.map_view.bg_pixmap.height()
-
+        # Store metadata only — map markers and cards are added lazily when
+        # the first successful pose response is received for each robot.
         for idx, robot in enumerate(robots):
-            r_id      = robot.get("robot_id", f"R{idx + 1}")
-            status_i  = robot.get("status", 0)
-            battery   = robot.get("battery_last", 0)
-            task_id   = robot.get("current_task_id", "") or ""
-            color     = _STATUS_COLORS.get(status_i, QColor("#999999"))
-            s_label   = ROBOT_STATUS_LABELS.get(status_i, "알 수 없음")
-
-            self._robot_meta[r_id] = robot
-
-            # Spread robots across the map horizontally
-            fx = 0.2 + (idx / max(count - 1, 1)) * 0.6 if count > 1 else 0.5
-            pos = QPointF(w_img * fx, h_img * 0.5)
-            self.map_view.add_robot(r_id, color, pos)
-
-            card = RobotCard(r_id, s_label, color, battery, f"태스크: {task_id or '없음'}")
-            self._robot_cards[r_id] = card
-
-            # Wire up command buttons
-            card.btn_stop_imm.clicked.connect(
-                lambda _, rid=r_id, tid=task_id: self._send_cmd(rid, tid, CMD_EMERGENCY_STOP))
-            card.btn_stop_next.clicked.connect(
-                lambda _, rid=r_id, tid=task_id: self._send_cmd(rid, tid, CMD_CANCEL))
-            card.btn_charge.clicked.connect(
-                lambda _, rid=r_id, tid=task_id: self._send_cmd(rid, tid, CMD_RETURN_DOCK))
-
-            self.robots_layout.insertWidget(self.robots_layout.count() - 1, card)
+            r_id     = robot.get("robot_id", f"R{idx + 1}")
+            status_i = robot.get("status", 0)
+            color    = _STATUS_COLORS.get(status_i, QColor("#999999"))
+            s_label  = ROBOT_STATUS_LABELS.get(status_i, "알 수 없음")
+            self._robot_meta[r_id] = {**robot, "_color": color, "_s_label": s_label}
 
         QTimer.singleShot(100, self.map_view.fit_view)
         # Start polling telemetry every 2 seconds
@@ -217,19 +200,68 @@ class MapDashboard(QWidget):
     # ── periodic pose polling ─────────────────────────────────────────────────
 
     def _poll_all_poses(self):
-        for r_id in list(self.map_view.robots.keys()):
+        # Poll pose for every known robot (DB records), not just visible ones
+        for r_id in list(self._robot_meta.keys()):
             w = ApiWorker(self._api.get_telemetry_pose, r_id)
             w.result.connect(lambda data, rid=r_id: self._on_pose_updated(rid, data))
-            # 404 is expected for robots that have never sent telemetry — ignore
+            w.error.connect(lambda _, rid=r_id: self._on_pose_error(rid))
             w.finished.connect(lambda: self._discard_worker(w))
             self._workers.append(w)
             w.start()
+
+        # Poll battery only for robots already visible on the dashboard
+        for r_id in list(self._robot_cards.keys()):
+            wb = ApiWorker(self._api.get_telemetry_battery, r_id)
+            wb.result.connect(lambda data, rid=r_id: self._on_battery_updated(rid, data))
+            wb.finished.connect(lambda: self._discard_worker(wb))
+            self._workers.append(wb)
+            wb.start()
 
     def _on_pose_updated(self, r_id: str, data: dict):
         pose = data.get("latest_pose", {})
         x = float(pose.get("x", 0.0))
         y = float(pose.get("y", 0.0))
+
+        # First successful pose → add robot to map and card list
+        if r_id not in self.map_view.robots:
+            meta    = self._robot_meta.get(r_id, {})
+            color   = meta.get("_color", QColor("#999999"))
+            s_label = meta.get("_s_label", "알 수 없음")
+            battery = meta.get("battery_last", 0)
+            task_id = meta.get("current_task_id", "") or ""
+
+            self.map_view.add_robot(r_id, color, QPointF(0, 0))
+
+            card = RobotCard(r_id, s_label, color, battery, f"태스크: {task_id or '없음'}")
+            card.btn_stop_imm.clicked.connect(
+                lambda _, rid=r_id, tid=task_id: self._send_cmd(rid, tid, CMD_EMERGENCY_STOP))
+            card.btn_stop_next.clicked.connect(
+                lambda _, rid=r_id, tid=task_id: self._send_cmd(rid, tid, CMD_CANCEL))
+            card.btn_charge.clicked.connect(
+                lambda _, rid=r_id, tid=task_id: self._send_cmd(rid, tid, CMD_RETURN_DOCK))
+            self._robot_cards[r_id] = card
+            self.robots_layout.insertWidget(self.robots_layout.count() - 1, card)
+            self.right_title.setText(f"로봇 목록 ({len(self._robot_cards)}대)")
+
         self.map_view.update_robot_pos(r_id, x, y)
+
+    def _on_pose_error(self, r_id: str):
+        # Pose request failed (404 or network error) → remove robot from view
+        removed = False
+        if r_id in self.map_view.robots:
+            self.map_view.remove_robot(r_id)
+            removed = True
+        card = self._robot_cards.pop(r_id, None)
+        if card is not None:
+            card.deleteLater()
+            removed = True
+        if removed:
+            self.right_title.setText(f"로봇 목록 ({len(self._robot_cards)}대)")
+
+    def _on_battery_updated(self, r_id: str, data: dict):
+        card = self._robot_cards.get(r_id)
+        if card is not None:
+            card.battery_ui.setLevel(int(data.get("battery_percent", 0)))
 
     # ── command dispatch ──────────────────────────────────────────────────────
 

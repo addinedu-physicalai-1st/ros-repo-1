@@ -9,6 +9,13 @@ export type Screen =
   | 'guideStarting'
   | 'inProgress'
   | 'guideComplete'
+  // Accompany flow
+  | 'accompanyCallingRobot'
+  | 'accompanyArrived'
+  | 'accompanyActive'
+  | 'accompanyReturning'
+  | 'accompanyReturned'
+  | 'accompanyComplete'
 
 export type Flow = 'toilet' | 'menu' | null
 

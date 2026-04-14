@@ -559,6 +559,19 @@ async def get_pose(
     return _pb_to_json(pb.GetPoseResponse(latest_pose=pose))
 
 
+@app.get("/telemetry/battery/{robot_id}", summary="Latest battery level for a robot")
+async def get_battery(
+    robot_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.TELEMETRY_READ)),
+) -> dict[str, Any]:
+    manager = _get_manager(request)
+    battery = await manager.telemetry.get_battery(robot_id)
+    if battery is None:
+        raise HTTPException(status_code=404, detail="no battery state cached for robot")
+    return {"robot_id": robot_id, "battery_percent": battery}
+
+
 # ──────────────────────────────────────────────────────────────────
 # Commands  (ADMIN only)
 # ──────────────────────────────────────────────────────────────────

@@ -112,6 +112,10 @@ class ApiClient:
         """GET /telemetry/pose/{robot_id} → {"latest_pose": {...}}"""
         return self._get(f"/telemetry/pose/{robot_id}")
 
+    def get_telemetry_battery(self, robot_id: str) -> dict:
+        """GET /telemetry/battery/{robot_id} → {"robot_id": str, "battery_percent": int}"""
+        return self._get(f"/telemetry/battery/{robot_id}")
+
     def get_tasks(self, limit: int = 100, offset: int = 0) -> dict:
         """GET /tasks → {"tasks": [...], "total": int}"""
         return self._get("/tasks", limit=limit, offset=offset)

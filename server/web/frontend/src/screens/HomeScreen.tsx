@@ -4,20 +4,16 @@ import type { ToastMessage } from '../components/Toast'
 interface Props {
   tableId: string
   onGuide: () => void
+  onAccompany: () => void
   onToast: (msg: ToastMessage) => void
 }
 
-const serviceButtons = [
-  { type: 'escort', emoji: '🤖', label: '동행', desc: '로봇이 함께 동행합니다' },
-  { type: 'dishPickup', emoji: '♻️', label: '수거', desc: '사용한 그릇을 수거해요' },
-] as const
-
-export default function HomeScreen({ tableId, onGuide, onToast }: Props) {
-  const handleService = async (type: string, label: string) => {
-    const { ok } = await sendRequest(type)
+export default function HomeScreen({ tableId, onGuide, onAccompany, onToast }: Props) {
+  const handleDishPickup = async () => {
+    const { ok } = await sendRequest('dishPickup')
     onToast({
       id: Date.now(),
-      text: ok ? `✓ ${label} 요청이 전송되었습니다` : `[데모] ${label} 요청 전송됨`,
+      text: ok ? '✓ 수거 요청이 전송되었습니다' : '[데모] 수거 요청 전송됨',
       type: 'success',
     })
   }
@@ -54,17 +50,22 @@ export default function HomeScreen({ tableId, onGuide, onToast }: Props) {
 
       {/* 동행 + 수거 */}
       <div className="grid grid-cols-2 gap-3">
-        {serviceButtons.map(({ type, emoji, label, desc }) => (
-          <button
-            key={type}
-            onClick={() => handleService(type, label)}
-            className="bg-white border border-gray-200 rounded-2xl py-7 flex flex-col items-center gap-2 active:scale-95 transition-transform"
-          >
-            <span className="text-3xl">{emoji}</span>
-            <span className="text-base font-bold text-gray-900">{label}</span>
-            <span className="text-xs text-gray-400 text-center leading-snug">{desc}</span>
-          </button>
-        ))}
+        <button
+          onClick={onAccompany}
+          className="bg-white border border-gray-200 rounded-2xl py-7 flex flex-col items-center gap-2 active:scale-95 transition-transform"
+        >
+          <span className="text-3xl">🤖</span>
+          <span className="text-base font-bold text-gray-900">동행</span>
+          <span className="text-xs text-gray-400 text-center leading-snug">로봇이 함께 동행합니다</span>
+        </button>
+        <button
+          onClick={handleDishPickup}
+          className="bg-white border border-gray-200 rounded-2xl py-7 flex flex-col items-center gap-2 active:scale-95 transition-transform"
+        >
+          <span className="text-3xl">♻️</span>
+          <span className="text-base font-bold text-gray-900">수거</span>
+          <span className="text-xs text-gray-400 text-center leading-snug">사용한 그릇을 수거해요</span>
+        </button>
       </div>
 
       {/* 직원 호출 — full width */}

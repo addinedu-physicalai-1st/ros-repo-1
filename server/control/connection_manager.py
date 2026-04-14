@@ -84,6 +84,12 @@ class TelemetryCache:
             p = self._pose.get(robot_id)
             return p
 
+    async def get_battery(self, robot_id: str) -> Optional[int]:
+        """Return latest battery_percent from UDP TelemetryState, or None if not yet received."""
+        async with self._lock:
+            s = self._state.get(robot_id)
+            return s.battery_percent if s is not None else None
+
     async def snapshot_poses(self) -> dict[str, pb.TelemetryPose]:
         async with self._lock:
             return dict(self._pose)
