@@ -85,6 +85,14 @@ class FSMBase:
         """
         raise NotImplementedError(f'{self._name}.handle_command()를 구현해야 합니다.')
 
+    def handle_event(self, event: str, session_id: str = '') -> bool:
+        """
+        function node가 publish한 /robot/event 이벤트를 처리한다.
+        use_function_nodes=True 일 때 fsm_node가 호출한다.
+        :return: True면 처리됨, False면 현재 상태에서 처리 불가
+        """
+        return False
+
     # ------------------------------------------------------------------ #
     # 타임아웃 타이머 관리                                                  #
     # ------------------------------------------------------------------ #

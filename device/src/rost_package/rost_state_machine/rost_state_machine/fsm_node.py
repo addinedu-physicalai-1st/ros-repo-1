@@ -47,11 +47,12 @@ class StateMachineNode(Node):
         # ---------------------------------------------------------------- #
         # ROS2 파라미터 선언                                                 #
         # ---------------------------------------------------------------- #
-        self.declare_parameter('timeout_secs', 30.0)      # VERIFY 타임아웃
-        self.declare_parameter('battery_low', 20.0)       # 배터리 부족 임계값 (%)
-        self.declare_parameter('battery_mid', 60.0)       # 배터리 중간 임계값 (%)
-        self.declare_parameter('battery_high', 80.0)      # 배터리 충분 임계값 (%)
-        self.declare_parameter('nav_delay', 5.0)          # 내비게이션 시뮬 지연 (초)
+        self.declare_parameter('timeout_secs', 30.0)        # VERIFY 타임아웃
+        self.declare_parameter('battery_low', 20.0)         # 배터리 부족 임계값 (%)
+        self.declare_parameter('battery_mid', 60.0)         # 배터리 중간 임계값 (%)
+        self.declare_parameter('battery_high', 80.0)        # 배터리 충분 임계값 (%)
+        self.declare_parameter('nav_delay', 5.0)            # 내비게이션 시뮬 지연 (초)
+        self.declare_parameter('use_function_nodes', False)  # rost_function 패키지 연동 여부
         self.declare_parameter('max_request_count', 3)    # 수거 횟수 상한
 
         # ---------------------------------------------------------------- #
@@ -103,6 +104,13 @@ class StateMachineNode(Node):
             Float32,
             '/sim/battery_level',
             self._on_battery_sim,
+            10
+        )
+        # function node 이벤트 수신 (use_function_nodes=True 시 FSM 상태 전이에 사용)
+        self._robot_event_sub = self.create_subscription(
+            RobotEvent,
+            '/robot/event',
+            self._on_robot_event,
             10
         )
 
@@ -161,10 +169,17 @@ class StateMachineNode(Node):
 
     def navigate_to(self, label: str, on_arrived) -> None:
         """
-        내비게이션 시뮬레이션.
-        nav_delay 초 후 on_arrived 콜백을 호출한다.
-        실제 로봇에서는 Nav2 액션 클라이언트로 교체.
+        내비게이션 처리.
+        - use_function_nodes=True: function node가 실제 이동을 담당하므로 로그만 출력.
+          상태 전이는 /robot/event 수신 후 handle_event()에서 처리된다.
+        - use_function_nodes=False: nav_delay 초 후 on_arrived 콜백을 호출하는 시뮬레이션.
         """
+        if self.get_parameter('use_function_nodes').value:
+            self.get_logger().info(
+                f'[NAV] {label} 이동 요청. function node가 처리 중...'
+            )
+            return
+
         nav_delay = self.get_parameter('nav_delay').value
         self.get_logger().info(
             f'[NAV] {label} 이동 시작. (시뮬: {nav_delay:.1f}초 후 도착)'
@@ -217,6 +232,19 @@ class StateMachineNode(Node):
             f'[FSM] 초기 배터리 평가 트리거. 현재 레벨: {self._battery_level:.1f}%'
         )
         self._top_fsm.update_battery(self._battery_level)
+
+    def _on_robot_event(self, msg: RobotEvent) -> None:
+        """
+        /robot/event 수신 콜백.
+        use_function_nodes=True 일 때 function node가 publish한 도착 이벤트를
+        TopFSM에 전달하여 상태 전이를 트리거한다.
+        """
+        if not self.get_parameter('use_function_nodes').value:
+            return
+        self.get_logger().info(
+            f'[EVENT ← FUNC] {msg.event} (세션: {msg.session_id})'
+        )
+        self._top_fsm.handle_event(msg.event, msg.session_id)
 
     def _on_battery_sim(self, msg: Float32) -> None:
         """시뮬레이션용 배터리 오버라이드 수신"""

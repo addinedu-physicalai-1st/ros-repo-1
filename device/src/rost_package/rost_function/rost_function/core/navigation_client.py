@@ -189,6 +189,9 @@ class NavigationClient:
             self._current_cb = None
             if cb:
                 cb()
+        elif result.status == GoalStatus.STATUS_CANCELED:
+            # cancel_goal()로 의도적으로 취소한 경우 — 정상 동작이므로 debug 로그만 출력
+            self._node.get_logger().debug('[NavClient] Nav2 목표 취소됨 (의도적 취소)')
         else:
             self._node.get_logger().warn(
                 f'[NavClient] Nav2 내비게이션 실패 (status={result.status})'
