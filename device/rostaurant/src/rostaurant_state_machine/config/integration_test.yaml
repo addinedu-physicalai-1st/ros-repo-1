@@ -1,0 +1,22 @@
+# integration_test.yaml
+#
+# rostaurant_state_machine + rostaurant_function 통합 테스트용 파라미터.
+#
+# use_function_nodes: true 로 설정하면
+#   - navigate_to()는 로그만 출력하고 타이머를 실행하지 않음
+#   - function node가 이동을 수행하고 /robot/event를 publish
+#   - FSM은 /robot/event를 수신하여 상태 전이
+#
+# 실행 방법 (터미널 3개):
+#   터미널 1: ros2 launch rostaurant_state_machine state_machine.launch.py config:=$(ros2 pkg prefix rostaurant_state_machine)/share/rostaurant_state_machine/config/integration_test.yaml
+#   터미널 2: ros2 launch rostaurant_function robot_function.launch.py
+#   터미널 3: ros2 run rostaurant_state_machine test_state_machine.py --ros-args -p scenario:=follow -p step_delay:=8.0
+
+robot_state_machine_node:
+  ros__parameters:
+    timeout_secs: 30.0          # VERIFY 상태 타임아웃 시간 (초)
+    battery_low: 20.0           # 배터리 부족 임계값 (%)
+    battery_mid: 60.0           # 배터리 중간 임계값 (%)
+    battery_high: 80.0          # 배터리 충분 임계값 (%)
+    nav_delay: 60.0             # use_function_nodes=true 이므로 실제로 사용되지 않음
+    use_function_nodes: true    # rostaurant_function 패키지와 연동

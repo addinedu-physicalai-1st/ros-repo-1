@@ -41,7 +41,7 @@ _dashboard_python() {
   command -v python3
 }
 
-# Auto-activate venv if found (server/.venv, server/control/.venv, or system python)
+# Auto-activate venv if found; fallback to conda env or system python
 _activate_venv() {
   for candidate in \
       "${SCRIPT_DIR}/.venv/bin/activate" \
@@ -53,7 +53,25 @@ _activate_venv() {
       return 0
     fi
   done
-  echo "[start.sh] No .venv found, using system Python."
+
+  # conda 환경이 활성화된 경우 그대로 사용
+  if [ -n "${CONDA_PREFIX:-}" ]; then
+    echo "[start.sh] Using conda env: ${CONDA_PREFIX}"
+    return 0
+  fi
+
+  # CONDA_ENV 환경변수로 conda 환경 직접 지정 가능
+  # 예: CONDA_ENV=ros ./start.sh
+  if [ -n "${CONDA_ENV:-}" ]; then
+    _conda_python="${HOME}/miniconda3/envs/${CONDA_ENV}/bin/python3"
+    if [ -x "${_conda_python}" ]; then
+      export PATH="${HOME}/miniconda3/envs/${CONDA_ENV}/bin:${PATH}"
+      echo "[start.sh] Using conda env (CONDA_ENV=${CONDA_ENV}): ${_conda_python}"
+      return 0
+    fi
+  fi
+
+  echo "[start.sh] No .venv or conda env found, using system Python."
 }
 _activate_venv
 

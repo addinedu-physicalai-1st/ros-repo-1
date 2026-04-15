@@ -21,7 +21,8 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32
 
-from pinky_interfaces.msg import RobotCommand, RobotTaskStatus
+from pinky_interfaces.msg import RobotTaskStatus
+from rostaurant_state_machine.msg import RobotCommand
 from rostaurant_networking.ack_logic import _BATTERY_INIT, _decide_ack
 from rostaurant_networking.robotcafe.db.v1 import robotcafe_pb2 as pb
 
@@ -84,7 +85,7 @@ class RostaurantCommNode(Node):
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("battery_topic", "/battery")
         self.declare_parameter("task_status_topic", "/task_status")
-        self.declare_parameter("robot_command_topic", "/robot_command")
+        self.declare_parameter("robot_command_topic", "/hq/command")
         self.declare_parameter("connection_token", "")
 
         self._robot_id = self.get_parameter("robot_id").get_parameter_value().string_value
@@ -229,15 +230,14 @@ class RostaurantCommNode(Node):
 
         self._schedule(_send_accepted())
 
+        # cmd.target_id に string command 이름을 담아서 전달
+        # (예: "MoveToKitchen", "FollowRequest", "CollectRequest", "MoveToRequester")
         ros_cmd = RobotCommand(
-            cmd_id=cmd.cmd_id,
-            task_id=cmd.task_id,
-            robot_id=cmd.robot_id,
-            command=int(cmd.command),
-            target_id=cmd.target_id,
-            target_x=cmd.target_x,
-            target_y=cmd.target_y,
-            target_theta=cmd.target_theta,
+            command=cmd.target_id,
+            session_id=cmd.cmd_id,
+            x=cmd.target_x,
+            y=cmd.target_y,
+            theta=cmd.target_theta,
         )
         try:
             self._cmd_queue.put_nowait(ros_cmd)
