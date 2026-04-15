@@ -16,6 +16,11 @@ export type Screen =
   | 'accompanyReturning'
   | 'accompanyReturned'
   | 'accompanyComplete'
+  // Collection flow
+  | 'collectionCalling'
+  | 'collectionArrived'
+  | 'collectionInProgress'
+  | 'collectionDishwashing'
 
 export type Flow = 'toilet' | 'menu' | null
 

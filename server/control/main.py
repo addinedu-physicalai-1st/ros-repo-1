@@ -393,7 +393,7 @@ async def assign_task(
     task_id: str,
     body: AssignTaskBody,
     request: Request,
-    user: CurrentUser = Depends(require(Permission.COMMAND_SEND)),
+    user: CurrentUser = Depends(require(Permission.ROBOT_COMMAND)),
 ) -> dict[str, Any]:
     """관리자가 특정 로봇에 작업을 강제 배정."""
     db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)

@@ -21,6 +21,10 @@ import AccompanyActiveScreen from './screens/AccompanyActiveScreen'
 import AccompanyReturningScreen from './screens/AccompanyReturningScreen'
 import AccompanyReturnedScreen from './screens/AccompanyReturnedScreen'
 import AccompanyCompleteScreen from './screens/AccompanyCompleteScreen'
+import CollectionCallingScreen from './screens/CollectionCallingScreen'
+import CollectionArrivedScreen from './screens/CollectionArrivedScreen'
+import CollectionInProgressScreen from './screens/CollectionInProgressScreen'
+import CollectionDishwashingScreen from './screens/CollectionDishwashingScreen'
 
 const getTableId = (): string => {
   const params = new URLSearchParams(window.location.search)
@@ -51,6 +55,54 @@ export default function App() {
     screen === 'callingRobot' ? taskId : null,
     () => go('robotArrived'),
   )
+
+  // ── Collection flow state ─────────────────────────────────────────────────
+  const [collectionTaskId, setCollectionTaskId] = useState<string | null>(null)
+
+  useTaskEvents(
+    screen === 'collectionCalling' ? collectionTaskId : null,
+    () => go('collectionArrived'),
+  )
+
+  const startCollectionFlow = async () => {
+    go('collectionCalling')
+    const tableDest = `TBL_${tableId.padStart(2, '0')}`
+    const res = await sendRequest('dishPickup', tableDest)
+    if (res.task_id) {
+      setCollectionTaskId(res.task_id)
+    } else if (!res.ok) {
+      setToast({ id: Date.now(), text: '수거 요청 실패', type: 'error' })
+      go('home')
+    }
+  }
+
+  const handleCollectionRetry = async () => {
+    if (!collectionTaskId) return
+    await respondTask(collectionTaskId, { status: 'retry' })
+    go('collectionCalling')
+  }
+
+  const handleCollectionOk = async () => {
+    if (!collectionTaskId) return
+    await respondTask(collectionTaskId, { status: 'ok' })
+    go('collectionInProgress')
+  }
+
+  const handleCollectDone = async () => {
+    if (!collectionTaskId) return
+    await respondTask(collectionTaskId, { status: 'collect_done' })
+    // Server will push screen_change event if dishwashing is needed;
+    // otherwise return home
+    go('home')
+    setCollectionTaskId(null)
+  }
+
+  const handleUnloadDone = async () => {
+    if (!collectionTaskId) return
+    await respondTask(collectionTaskId, { status: 'unload_done' })
+    go('home')
+    setCollectionTaskId(null)
+  }
 
   // ── Accompany flow state ──────────────────────────────────────────────────
   const [accompanyTaskId, setAccompanyTaskId] = useState<string | null>(null)
@@ -189,6 +241,7 @@ export default function App() {
             tableId={tableId}
             onGuide={() => { setFlow(null); go('guideMenu') }}
             onAccompany={startAccompanyFlow}
+            onCollect={startCollectionFlow}
             onToast={setToast}
           />
         )
@@ -280,6 +333,32 @@ export default function App() {
           <GuideCompleteScreen
             flow={flow}
             onHome={() => { resetMenuState(); go('home') }}
+          />
+        )
+
+      // ── Collection flow ───────────────────────────────────────────────────
+      case 'collectionCalling':
+        return <CollectionCallingScreen />
+
+      case 'collectionArrived':
+        return (
+          <CollectionArrivedScreen
+            onOk={handleCollectionOk}
+            onRetry={handleCollectionRetry}
+          />
+        )
+
+      case 'collectionInProgress':
+        return (
+          <CollectionInProgressScreen
+            onCollectDone={handleCollectDone}
+          />
+        )
+
+      case 'collectionDishwashing':
+        return (
+          <CollectionDishwashingScreen
+            onUnloadDone={handleUnloadDone}
           />
         )
 

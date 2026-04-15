@@ -36,7 +36,7 @@ export const sendRequest = async (
 }
 
 export interface RespondPayload {
-  status: 'ok' | 'retry' | 'timeout'
+  status: 'ok' | 'retry' | 'timeout' | 'collect_done' | 'unload_done'
   next_dest?: string
 }
 

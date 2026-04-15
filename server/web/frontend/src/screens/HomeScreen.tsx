@@ -5,19 +5,11 @@ interface Props {
   tableId: string
   onGuide: () => void
   onAccompany: () => void
+  onCollect: () => void
   onToast: (msg: ToastMessage) => void
 }
 
-export default function HomeScreen({ tableId, onGuide, onAccompany, onToast }: Props) {
-  const handleDishPickup = async () => {
-    const { ok } = await sendRequest('dishPickup')
-    onToast({
-      id: Date.now(),
-      text: ok ? '✓ 수거 요청이 전송되었습니다' : '[데모] 수거 요청 전송됨',
-      type: 'success',
-    })
-  }
-
+export default function HomeScreen({ tableId, onGuide, onAccompany, onCollect, onToast }: Props) {
   const handleStaff = async () => {
     const { ok } = await sendRequest('staff')
     onToast({
@@ -59,7 +51,7 @@ export default function HomeScreen({ tableId, onGuide, onAccompany, onToast }: P
           <span className="text-xs text-gray-400 text-center leading-snug">로봇이 함께 동행합니다</span>
         </button>
         <button
-          onClick={handleDishPickup}
+          onClick={onCollect}
           className="bg-white border border-gray-200 rounded-2xl py-7 flex flex-col items-center gap-2 active:scale-95 transition-transform"
         >
           <span className="text-3xl">♻️</span>
