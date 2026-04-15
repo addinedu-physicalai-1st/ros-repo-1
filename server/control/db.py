@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 import uuid
@@ -170,8 +171,8 @@ class Database:
     #   ZONE_TABLE=1, ZONE_KITCHEN=2, ZONE_TOILET=3, ZONE_DISPLAY=4,
     #   ZONE_DOCK=5, ZONE_CORRIDOR=6
     _PLACE_SEEDS: list[tuple[str, str, int, int]] = [
-        ("WAIT_A",    "대기 A",          6,  1),
-        ("WAIT_B",    "대기 B",          6,  2),
+        ("WAIT_A",    "대기 A",          5,  1),
+        ("WAIT_B",    "대기 B",          5,  2),
         ("KIOSK_1",   "키오스크(출입구)", 4,  3),
         ("TBL_01",    "테이블 1",         1,  4),
         ("TBL_02",    "테이블 2",         1,  5),
@@ -703,6 +704,54 @@ class Database:
             )
         ).fetchall()
         return [self._row_to_task(r) for r in rows]
+
+    async def get_best_wait_place(
+        self,
+        conn: aiosqlite.Connection,
+        robot_x: float,
+        robot_y: float,
+    ) -> Optional[dict[str, Any]]:
+        """ZONE_DOCK 중 현재 비어있는 대기 장소를 반환.
+
+        비어있는 = IN_PROGRESS 작업의 dest_id 가 아닌 장소.
+        - 비어있는 곳 1개: 해당 장소 반환
+        - 비어있는 곳 2개 이상: 로봇 위치 (robot_x, robot_y) 기준 가장 가까운 곳 반환
+        - 모두 점령: fallback — sort_order 첫 번째 ZONE_DOCK 장소 반환
+        """
+        cur = await conn.execute(
+            """
+            SELECT place_id, x, y, theta FROM places
+            WHERE zone = ? AND is_active = 1
+              AND place_id NOT IN (
+                SELECT dest_id FROM tasks WHERE status = ?
+              )
+            ORDER BY sort_order
+            """,
+            (int(pb.ZoneType.ZONE_DOCK), int(pb.TaskStatus.IN_PROGRESS)),
+        )
+        empty_rows = [dict(r) for r in await cur.fetchall()]
+
+        if len(empty_rows) == 1:
+            return empty_rows[0]
+
+        if len(empty_rows) > 1:
+            def _dist(row: dict[str, Any]) -> float:
+                dx = float(row["x"] or 0.0) - robot_x
+                dy = float(row["y"] or 0.0) - robot_y
+                return math.sqrt(dx * dx + dy * dy)
+            return min(empty_rows, key=_dist)
+
+        # Fallback: 모두 점령 중 — sort_order 첫 번째 dock 반환
+        cur2 = await conn.execute(
+            """
+            SELECT place_id, x, y, theta FROM places
+            WHERE zone = ? AND is_active = 1
+            ORDER BY sort_order LIMIT 1
+            """,
+            (int(pb.ZoneType.ZONE_DOCK),),
+        )
+        row = await cur2.fetchone()
+        return dict(row) if row is not None else None
 
     async def assign_task_robot(self, conn: aiosqlite.Connection, task_id: str, robot_id: str) -> None:
         now = _ts_now_ms()

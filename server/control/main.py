@@ -506,19 +506,30 @@ async def task_respond(
         return {"task_id": task_id, "action": "move_to", "dest": body.next_dest}
 
     elif body.status == "ok":
-        # Final destination reached — return to dock and complete
+        # Final destination reached — pick best wait place, return to dock and complete
+        pose = await manager.telemetry.get_pose(robot_id)
+        robot_x = pose.x if pose else 0.0
+        robot_y = pose.y if pose else 0.0
+        async with lock:
+            dock = await db.get_best_wait_place(conn, robot_x, robot_y)
+        dock_id    = dock["place_id"]            if dock else ""
+        dock_x     = float(dock["x"]    or 0.0)  if dock else 0.0
+        dock_y     = float(dock["y"]    or 0.0)  if dock else 0.0
+        dock_theta = float(dock["theta"] or 0.0) if dock else 0.0
+
         cmd_id = str(uuid.uuid4())
         now_ms = _ts_now_ms()
         cmd_pb = pb.Command(
             cmd_id=cmd_id, task_id=task_id, robot_id=robot_id,
-            command=pb.CommandType.RETURN_DOCK, target_id="",
+            command=pb.CommandType.RETURN_DOCK, target_id=dock_id,
+            target_x=dock_x, target_y=dock_y, target_theta=dock_theta,
             status=pb.CommandStatus.SENT,
         )
         cmd_pb.sent_at.FromMilliseconds(now_ms)
         async with lock:
             await db.insert_command(conn, cmd_id=cmd_id, task_id=task_id,
                 robot_id=robot_id, command=int(pb.CommandType.RETURN_DOCK),
-                target_id="", status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
+                target_id=dock_id, status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
             await db.update_task_status(conn, task_id=task_id,
                 status=int(pb.TaskStatus.COMPLETED), completed=True)
         sess = await manager.get_session(robot_id)
@@ -528,7 +539,7 @@ async def task_respond(
                 await manager.send_command_packet(robot_id, pkt)
             except Exception as e:  # noqa: BLE001
                 logger.warning("RETURN_DOCK send failed: %s", e)
-        return {"task_id": task_id, "action": "return_dock", "task_status": "completed"}
+        return {"task_id": task_id, "action": "return_dock", "dest": dock_id, "task_status": "completed"}
 
     elif body.status == "retry":
         # Retry current destination
@@ -543,18 +554,30 @@ async def task_respond(
         return {"task_id": task_id, "action": "retry", "dest": task.dest_id}
 
     else:  # timeout or unknown
+        # Pick best wait place using robot's current pose
+        pose = await manager.telemetry.get_pose(robot_id)
+        robot_x = pose.x if pose else 0.0
+        robot_y = pose.y if pose else 0.0
+        async with lock:
+            dock = await db.get_best_wait_place(conn, robot_x, robot_y)
+        dock_id    = dock["place_id"]            if dock else ""
+        dock_x     = float(dock["x"]    or 0.0)  if dock else 0.0
+        dock_y     = float(dock["y"]    or 0.0)  if dock else 0.0
+        dock_theta = float(dock["theta"] or 0.0) if dock else 0.0
+
         cmd_id = str(uuid.uuid4())
         now_ms = _ts_now_ms()
         cmd_pb = pb.Command(
             cmd_id=cmd_id, task_id=task_id, robot_id=robot_id,
-            command=pb.CommandType.RETURN_DOCK, target_id="",
+            command=pb.CommandType.RETURN_DOCK, target_id=dock_id,
+            target_x=dock_x, target_y=dock_y, target_theta=dock_theta,
             status=pb.CommandStatus.SENT,
         )
         cmd_pb.sent_at.FromMilliseconds(now_ms)
         async with lock:
             await db.insert_command(conn, cmd_id=cmd_id, task_id=task_id,
                 robot_id=robot_id, command=int(pb.CommandType.RETURN_DOCK),
-                target_id="", status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
+                target_id=dock_id, status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
             await db.update_task_status(conn, task_id=task_id,
                 status=int(pb.TaskStatus.FAILED), completed=True)
         sess = await manager.get_session(robot_id)
@@ -564,7 +587,7 @@ async def task_respond(
                 await manager.send_command_packet(robot_id, pkt)
             except Exception as e:  # noqa: BLE001
                 logger.warning("RETURN_DOCK send failed: %s", e)
-        return {"task_id": task_id, "action": "return_dock", "task_status": "failed"}
+        return {"task_id": task_id, "action": "return_dock", "dest": dock_id, "task_status": "failed"}
 
 
 # ──────────────────────────────────────────────────────────────────

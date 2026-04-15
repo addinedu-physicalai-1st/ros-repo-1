@@ -206,19 +206,18 @@ class TaskDispatcher:
         cmd_id = str(uuid.uuid4())
         now_ms = _ts_now_ms()
 
-        # RETURN_TO_DOCK 커맨드 생성
-        # ZONE_DOCK place 중 첫 번째를 찾아 target으로 설정
+        # 로봇 현재 위치 → 가장 가까운 빈 대기 장소 선택
+        pose = await self._manager.telemetry.get_pose(robot_id)
+        robot_x = pose.x if pose else 0.0
+        robot_y = pose.y if pose else 0.0
+
         async with self._db_lock:
             conn = await self._get_conn()
-            dock_cur = await conn.execute(
-                "SELECT place_id, x, y, theta FROM places WHERE zone = ? AND is_active = 1 LIMIT 1",
-                (int(pb.ZoneType.ZONE_DOCK),),
-            )
-            dock_row = await dock_cur.fetchone()
+            dock_row = await self._db.get_best_wait_place(conn, robot_x, robot_y)
 
-        target_id   = dock_row["place_id"] if dock_row else ""
-        target_x    = float(dock_row["x"]     or 0.0) if dock_row else 0.0
-        target_y    = float(dock_row["y"]     or 0.0) if dock_row else 0.0
+        target_id    = dock_row["place_id"]          if dock_row else ""
+        target_x     = float(dock_row["x"]    or 0.0) if dock_row else 0.0
+        target_y     = float(dock_row["y"]    or 0.0) if dock_row else 0.0
         target_theta = float(dock_row["theta"] or 0.0) if dock_row else 0.0
 
         cmd_pb = pb.Command(
