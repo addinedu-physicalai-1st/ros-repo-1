@@ -95,16 +95,29 @@ def _densify_path(
 def plan_to_path(
     buffet_map: BuffetMap,
     start_xy: Tuple[float, float],
-    goal_label: str,
+    goal: "int | str",
     frame_id: str = "map",
 ) -> Tuple[Optional[NavPath], Optional[FreeStartPlan]]:
-    """Plan and return (nav_msgs/Path, plan_object)."""
+    """Plan and return (nav_msgs/Path, plan_object).
+
+    ``goal`` may be either a waypoint label (str) or waypoint id (int).
+    Final orientation is handled by a separate ``Spin`` action after
+    FollowPath succeeds; this function does not set the last pose's
+    yaw to ``plan.goal_yaw`` because RPP's in-place final rotation is
+    unstable in tight spaces.
+    """
     graph = buffet_map.graph
-    try:
-        goal_id = graph.find_by_label(goal_label)
-    except KeyError:
-        print(f"[bridge] unknown goal label: {goal_label!r}")
-        return None, None
+    if isinstance(goal, int):
+        goal_id = goal
+        if goal_id not in graph.waypoints:
+            print(f"[bridge] unknown goal id: {goal_id}")
+            return None, None
+    else:
+        try:
+            goal_id = graph.find_by_label(goal)
+        except KeyError:
+            print(f"[bridge] unknown goal label: {goal!r}")
+            return None, None
 
     # Always plan corridor-only (nearest waypoint -> goal). Nav2's own
     # NavfnPlanner is bypassed entirely (we send to FollowPath
@@ -126,7 +139,7 @@ def plan_to_path(
                 goal_yaw=graph.waypoints[goal_id].yaw,
             )
     if plan is None:
-        print(f"[bridge] no path to {goal_label}")
+        print(f"[bridge] no path to {goal!r}")
         return None, None
 
     print(
@@ -154,9 +167,6 @@ def plan_to_path(
             yaw = 0.0
         ps.pose.orientation = yaw_to_quaternion(yaw)
         poses.append(ps)
-
-    if plan.goal_yaw is not None and poses:
-        poses[-1].pose.orientation = yaw_to_quaternion(plan.goal_yaw)
 
     path_msg.poses = poses
 
@@ -295,6 +305,16 @@ class PlannerBridge(Node):
         goal_msg.controller_id = "FollowPath"
         goal_msg.goal_checker_id = "general_goal_checker"
 
+        # Proximity fallback: RPP's goal_checker sometimes settles just
+        # outside its xy tolerance and never declares success, leaving
+        # the action stuck in RUNNING forever. If the robot stays within
+        # ARRIVAL_RADIUS of the final path pose for ARRIVAL_DWELL
+        # seconds, we cancel the action and treat it as arrived.
+        final = path_msg.poses[-1].pose.position
+        goal_xy = (final.x, final.y)
+        ARRIVAL_RADIUS = 0.10
+        ARRIVAL_DWELL = 1.5
+
         self.get_logger().info(
             f"Sending Path with {len(path_msg.poses)} poses to RPP..."
         )
@@ -309,12 +329,42 @@ class PlannerBridge(Node):
         self.get_logger().info("Goal accepted.")
         result_future = goal_handle.get_result_async()
 
+        near_since: Optional[float] = None
+        preempted = False
         while not result_future.done():
             rclpy.spin_once(self, timeout_sec=0.1)
+            pose = self.get_robot_pose()
+            if pose is None:
+                continue
+            dist = math.hypot(pose[0] - goal_xy[0], pose[1] - goal_xy[1])
+            now = self.get_clock().now().nanoseconds * 1e-9
+            if dist <= ARRIVAL_RADIUS:
+                if near_since is None:
+                    near_since = now
+                elif now - near_since >= ARRIVAL_DWELL:
+                    self.get_logger().info(
+                        f"Within {ARRIVAL_RADIUS:.2f} m for "
+                        f"{ARRIVAL_DWELL:.1f} s — preempting FollowPath."
+                    )
+                    preempted = True
+                    cancel_future = goal_handle.cancel_goal_async()
+                    rclpy.spin_until_future_complete(
+                        self, cancel_future, timeout_sec=5.0,
+                    )
+                    while not result_future.done():
+                        rclpy.spin_once(self, timeout_sec=0.1)
+                    break
+            else:
+                near_since = None
 
         status = result_future.result().status
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info("Navigation succeeded!")
+            return True
+        if preempted:
+            self.get_logger().info(
+                "Treated as arrived (proximity preempt)."
+            )
             return True
         self.get_logger().warn(f"Nav ended with status {status}")
         return False

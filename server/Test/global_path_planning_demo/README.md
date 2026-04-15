@@ -49,6 +49,16 @@ python3 main.py --headless
 # 합성 realistic 맵 (ring 구조, 대조군)
 python3 main.py --map maps/buffet_realistic.yaml
 python3 main.py --map maps/buffet_realistic.yaml --headless
+
+# ROS_WS는 이 저장소의 워크스페이스 루트 (install/ 상위). 예: export ROS_WS=$(git rev-parse --show-toplevel)
+# Launch Gazebo
+source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && ros2 launch pinky_gz_sim launch_sim.launch.xml 2>&1
+# Launch Nav2
+source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && for i in $(seq 1 30); do ros2 topic list 2>/dev/null | grep -q "/scan" && break; sleep 1; done && ros2 launch pinky_navigation gz_bringup_launch.xml map:="$ROS_WS/install/pinky_navigation/share/pinky_navigation/map/map4.yaml" 2>&1
+# Wait Nav2
+source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && for i in $(seq 1 60); do ros2 action list 2>/dev/null | grep -q "/follow_path" && echo "ready" && break; sleep 1; done
+# Start monitor
+source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && cd "$ROS_WS/server/Test/global_path_planning_demo" && python3 monitor.py 2>&1
 ```
 
 `--map` 옵션을 생략하면 [maps/buffet_sim.yaml](maps/buffet_sim.yaml)(실제 SLAM 맵)을 로드합니다. 헤드리스 시나리오의 라벨이 사용자 정의 맵에 없으면 `[scenario] X -> Y: skipped (...)` 메시지로 우아하게 건너뜁니다.
