@@ -205,7 +205,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── seed initial admin if none exist ─────────────────────────
     async with db_lock:
         if not await database.any_admin_exists(conn):
-            raw_key = generate_api_key()
+            # Use ADMIN_API_KEY env var if supplied; otherwise generate a new key.
+            raw_key = os.environ.get("ADMIN_API_KEY", "").strip() or generate_api_key()
             admin_id = str(uuid.uuid4())
             await database.create_user(
                 conn,
