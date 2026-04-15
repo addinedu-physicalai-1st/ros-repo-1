@@ -114,6 +114,10 @@ def _get_manager(request: Request) -> ConnectionManager:
     return request.app.state.manager
 
 
+def _get_broker(request: Request) -> "WSBroker":
+    return request.app.state.broker
+
+
 # ──────────────────────────────────────────────────────────────────
 # Pydantic request models
 # ──────────────────────────────────────────────────────────────────
@@ -165,8 +169,9 @@ class PatchMenuItemBody(BaseModel):
 
 
 class TaskRespondBody(BaseModel):
-    status: str                # "ok" | "retry" | "timeout"
+    status: str                # "ok" | "retry" | "timeout" | "done" | "table" | "restart" | "collect_done" | "unload_done"
     next_dest: str = ""        # next waypoint place_id for multi-stop guidance
+    step_index: int = 0        # delivery step index (0 = kitchen pickup, 1+ = table delivery)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -233,6 +238,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db_lock=db_lock,
         manager=manager,
         policy=TaskAssignmentPolicy(),
+        broker=broker,
     )
     manager.set_dispatcher(dispatcher)
 
@@ -464,22 +470,116 @@ async def get_task(
     return _pb_to_json(pb.GetTaskResponse(task=task))
 
 
-@app.post("/tasks/{task_id}/respond", summary="Respond to a task arrival (ok/retry/timeout)")
+async def _send_return_dock(
+    db: Any,
+    conn: Any,
+    lock: asyncio.Lock,
+    manager: ConnectionManager,
+    *,
+    task_id: str,
+    robot_id: str,
+    task_status: int,
+) -> str:
+    """Build a RETURN_DOCK command, insert into DB, send to robot. Returns dock_id."""
+    pose = await manager.telemetry.get_pose(robot_id)
+    robot_x = pose.x if pose else 0.0
+    robot_y = pose.y if pose else 0.0
+    async with lock:
+        dock = await db.get_best_wait_place(conn, robot_x, robot_y)
+    dock_id    = dock["place_id"]           if dock else ""
+    dock_x     = float(dock["x"]   or 0.0) if dock else 0.0
+    dock_y     = float(dock["y"]   or 0.0) if dock else 0.0
+    dock_theta = float(dock["theta"] or 0.0) if dock else 0.0
+
+    cmd_id = str(uuid.uuid4())
+    now_ms = _ts_now_ms()
+    cmd_pb = pb.Command(
+        cmd_id=cmd_id, task_id=task_id, robot_id=robot_id,
+        command=pb.CommandType.RETURN_DOCK, target_id=dock_id,
+        target_x=dock_x, target_y=dock_y, target_theta=dock_theta,
+        status=pb.CommandStatus.SENT,
+    )
+    cmd_pb.sent_at.FromMilliseconds(now_ms)
+    async with lock:
+        await db.insert_command(conn, cmd_id=cmd_id, task_id=task_id,
+            robot_id=robot_id, command=int(pb.CommandType.RETURN_DOCK),
+            target_id=dock_id, status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
+        await db.update_task_status(conn, task_id=task_id,
+            status=task_status, completed=True)
+    sess = await manager.get_session(robot_id)
+    if sess:
+        pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
+        try:
+            await manager.send_command_packet(robot_id, pkt)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("RETURN_DOCK send failed: %s", e)
+    return dock_id
+
+
+async def _send_typed_packet(
+    manager: ConnectionManager,
+    robot_id: str,
+    pkt: pb.TcpPacket,
+) -> None:
+    sess = await manager.get_session(robot_id)
+    if sess is None:
+        logger.warning("task_respond: robot %s not connected", robot_id)
+        return
+    pkt.seq = sess.next_seq()
+    try:
+        await manager.send_command_packet(robot_id, pkt)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("task_respond send failed robot=%s: %s", robot_id, e)
+
+
+@app.post("/tasks/{task_id}/respond", summary="Respond to a task arrival event (ok/retry/timeout/done/table/restart/collect_done/unload_done)")
 async def task_respond(
     task_id: str,
     body: TaskRespondBody,
     request: Request,
     user: CurrentUser = Depends(require(Permission.TASK_CREATE)),
 ) -> dict[str, Any]:
-    """Handle user confirmation after robot arrival.
+    """Handle operator confirmation after robot arrival event.
 
-    - ``ok`` + ``next_dest``  → send MOVE_TO to next waypoint
-    - ``ok`` (no next_dest)   → send RETURN_DOCK, mark task COMPLETED
-    - ``retry``               → re-send MOVE_TO to current dest
-    - ``timeout``             → send RETURN_DOCK, mark task FAILED
+    Routes by task_type × status:
+
+    FOLLOW_CUSTOMER
+      ok (no next)   → FollowCommand(FOLLOW_START)
+      table+next     → FollowCommand(FOLLOW_GO_TO_TABLE, next_dest)
+      done           → FollowCommand(FOLLOW_END) + RETURN_DOCK (completed)
+      restart        → FollowCommand(FOLLOW_RESTART)
+      retry          → FollowCommand(FOLLOW_RETRY)
+      timeout        → FollowCommand(FOLLOW_END) + RETURN_DOCK (failed)
+
+    DISH_PICKUP
+      ok             → CollectionCommand(COLLECT_START)
+      collect_done   → CollectionCommand(COLLECT_DONE) + CollectionCommand(COLLECT_MOVE_TO_DISHWASHING)
+      unload_done    → CollectionCommand(COLLECT_END) + RETURN_DOCK (completed)
+      retry          → CollectionCommand(COLLECT_RETRY)
+      timeout        → CollectionCommand(COLLECT_END) + RETURN_DOCK (failed)
+
+    KIOSK_TO_TABLE
+      ok (step=0)    → DeliveryCommand(DELIVERY_START, step=0)
+      unload_done+next → DeliveryCommand(DELIVERY_NEXT, next_dest, step)
+      done           → DeliveryCommand(DELIVERY_END) + RETURN_DOCK (completed)
+      retry          → DeliveryCommand(DELIVERY_RETRY)
+      timeout        → DeliveryCommand(DELIVERY_END) + RETURN_DOCK (failed)
+
+    ESCORT_SERVICE
+      ok+next        → GuidanceCommand(GUIDANCE_START, next_dest, step)
+      ok (no next)   → GuidanceCommand(GUIDANCE_END) + RETURN_DOCK (completed)
+      retry          → GuidanceCommand(GUIDANCE_RETRY)
+      timeout        → GuidanceCommand(GUIDANCE_END) + RETURN_DOCK (failed)
+
+    Legacy fallback (all other task types)
+      ok+next        → MOVE_TO next_dest
+      ok (no next)   → RETURN_DOCK (completed)
+      retry          → MOVE_TO current dest
+      timeout        → RETURN_DOCK (failed)
     """
     db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
     manager = _get_manager(request)
+    broker  = _get_broker(request)
 
     async with lock:
         task = await db.get_task(conn, task_id)
@@ -493,101 +593,262 @@ async def task_respond(
     if not robot_id:
         raise HTTPException(status_code=409, detail="no robot assigned to task")
 
-    if body.status == "ok" and body.next_dest:
-        # Navigate to next waypoint in multi-stop guidance
-        asyncio.create_task(
-            _dispatch_move_to(
-                db, conn, lock, manager,
-                task_id=task_id,
-                robot_id=robot_id,
-                dest_id=body.next_dest,
+    task_type = int(task.task_type)
+    status_str = body.status
+    next_dest = body.next_dest
+    step_index = body.step_index
+
+    result: dict[str, Any] = {"task_id": task_id, "robot_id": robot_id, "status": status_str}
+
+    # ── FOLLOW_CUSTOMER ────────────────────────────────────────────
+    if task_type == int(pb.TaskType.FOLLOW_CUSTOMER):
+        if status_str == "ok" and not next_dest:
+            pkt = pb.TcpPacket(robot_id=robot_id, follow_cmd=pb.FollowCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.FollowAction.FOLLOW_START,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result["action"] = "follow_start"
+
+        elif status_str == "table" and next_dest:
+            pkt = pb.TcpPacket(robot_id=robot_id, follow_cmd=pb.FollowCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.FollowAction.FOLLOW_GO_TO_TABLE,
+                target_id=next_dest,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result.update({"action": "follow_go_to_table", "dest": next_dest})
+
+        elif status_str == "done":
+            pkt = pb.TcpPacket(robot_id=robot_id, follow_cmd=pb.FollowCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.FollowAction.FOLLOW_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.COMPLETED))
+            result.update({"action": "follow_end_return_dock", "dest": dock_id, "task_status": "completed"})
+
+        elif status_str == "restart":
+            pkt = pb.TcpPacket(robot_id=robot_id, follow_cmd=pb.FollowCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.FollowAction.FOLLOW_RESTART,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result["action"] = "follow_restart"
+
+        elif status_str == "retry":
+            pkt = pb.TcpPacket(robot_id=robot_id, follow_cmd=pb.FollowCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.FollowAction.FOLLOW_RETRY,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result["action"] = "follow_retry"
+
+        else:  # timeout
+            pkt = pb.TcpPacket(robot_id=robot_id, follow_cmd=pb.FollowCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.FollowAction.FOLLOW_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.FAILED))
+            result.update({"action": "follow_end_return_dock", "dest": dock_id, "task_status": "failed"})
+
+    # ── DISH_PICKUP ────────────────────────────────────────────────
+    elif task_type == int(pb.TaskType.DISH_PICKUP):
+        if status_str == "ok":
+            pkt = pb.TcpPacket(robot_id=robot_id, collect_cmd=pb.CollectionCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.CollectionAction.COLLECT_START,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result["action"] = "collect_start"
+
+        elif status_str == "collect_done":
+            done_pkt = pb.TcpPacket(robot_id=robot_id, collect_cmd=pb.CollectionCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.CollectionAction.COLLECT_DONE,
+            ))
+            await _send_typed_packet(manager, robot_id, done_pkt)
+            move_pkt = pb.TcpPacket(robot_id=robot_id, collect_cmd=pb.CollectionCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.CollectionAction.COLLECT_MOVE_TO_DISHWASHING,
+            ))
+            await _send_typed_packet(manager, robot_id, move_pkt)
+            result["action"] = "collect_done_move_to_dishwashing"
+
+        elif status_str == "unload_done":
+            pkt = pb.TcpPacket(robot_id=robot_id, collect_cmd=pb.CollectionCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.CollectionAction.COLLECT_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.COMPLETED))
+            result.update({"action": "collect_end_return_dock", "dest": dock_id, "task_status": "completed"})
+
+        elif status_str == "retry":
+            pkt = pb.TcpPacket(robot_id=robot_id, collect_cmd=pb.CollectionCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.CollectionAction.COLLECT_RETRY,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result["action"] = "collect_retry"
+
+        else:  # timeout
+            pkt = pb.TcpPacket(robot_id=robot_id, collect_cmd=pb.CollectionCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.CollectionAction.COLLECT_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.FAILED))
+            result.update({"action": "collect_end_return_dock", "dest": dock_id, "task_status": "failed"})
+
+    # ── KIOSK_TO_TABLE (Delivery) ─────────────────────────────────
+    elif task_type == int(pb.TaskType.KIOSK_TO_TABLE):
+        if status_str == "ok":
+            pkt = pb.TcpPacket(robot_id=robot_id, delivery_cmd=pb.DeliveryCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.DeliveryAction.DELIVERY_START,
+                step_index=step_index,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result.update({"action": "delivery_start", "step_index": step_index})
+
+        elif status_str == "unload_done" and next_dest:
+            pkt = pb.TcpPacket(robot_id=robot_id, delivery_cmd=pb.DeliveryCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.DeliveryAction.DELIVERY_NEXT,
+                target_id=next_dest,
+                step_index=step_index,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result.update({"action": "delivery_next", "dest": next_dest, "step_index": step_index})
+
+        elif status_str == "done":
+            pkt = pb.TcpPacket(robot_id=robot_id, delivery_cmd=pb.DeliveryCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.DeliveryAction.DELIVERY_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.COMPLETED))
+            result.update({"action": "delivery_end_return_dock", "dest": dock_id, "task_status": "completed"})
+
+        elif status_str == "retry":
+            pkt = pb.TcpPacket(robot_id=robot_id, delivery_cmd=pb.DeliveryCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.DeliveryAction.DELIVERY_RETRY,
+                step_index=step_index,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result.update({"action": "delivery_retry", "step_index": step_index})
+
+        else:  # timeout
+            pkt = pb.TcpPacket(robot_id=robot_id, delivery_cmd=pb.DeliveryCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.DeliveryAction.DELIVERY_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.FAILED))
+            result.update({"action": "delivery_end_return_dock", "dest": dock_id, "task_status": "failed"})
+
+    # ── ESCORT_SERVICE (Guidance) ─────────────────────────────────
+    elif task_type == int(pb.TaskType.ESCORT_SERVICE):
+        if status_str == "ok" and next_dest:
+            pkt = pb.TcpPacket(robot_id=robot_id, guidance_cmd=pb.GuidanceCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.GuidanceAction.GUIDANCE_START,
+                target_id=next_dest,
+                step_index=step_index,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result.update({"action": "guidance_start", "dest": next_dest, "step_index": step_index})
+
+        elif status_str == "ok" and not next_dest:
+            pkt = pb.TcpPacket(robot_id=robot_id, guidance_cmd=pb.GuidanceCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.GuidanceAction.GUIDANCE_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.COMPLETED))
+            result.update({"action": "guidance_end_return_dock", "dest": dock_id, "task_status": "completed"})
+
+        elif status_str == "retry":
+            pkt = pb.TcpPacket(robot_id=robot_id, guidance_cmd=pb.GuidanceCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.GuidanceAction.GUIDANCE_RETRY,
+                step_index=step_index,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            result.update({"action": "guidance_retry", "step_index": step_index})
+
+        else:  # timeout
+            pkt = pb.TcpPacket(robot_id=robot_id, guidance_cmd=pb.GuidanceCommand(
+                cmd_id=str(uuid.uuid4()), task_id=task_id, robot_id=robot_id,
+                action=pb.GuidanceAction.GUIDANCE_END,
+            ))
+            await _send_typed_packet(manager, robot_id, pkt)
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.FAILED))
+            result.update({"action": "guidance_end_return_dock", "dest": dock_id, "task_status": "failed"})
+
+    # ── Legacy fallback (MOVE_TO / RETURN_DOCK) ───────────────────
+    else:
+        if status_str == "ok" and next_dest:
+            asyncio.create_task(
+                _dispatch_move_to(
+                    db, conn, lock, manager,
+                    task_id=task_id, robot_id=robot_id, dest_id=next_dest,
+                )
             )
-        )
-        return {"task_id": task_id, "action": "move_to", "dest": body.next_dest}
+            result.update({"action": "move_to", "dest": next_dest})
 
-    elif body.status == "ok":
-        # Final destination reached — pick best wait place, return to dock and complete
-        pose = await manager.telemetry.get_pose(robot_id)
-        robot_x = pose.x if pose else 0.0
-        robot_y = pose.y if pose else 0.0
-        async with lock:
-            dock = await db.get_best_wait_place(conn, robot_x, robot_y)
-        dock_id    = dock["place_id"]            if dock else ""
-        dock_x     = float(dock["x"]    or 0.0)  if dock else 0.0
-        dock_y     = float(dock["y"]    or 0.0)  if dock else 0.0
-        dock_theta = float(dock["theta"] or 0.0) if dock else 0.0
+        elif status_str == "ok":
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.COMPLETED))
+            result.update({"action": "return_dock", "dest": dock_id, "task_status": "completed"})
 
-        cmd_id = str(uuid.uuid4())
-        now_ms = _ts_now_ms()
-        cmd_pb = pb.Command(
-            cmd_id=cmd_id, task_id=task_id, robot_id=robot_id,
-            command=pb.CommandType.RETURN_DOCK, target_id=dock_id,
-            target_x=dock_x, target_y=dock_y, target_theta=dock_theta,
-            status=pb.CommandStatus.SENT,
-        )
-        cmd_pb.sent_at.FromMilliseconds(now_ms)
-        async with lock:
-            await db.insert_command(conn, cmd_id=cmd_id, task_id=task_id,
-                robot_id=robot_id, command=int(pb.CommandType.RETURN_DOCK),
-                target_id=dock_id, status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
-            await db.update_task_status(conn, task_id=task_id,
-                status=int(pb.TaskStatus.COMPLETED), completed=True)
-        sess = await manager.get_session(robot_id)
-        if sess:
-            pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
-            try:
-                await manager.send_command_packet(robot_id, pkt)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("RETURN_DOCK send failed: %s", e)
-        return {"task_id": task_id, "action": "return_dock", "dest": dock_id, "task_status": "completed"}
-
-    elif body.status == "retry":
-        # Retry current destination
-        asyncio.create_task(
-            _dispatch_move_to(
-                db, conn, lock, manager,
-                task_id=task_id,
-                robot_id=robot_id,
-                dest_id=task.dest_id,
+        elif status_str == "retry":
+            asyncio.create_task(
+                _dispatch_move_to(
+                    db, conn, lock, manager,
+                    task_id=task_id, robot_id=robot_id, dest_id=task.dest_id,
+                )
             )
-        )
-        return {"task_id": task_id, "action": "retry", "dest": task.dest_id}
+            result.update({"action": "retry", "dest": task.dest_id})
 
-    else:  # timeout or unknown
-        # Pick best wait place using robot's current pose
-        pose = await manager.telemetry.get_pose(robot_id)
-        robot_x = pose.x if pose else 0.0
-        robot_y = pose.y if pose else 0.0
-        async with lock:
-            dock = await db.get_best_wait_place(conn, robot_x, robot_y)
-        dock_id    = dock["place_id"]            if dock else ""
-        dock_x     = float(dock["x"]    or 0.0)  if dock else 0.0
-        dock_y     = float(dock["y"]    or 0.0)  if dock else 0.0
-        dock_theta = float(dock["theta"] or 0.0) if dock else 0.0
+        else:  # timeout
+            dock_id = await _send_return_dock(db, conn, lock, manager,
+                task_id=task_id, robot_id=robot_id,
+                task_status=int(pb.TaskStatus.FAILED))
+            result.update({"action": "return_dock", "dest": dock_id, "task_status": "failed"})
 
-        cmd_id = str(uuid.uuid4())
-        now_ms = _ts_now_ms()
-        cmd_pb = pb.Command(
-            cmd_id=cmd_id, task_id=task_id, robot_id=robot_id,
-            command=pb.CommandType.RETURN_DOCK, target_id=dock_id,
-            target_x=dock_x, target_y=dock_y, target_theta=dock_theta,
-            status=pb.CommandStatus.SENT,
-        )
-        cmd_pb.sent_at.FromMilliseconds(now_ms)
-        async with lock:
-            await db.insert_command(conn, cmd_id=cmd_id, task_id=task_id,
-                robot_id=robot_id, command=int(pb.CommandType.RETURN_DOCK),
-                target_id=dock_id, status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms)
-            await db.update_task_status(conn, task_id=task_id,
-                status=int(pb.TaskStatus.FAILED), completed=True)
-        sess = await manager.get_session(robot_id)
-        if sess:
-            pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
-            try:
-                await manager.send_command_packet(robot_id, pkt)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("RETURN_DOCK send failed: %s", e)
-        return {"task_id": task_id, "action": "return_dock", "dest": dock_id, "task_status": "failed"}
+    # Fix 4: broadcast task_responded event via WebSocket
+    await broker.broadcast({
+        "event": "task_responded",
+        "task_id": task_id,
+        "robot_id": robot_id,
+        "task_type": task_type,
+        "status": status_str,
+        "action": result.get("action", ""),
+        "timestamp_ms": _ts_now_ms(),
+    })
+
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────

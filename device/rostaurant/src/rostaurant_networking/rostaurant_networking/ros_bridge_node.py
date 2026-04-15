@@ -22,7 +22,11 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32
 
 from pinky_interfaces.msg import RobotCommand, RobotTaskStatus
-from rostaurant_networking.ack_logic import _BATTERY_INIT, _decide_ack
+from rostaurant_networking.ack_logic import (
+    _BATTERY_INIT,
+    _decide_ack,
+    _decide_task_event,
+)
 from rostaurant_networking.robotcafe.db.v1 import robotcafe_pb2 as pb
 
 from rostaurant_networking.tcp_client import TcpClient
@@ -102,8 +106,10 @@ class RostaurantCommNode(Node):
         self._last_pose_wall = 0.0
         self._last_battery_wall = 0.0
         self._tcp_seq = 0
-        self._pending_cmd_id: str = ""  # cmd_id of last received Command, cleared after ACK
-        self._latest_battery: int = _BATTERY_INIT  # /battery 토픽에서 캐시
+        self._pending_cmd_id: str = ""       # 마지막으로 받은 Command의 cmd_id (ACK 전 보관)
+        self._pending_cmd_type: int = 0      # 마지막 커맨드의 CommandType 값
+        self._pending_task_action: int = 0   # 마지막 태스크별 액션 값
+        self._latest_battery: int = _BATTERY_INIT
 
         self._cmd_queue: queue.Queue[RobotCommand] = queue.Queue(maxsize=200)
 
@@ -168,35 +174,68 @@ class RostaurantCommNode(Node):
         st = pb.TelemetryState(
             robot_id=self._robot_id,
             battery_percent=self._latest_battery,
-            # state fields omitted — actual state is reported via TCP StatusReport only
         )
         st.timestamp.FromMilliseconds(int(time.time() * 1000))
         pkt = pb.UdpTelemetryPacket(robot_id=self._robot_id, state=st)
         self._schedule(self._udp.send_packet(pkt))
 
     def _on_task_status(self, msg: RobotTaskStatus) -> None:
+        fsm = int(msg.fsm_state)
+
+        # ── 1. StatusReport 전송 ────────────────────────────────────
         sr = pb.StatusReport(
             robot_id=msg.robot_id or self._robot_id,
             robot_status=int(msg.robot_status),
-            fsm_state=int(msg.fsm_state),
+            fsm_state=fsm,
             current_task=msg.current_task,
-            battery=self._latest_battery,  # /battery 토픽에서 캐시된 최신 값
+            battery=self._latest_battery,
             last_error=int(msg.last_error),
         )
         sr.reported_at.FromMilliseconds(int(time.time() * 1000))
 
-        async def _send() -> None:
+        async def _send_status() -> None:
             self._tcp_seq += 1
             pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, status_payload=sr)
             await self._tcp.send_packet(pkt)
 
-        self._schedule(_send())
+        self._schedule(_send_status())
 
-        # ACK 전송 결정: FSM_ARRIVED → EXECUTED, FSM_NAV_FAILED → ACK_FAILED
-        ack_status = _decide_ack(int(msg.fsm_state), self._pending_cmd_id)
+        # ── 2. TaskEvent 전송 (도착/특수 이벤트) ────────────────────
+        event_val = _decide_task_event(
+            fsm_state=fsm,
+            cmd_type=self._pending_cmd_type,
+            task_action=self._pending_task_action,
+            event_type_override=int(msg.event_type),
+        )
+        if event_val is not None:
+            task_id = msg.current_task
+            ev_val = event_val
+
+            async def _send_event(tid: str = task_id, ev: int = ev_val) -> None:
+                event = pb.TaskEvent(
+                    robot_id=self._robot_id,
+                    task_id=tid,
+                    event_type=ev,
+                )
+                event.occurred_at.FromMilliseconds(int(time.time() * 1000))
+                self._tcp_seq += 1
+                pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, task_event=event)
+                await self._tcp.send_packet(pkt)
+                logger.info(
+                    "TaskEvent sent event=%s task=%s",
+                    pb.TaskEventType.Name(ev),
+                    tid,
+                )
+
+            self._schedule(_send_event())
+
+        # ── 3. CommandAck 전송 (FSM_ARRIVED / FSM_NAV_FAILED) ───────
+        ack_status = _decide_ack(fsm, self._pending_cmd_id)
         if ack_status is not None:
             cmd_id = self._pending_cmd_id
-            self._pending_cmd_id = ""  # consume so we don't send twice
+            self._pending_cmd_id = ""
+            self._pending_cmd_type = 0
+            self._pending_task_action = 0
 
             async def _send_ack(cid: str = cmd_id, ast: int = ack_status) -> None:
                 ack = pb.CommandAck(
@@ -212,22 +251,14 @@ class RostaurantCommNode(Node):
 
             self._schedule(_send_ack())
 
+    # ── 커맨드 큐 진입점 ─────────────────────────────────────────────
+
     def enqueue_command(self, cmd: pb.Command) -> None:
+        """일반 Command (MOVE_TO / CANCEL 등) 처리."""
         self._pending_cmd_id = cmd.cmd_id
-
-        async def _send_accepted() -> None:
-            ack = pb.CommandAck(
-                cmd_id=cmd.cmd_id,
-                robot_id=self._robot_id,
-                status=pb.AckStatus.ACCEPTED,
-            )
-            ack.acked_at.FromMilliseconds(int(time.time() * 1000))
-            self._tcp_seq += 1
-            pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, ack_payload=ack)
-            await self._tcp.send_packet(pkt)
-            logger.info("CommandAck ACCEPTED cmd_id=%s", cmd.cmd_id)
-
-        self._schedule(_send_accepted())
+        self._pending_cmd_type = int(cmd.command)
+        self._pending_task_action = 0
+        self._send_accepted_ack(cmd.cmd_id)
 
         ros_cmd = RobotCommand(
             cmd_id=cmd.cmd_id,
@@ -238,11 +269,140 @@ class RostaurantCommNode(Node):
             target_x=cmd.target_x,
             target_y=cmd.target_y,
             target_theta=cmd.target_theta,
+            task_action=0,
+            step_index=0,
         )
+        self._enqueue_ros_cmd(ros_cmd)
+
+    def enqueue_follow_command(self, cmd: pb.FollowCommand) -> None:
+        """동행 커맨드 처리."""
+        self._pending_cmd_id = cmd.cmd_id
+        self._pending_cmd_type = int(pb.CommandType.FOLLOW_CMD)
+        self._pending_task_action = int(cmd.action)
+        self._send_accepted_ack(cmd.cmd_id)
+
+        ros_cmd = RobotCommand(
+            cmd_id=cmd.cmd_id,
+            task_id=cmd.task_id,
+            robot_id=cmd.robot_id,
+            command=int(pb.CommandType.FOLLOW_CMD),
+            target_id=cmd.target_id,
+            target_x=cmd.target_x,
+            target_y=cmd.target_y,
+            target_theta=cmd.target_theta,
+            task_action=int(cmd.action),
+            step_index=0,
+        )
+        self._enqueue_ros_cmd(ros_cmd)
+        logger.info(
+            "FollowCommand enqueued action=%s cmd_id=%s",
+            pb.FollowAction.Name(cmd.action),
+            cmd.cmd_id,
+        )
+
+    def enqueue_collect_command(self, cmd: pb.CollectionCommand) -> None:
+        """수거 커맨드 처리."""
+        self._pending_cmd_id = cmd.cmd_id
+        self._pending_cmd_type = int(pb.CommandType.COLLECT_CMD)
+        self._pending_task_action = int(cmd.action)
+        self._send_accepted_ack(cmd.cmd_id)
+
+        ros_cmd = RobotCommand(
+            cmd_id=cmd.cmd_id,
+            task_id=cmd.task_id,
+            robot_id=cmd.robot_id,
+            command=int(pb.CommandType.COLLECT_CMD),
+            target_id=cmd.target_id,
+            target_x=cmd.target_x,
+            target_y=cmd.target_y,
+            target_theta=cmd.target_theta,
+            task_action=int(cmd.action),
+            step_index=0,
+        )
+        self._enqueue_ros_cmd(ros_cmd)
+        logger.info(
+            "CollectionCommand enqueued action=%s cmd_id=%s",
+            pb.CollectionAction.Name(cmd.action),
+            cmd.cmd_id,
+        )
+
+    def enqueue_delivery_command(self, cmd: pb.DeliveryCommand) -> None:
+        """운반 커맨드 처리."""
+        self._pending_cmd_id = cmd.cmd_id
+        self._pending_cmd_type = int(pb.CommandType.DELIVERY_CMD)
+        self._pending_task_action = int(cmd.action)
+        self._send_accepted_ack(cmd.cmd_id)
+
+        ros_cmd = RobotCommand(
+            cmd_id=cmd.cmd_id,
+            task_id=cmd.task_id,
+            robot_id=cmd.robot_id,
+            command=int(pb.CommandType.DELIVERY_CMD),
+            target_id=cmd.target_id,
+            target_x=cmd.target_x,
+            target_y=cmd.target_y,
+            target_theta=cmd.target_theta,
+            task_action=int(cmd.action),
+            step_index=cmd.step_index,
+        )
+        self._enqueue_ros_cmd(ros_cmd)
+        logger.info(
+            "DeliveryCommand enqueued action=%s step=%d cmd_id=%s",
+            pb.DeliveryAction.Name(cmd.action),
+            cmd.step_index,
+            cmd.cmd_id,
+        )
+
+    def enqueue_guidance_command(self, cmd: pb.GuidanceCommand) -> None:
+        """안내 커맨드 처리."""
+        self._pending_cmd_id = cmd.cmd_id
+        self._pending_cmd_type = int(pb.CommandType.GUIDE_CMD)
+        self._pending_task_action = int(cmd.action)
+        self._send_accepted_ack(cmd.cmd_id)
+
+        ros_cmd = RobotCommand(
+            cmd_id=cmd.cmd_id,
+            task_id=cmd.task_id,
+            robot_id=cmd.robot_id,
+            command=int(pb.CommandType.GUIDE_CMD),
+            target_id=cmd.target_id,
+            target_x=cmd.target_x,
+            target_y=cmd.target_y,
+            target_theta=cmd.target_theta,
+            task_action=int(cmd.action),
+            step_index=cmd.step_index,
+        )
+        self._enqueue_ros_cmd(ros_cmd)
+        logger.info(
+            "GuidanceCommand enqueued action=%s step=%d cmd_id=%s",
+            pb.GuidanceAction.Name(cmd.action),
+            cmd.step_index,
+            cmd.cmd_id,
+        )
+
+    # ── 내부 헬퍼 ────────────────────────────────────────────────────
+
+    def _send_accepted_ack(self, cmd_id: str) -> None:
+        """커맨드 수신 직후 ACCEPTED ACK 비동기 전송."""
+        async def _send() -> None:
+            ack = pb.CommandAck(
+                cmd_id=cmd_id,
+                robot_id=self._robot_id,
+                status=pb.AckStatus.ACCEPTED,
+            )
+            ack.acked_at.FromMilliseconds(int(time.time() * 1000))
+            self._tcp_seq += 1
+            pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, ack_payload=ack)
+            await self._tcp.send_packet(pkt)
+            logger.info("CommandAck ACCEPTED cmd_id=%s", cmd_id)
+
+        self._schedule(_send())
+
+    def _enqueue_ros_cmd(self, ros_cmd: RobotCommand) -> None:
         try:
             self._cmd_queue.put_nowait(ros_cmd)
         except queue.Full:
-            logger.error("Command queue full; dropping cmd_id=%s", cmd.cmd_id)
+            logger.error("Command queue full; dropping cmd_id=%s", ros_cmd.cmd_id)
 
 
 async def _network_loop(node: RostaurantCommNode) -> None:
@@ -268,6 +428,14 @@ async def _network_loop(node: RostaurantCommNode) -> None:
     async def on_packet(pkt: pb.TcpPacket) -> None:
         if pkt.HasField("cmd_payload"):
             node.enqueue_command(pkt.cmd_payload)
+        elif pkt.HasField("follow_cmd"):
+            node.enqueue_follow_command(pkt.follow_cmd)
+        elif pkt.HasField("collect_cmd"):
+            node.enqueue_collect_command(pkt.collect_cmd)
+        elif pkt.HasField("delivery_cmd"):
+            node.enqueue_delivery_command(pkt.delivery_cmd)
+        elif pkt.HasField("guidance_cmd"):
+            node.enqueue_guidance_command(pkt.guidance_cmd)
 
     async def heartbeat() -> None:
         while True:

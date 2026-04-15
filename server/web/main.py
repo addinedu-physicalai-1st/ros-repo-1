@@ -225,6 +225,7 @@ _TABLE_TASK_MAP: dict[str, int] = {
     "dishDone":   4,   # DISH_PICKUP
     "dishPickup": 4,   # DISH_PICKUP
     "escort":     6,   # ESCORT_SERVICE
+    "follow":     8,   # FOLLOW_CUSTOMER
     "staff":      0,   # no robot task; notify only
 }
 

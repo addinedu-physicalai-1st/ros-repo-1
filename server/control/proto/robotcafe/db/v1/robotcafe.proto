@@ -6,6 +6,10 @@ import "google/protobuf/timestamp.proto";
 
 // Magic on wire (outside protobuf): TCP 0xAABBCCDD, UDP 0xDDCCBBAA — see framing docs.
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 기본 상태 열거형
+// ─────────────────────────────────────────────────────────────────────────────
+
 enum TaskStatus {
   TASK_STATUS_UNSPECIFIED = 0;
   PENDING                 = 1;
@@ -42,13 +46,14 @@ enum RobotStatus {
 
 enum TaskType {
   TASK_TYPE_UNSPECIFIED  = 0;
-  KIOSK_TO_TABLE         = 1;
+  KIOSK_TO_TABLE         = 1;  // 운반 (Delivery)
   TABLE_TO_TOILET        = 2;
   TABLE_TO_DISPLAY       = 3;
-  DISH_PICKUP            = 4;
+  DISH_PICKUP            = 4;  // 수거 (Collection)
   ROBOT_SWAP             = 5;
-  ESCORT_SERVICE         = 6;
+  ESCORT_SERVICE         = 6;  // 안내 (Guidance)
   RETURN_TO_DOCK         = 7;
+  FOLLOW_CUSTOMER        = 8;  // 동행 (Follow) — 안내와 별도 행동
 }
 
 enum TaskPriority {
@@ -110,6 +115,88 @@ enum AckStatus {
   ACK_FAILED      = 4;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CommandType — 일반 커맨드 + 태스크별 커맨드 식별자
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum CommandType {
+  CMD_UNSPECIFIED  = 0;
+  MOVE_TO          = 1;
+  CANCEL           = 2;
+  RESET            = 3;
+  RETURN_DOCK      = 4;
+  EMERGENCY_STOP   = 5;
+  // 태스크별 커맨드 (commands DB 테이블 기록용, 세부 액션은 각 메시지의 action 필드)
+  FOLLOW_CMD       = 6;   // FollowCommand 와이어 타입
+  COLLECT_CMD      = 7;   // CollectionCommand 와이어 타입
+  DELIVERY_CMD     = 8;   // DeliveryCommand 와이어 타입
+  GUIDE_CMD        = 9;   // GuidanceCommand 와이어 타입
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 태스크별 액션 열거형
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 동행 (Follow) 액션 — HQ → Robot
+enum FollowAction {
+  FOLLOW_ACTION_UNSPECIFIED = 0;
+  FOLLOW_MOVE_TO_REQUESTER  = 1;  // Phase 1: 요청자 위치로 이동
+  FOLLOW_START              = 2;  // Phase 3: 동행 시작 (사용자 OK 확인 후)
+  FOLLOW_END                = 3;  // 동행 종료
+  FOLLOW_GO_TO_TABLE        = 4;  // 테이블로 이동 (table 분기)
+  FOLLOW_RESTART            = 5;  // 동행 재시작 (restart 분기)
+  FOLLOW_RETRY              = 6;  // 재요청 (RETRY 분기)
+}
+
+// 수거 (Collection) 액션 — HQ → Robot
+enum CollectionAction {
+  COLLECTION_ACTION_UNSPECIFIED   = 0;
+  COLLECT_MOVE_TO_REQUESTER       = 1;  // Phase 1: 요청자 위치로 이동
+  COLLECT_START                   = 2;  // Phase 2: 수거 동작 시작
+  COLLECT_DONE                    = 3;  // Phase 2: 수거 완료 처리
+  COLLECT_MOVE_TO_DISHWASHING     = 4;  // Phase 3: 설거지장 이동
+  COLLECT_END                     = 5;  // Phase 3: 수거 종료 및 대기
+  COLLECT_RETRY                   = 6;  // Phase 4: 재요청 (RETRY 분기)
+}
+
+// 운반 (Delivery) 액션 — HQ → Robot
+enum DeliveryAction {
+  DELIVERY_ACTION_UNSPECIFIED = 0;
+  DELIVERY_MOVE_TO_KITCHEN    = 1;  // Phase 1: 주방 이동
+  DELIVERY_START              = 2;  // Phase 2: N번째 배송 시작
+  DELIVERY_NEXT               = 3;  // Phase 3: 다음 목적지로 이동 (OK 분기)
+  DELIVERY_RETRY              = 4;  // Phase 3: 현재 배송지 재시도 (RETRY 분기)
+  DELIVERY_END                = 5;  // Phase 4: 운반 종료
+}
+
+// 안내 (Guidance) 액션 — HQ → Robot
+enum GuidanceAction {
+  GUIDANCE_ACTION_UNSPECIFIED = 0;
+  GUIDANCE_MOVE_TO_REQUESTER  = 1;  // Phase 1: 요청자 위치로 이동
+  GUIDANCE_START              = 2;  // Phase 3: N번째 안내 목적지로 이동
+  GUIDANCE_RETRY              = 3;  // Phase 4: 현재 목적지 재시도 (RETRY 분기)
+  GUIDANCE_END                = 4;  // Phase 4: 안내 종료 (TIMEOUT 분기)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TaskEventType — Robot → HQ 태스크 진행 이벤트 (상태가 아닌 이벤트)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TaskEventType {
+  TASK_EVENT_UNSPECIFIED   = 0;
+  ARRIVED_AT_REQUESTER     = 1;  // 요청자 위치 도착 (동행/수거/안내 Phase 1)
+  ARRIVED_AT_TABLE         = 2;  // 테이블 도착 (동행 Phase 3 table 분기)
+  ARRIVED_AT_KITCHEN       = 3;  // 주방 도착 (운반 Phase 1)
+  ARRIVED_AT_DISHWASHING   = 4;  // 설거지장 도착 (수거 Phase 3)
+  ARRIVED_AT_MENU_LOCATION = 5;  // 배송 목적지 도착 (운반 Phase 2)
+  ARRIVED_AT_DESTINATION   = 6;  // 안내 목적지 도착 (안내 Phase 3)
+  NEAR_TABLE_1MIN          = 7;  // 1분간 테이블 근처 대기 완료 (동행 Phase 3)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 도메인 메시지
+// ─────────────────────────────────────────────────────────────────────────────
+
 message Robot {
   string robot_id    = 1;
   string model       = 2;
@@ -165,15 +252,6 @@ message TaskStep {
   string     error_msg  = 9;
 }
 
-enum CommandType {
-  CMD_UNSPECIFIED  = 0;
-  MOVE_TO          = 1;
-  CANCEL           = 2;
-  RESET            = 3;
-  RETURN_DOCK      = 4;
-  EMERGENCY_STOP   = 5;
-}
-
 message Command {
   string      cmd_id    = 1;
   string      task_id   = 2;
@@ -214,15 +292,94 @@ message StatusReport {
   google.protobuf.Timestamp reported_at = 7;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 태스크별 커맨드 메시지 — HQ → Robot
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 동행 커맨드
+message FollowCommand {
+  string       cmd_id       = 1;
+  string       task_id      = 2;
+  string       robot_id     = 3;
+  FollowAction action       = 4;
+  string       target_id    = 5;
+  double       target_x     = 6;
+  double       target_y     = 7;
+  double       target_theta = 8;
+}
+
+// 수거 커맨드
+message CollectionCommand {
+  string           cmd_id       = 1;
+  string           task_id      = 2;
+  string           robot_id     = 3;
+  CollectionAction action       = 4;
+  string           target_id    = 5;
+  double           target_x     = 6;
+  double           target_y     = 7;
+  double           target_theta = 8;
+}
+
+// 운반 커맨드
+message DeliveryCommand {
+  string         cmd_id       = 1;
+  string         task_id      = 2;
+  string         robot_id     = 3;
+  DeliveryAction action       = 4;
+  string         target_id    = 5;
+  double         target_x     = 6;
+  double         target_y     = 7;
+  double         target_theta = 8;
+  int32          step_index   = 9;  // 0-based, N번째 배송 목적지
+}
+
+// 안내 커맨드
+message GuidanceCommand {
+  string         cmd_id       = 1;
+  string         task_id      = 2;
+  string         robot_id     = 3;
+  GuidanceAction action       = 4;
+  string         target_id    = 5;
+  double         target_x     = 6;
+  double         target_y     = 7;
+  double         target_theta = 8;
+  int32          step_index   = 9;  // 0-based, N번째 안내 목적지
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TaskEvent — Robot → HQ 태스크 진행 이벤트
+// ─────────────────────────────────────────────────────────────────────────────
+
+message TaskEvent {
+  string        robot_id    = 1;
+  string        task_id     = 2;
+  TaskEventType event_type  = 3;
+  google.protobuf.Timestamp occurred_at = 4;
+  ErrorCode     error_code  = 5;
+  string        message     = 6;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 와이어 패킷
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Wire: after TCP_MAGIC (4 BE bytes), serialize this message only (no magic field).
 message TcpPacket {
   uint32 seq      = 1;
   string robot_id = 2;
   oneof payload {
-    Command      cmd_payload    = 3;
-    CommandAck   ack_payload    = 4;
-    StatusReport status_payload = 5;
-    Heartbeat    heartbeat      = 6;
+    // 기존 (하위 호환 유지)
+    Command           cmd_payload    = 3;   // Server→Robot: 일반 이동/취소/리셋
+    CommandAck        ack_payload    = 4;   // Robot→Server: 커맨드 처리 결과
+    StatusReport      status_payload = 5;   // Robot→Server: 상태/배터리/FSM
+    Heartbeat         heartbeat      = 6;   // Robot→Server: 연결 유지
+
+    // 신규
+    TaskEvent         task_event     = 7;   // Robot→Server: 태스크 진행 이벤트
+    FollowCommand     follow_cmd     = 8;   // Server→Robot: 동행 커맨드
+    CollectionCommand collect_cmd    = 9;   // Server→Robot: 수거 커맨드
+    DeliveryCommand   delivery_cmd   = 10;  // Server→Robot: 운반 커맨드
+    GuidanceCommand   guidance_cmd   = 11;  // Server→Robot: 안내 커맨드
   }
 }
 

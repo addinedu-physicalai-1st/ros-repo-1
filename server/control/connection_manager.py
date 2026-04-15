@@ -211,6 +211,8 @@ class ConnectionManager:
                 )
         elif packet.HasField("ack_payload"):
             await self._handle_command_ack(packet.ack_payload)
+        elif packet.HasField("task_event"):
+            await self._handle_task_event(packet.task_event)
         elif packet.HasField("cmd_payload"):
             logger.warning("Ignoring unexpected cmd_payload from robot %s", rid)
 
@@ -255,6 +257,28 @@ class ConnectionManager:
                 "robot_id": ack.robot_id,
                 "ack_status": int(ack.status),
                 "task_id": task_id,
+                "timestamp_ms": now_ms,
+            })
+
+    async def _handle_task_event(self, event: pb.TaskEvent) -> None:
+        """Robot → Server 태스크 이벤트 처리 (도착 알림, 1분 대기 등)."""
+        now_ms = _ts_now_ms()
+        event_name = pb.TaskEventType.Name(event.event_type)
+        logger.info(
+            "TaskEvent robot=%s task=%s event=%s",
+            event.robot_id,
+            event.task_id,
+            event_name,
+        )
+        if self._broker:
+            await self._broker.broadcast({
+                "event": "task_event",
+                "robot_id": event.robot_id,
+                "task_id": event.task_id,
+                "event_type": int(event.event_type),
+                "event_name": event_name,
+                "error_code": int(event.error_code),
+                "message": event.message,
                 "timestamp_ms": now_ms,
             })
 

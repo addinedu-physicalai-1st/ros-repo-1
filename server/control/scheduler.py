@@ -15,6 +15,7 @@ import aiosqlite
 
 from db import Database, _ts_now_ms
 from robotcafe.db.v1 import robotcafe_pb2 as pb
+from ws_broker import WSBroker
 
 if TYPE_CHECKING:
     from connection_manager import ConnectionManager
@@ -40,9 +41,17 @@ class TaskAssignmentPolicy:
     MAX_COLLECTION_BATCH: int = 3
 
     # TaskType 값 (proto enum 숫자)
-    _DISH_PICKUP    = int(pb.TaskType.DISH_PICKUP)
-    _RETURN_TO_DOCK = int(pb.TaskType.RETURN_TO_DOCK)
-    _HEAVY_TYPES    = frozenset([int(pb.TaskType.KIOSK_TO_TABLE), int(pb.TaskType.ESCORT_SERVICE)])
+    _DISH_PICKUP      = int(pb.TaskType.DISH_PICKUP)
+    _RETURN_TO_DOCK   = int(pb.TaskType.RETURN_TO_DOCK)
+    _FOLLOW_CUSTOMER  = int(pb.TaskType.FOLLOW_CUSTOMER)
+    _DELIVERY         = int(pb.TaskType.KIOSK_TO_TABLE)
+    _ESCORT           = int(pb.TaskType.ESCORT_SERVICE)
+    # 배터리 25% 미만 시 배정 보류하는 무거운 작업 유형
+    _HEAVY_TYPES      = frozenset([
+        int(pb.TaskType.KIOSK_TO_TABLE),
+        int(pb.TaskType.ESCORT_SERVICE),
+        int(pb.TaskType.FOLLOW_CUSTOMER),  # 동행도 무거운 작업으로 분류
+    ])
 
     def __init__(self) -> None:
         self._collector_robot_id: Optional[str] = None
@@ -146,12 +155,14 @@ class TaskDispatcher:
         db_lock: asyncio.Lock,
         manager: "ConnectionManager",
         policy: TaskAssignmentPolicy,
+        broker: Optional[WSBroker] = None,
     ) -> None:
         self._db = db
         self._get_conn = get_conn
         self._db_lock = db_lock
         self._manager = manager
         self._policy = policy
+        self._broker = broker
 
     # ── 외부 진입점 ────────────────────────────────────────────────
 
@@ -255,7 +266,7 @@ class TaskDispatcher:
     # ── 내부 헬퍼 ──────────────────────────────────────────────────
 
     async def _dispatch(self, task: pb.Task, robot_id: str) -> None:
-        """DB 업데이트 + TCP MOVE_TO 전송."""
+        """DB 업데이트 + 태스크 타입별 초기 커맨드 전송."""
         async with self._db_lock:
             conn = await self._get_conn()
             place = await self._db.get_place(conn, task.dest_id)
@@ -264,21 +275,14 @@ class TaskDispatcher:
         target_y     = float(place["y"]     or 0.0) if place else 0.0
         target_theta = float(place["theta"] or 0.0) if place else 0.0
 
-        cmd_id = str(uuid.uuid4())
-        now_ms = _ts_now_ms()
+        cmd_id  = str(uuid.uuid4())
+        now_ms  = _ts_now_ms()
+        task_type = int(task.task_type)
 
-        cmd_pb = pb.Command(
-            cmd_id=cmd_id,
-            task_id=task.task_id,
-            robot_id=robot_id,
-            command=pb.CommandType.MOVE_TO,
-            target_id=task.dest_id,
-            target_x=target_x,
-            target_y=target_y,
-            target_theta=target_theta,
-            status=pb.CommandStatus.SENT,
+        # 태스크 타입에 따라 초기 커맨드와 CommandType DB 기록값 결정
+        pkt, db_cmd_type = self._build_initial_packet(
+            task, robot_id, cmd_id, target_x, target_y, target_theta,
         )
-        cmd_pb.sent_at.FromMilliseconds(now_ms)
 
         async with self._db_lock:
             conn = await self._get_conn()
@@ -287,7 +291,7 @@ class TaskDispatcher:
                 cmd_id=cmd_id,
                 task_id=task.task_id,
                 robot_id=robot_id,
-                command=int(pb.CommandType.MOVE_TO),
+                command=db_cmd_type,
                 target_id=task.dest_id,
                 status=int(pb.CommandStatus.SENT),
                 sent_at_ms=now_ms,
@@ -303,15 +307,110 @@ class TaskDispatcher:
             logger.warning("Scheduler dispatch: robot %s disconnected", robot_id)
             return
 
-        pkt = pb.TcpPacket(robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb)
+        pkt.seq = sess.next_seq()
         try:
             await self._manager.send_command_packet(robot_id, pkt)
             logger.info(
-                "Scheduler MOVE_TO robot=%s task=%s dest=%s",
-                robot_id, task.task_id, task.dest_id,
+                "Scheduler dispatch robot=%s task_type=%s task=%s dest=%s",
+                robot_id,
+                pb.TaskType.Name(task.task_type),
+                task.task_id,
+                task.dest_id,
             )
+            if self._broker:
+                await self._broker.broadcast({
+                    "event": "task_assigned",
+                    "robot_id": robot_id,
+                    "task_id": task.task_id,
+                    "task_type": int(task.task_type),
+                    "task_type_name": pb.TaskType.Name(task.task_type),
+                    "dest_id": task.dest_id,
+                    "timestamp_ms": _ts_now_ms(),
+                })
         except Exception as e:  # noqa: BLE001
             logger.warning("Scheduler dispatch send failed robot=%s: %s", robot_id, e)
+
+    def _build_initial_packet(
+        self,
+        task: pb.Task,
+        robot_id: str,
+        cmd_id: str,
+        tx: float,
+        ty: float,
+        tt: float,
+    ) -> tuple[pb.TcpPacket, int]:
+        """태스크 타입에 따라 초기 TcpPacket 과 DB 기록용 CommandType 정수를 반환."""
+        task_type = int(task.task_type)
+        now_ms = _ts_now_ms()
+
+        if task_type == self._policy._FOLLOW_CUSTOMER:
+            # 동행: 요청자 위치로 이동 (FOLLOW_MOVE_TO_REQUESTER)
+            cmd = pb.FollowCommand(
+                cmd_id=cmd_id,
+                task_id=task.task_id,
+                robot_id=robot_id,
+                action=pb.FollowAction.FOLLOW_MOVE_TO_REQUESTER,
+                target_id=task.dest_id,
+                target_x=tx, target_y=ty, target_theta=tt,
+            )
+            pkt = pb.TcpPacket(robot_id=robot_id, follow_cmd=cmd)
+            return pkt, int(pb.CommandType.FOLLOW_CMD)
+
+        elif task_type == self._policy._DISH_PICKUP:
+            # 수거: 요청자 위치로 이동 (COLLECT_MOVE_TO_REQUESTER)
+            cmd = pb.CollectionCommand(
+                cmd_id=cmd_id,
+                task_id=task.task_id,
+                robot_id=robot_id,
+                action=pb.CollectionAction.COLLECT_MOVE_TO_REQUESTER,
+                target_id=task.dest_id,
+                target_x=tx, target_y=ty, target_theta=tt,
+            )
+            pkt = pb.TcpPacket(robot_id=robot_id, collect_cmd=cmd)
+            return pkt, int(pb.CommandType.COLLECT_CMD)
+
+        elif task_type == self._policy._DELIVERY:
+            # 운반: 주방으로 이동 (DELIVERY_MOVE_TO_KITCHEN)
+            cmd = pb.DeliveryCommand(
+                cmd_id=cmd_id,
+                task_id=task.task_id,
+                robot_id=robot_id,
+                action=pb.DeliveryAction.DELIVERY_MOVE_TO_KITCHEN,
+                target_id=task.dest_id,
+                target_x=tx, target_y=ty, target_theta=tt,
+                step_index=0,
+            )
+            pkt = pb.TcpPacket(robot_id=robot_id, delivery_cmd=cmd)
+            return pkt, int(pb.CommandType.DELIVERY_CMD)
+
+        elif task_type == self._policy._ESCORT:
+            # 안내: 요청자 위치로 이동 (GUIDANCE_MOVE_TO_REQUESTER)
+            cmd = pb.GuidanceCommand(
+                cmd_id=cmd_id,
+                task_id=task.task_id,
+                robot_id=robot_id,
+                action=pb.GuidanceAction.GUIDANCE_MOVE_TO_REQUESTER,
+                target_id=task.dest_id,
+                target_x=tx, target_y=ty, target_theta=tt,
+                step_index=0,
+            )
+            pkt = pb.TcpPacket(robot_id=robot_id, guidance_cmd=cmd)
+            return pkt, int(pb.CommandType.GUIDE_CMD)
+
+        else:
+            # 그 외 (TABLE_TO_TOILET, RETURN_TO_DOCK 등): 기존 MOVE_TO
+            cmd_pb = pb.Command(
+                cmd_id=cmd_id,
+                task_id=task.task_id,
+                robot_id=robot_id,
+                command=pb.CommandType.MOVE_TO,
+                target_id=task.dest_id,
+                target_x=tx, target_y=ty, target_theta=tt,
+                status=pb.CommandStatus.SENT,
+            )
+            cmd_pb.sent_at.FromMilliseconds(_ts_now_ms())
+            pkt = pb.TcpPacket(robot_id=robot_id, cmd_payload=cmd_pb)
+            return pkt, int(pb.CommandType.MOVE_TO)
 
     async def _get_idle_robot_ids(self) -> list[str]:
         session_ids = await self._manager.get_all_session_ids()

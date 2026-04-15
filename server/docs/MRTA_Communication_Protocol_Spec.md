@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |------|------|
-| 문서 버전 | 1.2 |
+| 문서 버전 | 1.3 |
 | 대상 코드베이스 | `ros-repo-1` — `server/`, `device/rostaurant/.../rostaurant_networking/` |
 | 스키마 원본 | `server/proto/robotcafe/db/v1/robotcafe.proto` |
 | DB 구현 | SQLite `mrta.db` (`server/db.py`) |
@@ -52,10 +52,15 @@
 
 | 필드 # | 필드명 | 하위 메시지 | 방향 | 요약 |
 |--------|--------|--------------|------|------|
-| 3 | `cmd_payload` | `Command` | Server→Robot | 명령 전달 |
+| 3 | `cmd_payload` | `Command` | Server→Robot | 일반 이동/취소/리셋 명령 |
 | 4 | `ack_payload` | `CommandAck` | Robot→Server | 명령 처리 결과 |
 | 5 | `status_payload` | `StatusReport` | Robot→Server | 상태·배터리·FSM |
 | 6 | `heartbeat` | `Heartbeat` | Robot→Server | 연결 유지 |
+| 7 | `task_event` | `TaskEvent` | Robot→Server | 태스크 진행 이벤트 (도착 등) |
+| 8 | `follow_cmd` | `FollowCommand` | Server→Robot | 동행 커맨드 |
+| 9 | `collect_cmd` | `CollectionCommand` | Server→Robot | 수거 커맨드 |
+| 10 | `delivery_cmd` | `DeliveryCommand` | Server→Robot | 운반 커맨드 |
+| 11 | `guidance_cmd` | `GuidanceCommand` | Server→Robot | 안내 커맨드 |
 
 ---
 
@@ -331,13 +336,28 @@ IDLE=1, MOVING=2, ARRIVED=3, CHARGING=4, ERROR=5, OFFLINE=6
 PENDING=1, IN_PROGRESS=2, COMPLETED=3, FAILED=4, CANCELLED=5
 
 ### `TaskType`
-KIOSK_TO_TABLE=1, TABLE_TO_TOILET=2, TABLE_TO_DISPLAY=3, DISH_PICKUP=4, ROBOT_SWAP=5, ESCORT_SERVICE=6, RETURN_TO_DOCK=7
+KIOSK_TO_TABLE=1(운반), TABLE_TO_TOILET=2, TABLE_TO_DISPLAY=3, DISH_PICKUP=4(수거), ROBOT_SWAP=5, ESCORT_SERVICE=6(안내), RETURN_TO_DOCK=7, **FOLLOW_CUSTOMER=8(동행)**
 
 ### `TaskPriority`
 LOW=1, NORMAL=2, HIGH=3, URGENT=4
 
 ### `CommandType`
-MOVE_TO=1, CANCEL=2, RESET=3, RETURN_DOCK=4, EMERGENCY_STOP=5
+MOVE_TO=1, CANCEL=2, RESET=3, RETURN_DOCK=4, EMERGENCY_STOP=5, **FOLLOW_CMD=6, COLLECT_CMD=7, DELIVERY_CMD=8, GUIDE_CMD=9**
+
+### `FollowAction` (FollowCommand.action)
+FOLLOW_MOVE_TO_REQUESTER=1, FOLLOW_START=2, FOLLOW_END=3, FOLLOW_GO_TO_TABLE=4, FOLLOW_RESTART=5, FOLLOW_RETRY=6
+
+### `CollectionAction` (CollectionCommand.action)
+COLLECT_MOVE_TO_REQUESTER=1, COLLECT_START=2, COLLECT_DONE=3, COLLECT_MOVE_TO_DISHWASHING=4, COLLECT_END=5, COLLECT_RETRY=6
+
+### `DeliveryAction` (DeliveryCommand.action)
+DELIVERY_MOVE_TO_KITCHEN=1, DELIVERY_START=2, DELIVERY_NEXT=3, DELIVERY_RETRY=4, DELIVERY_END=5
+
+### `GuidanceAction` (GuidanceCommand.action)
+GUIDANCE_MOVE_TO_REQUESTER=1, GUIDANCE_START=2, GUIDANCE_RETRY=3, GUIDANCE_END=4
+
+### `TaskEventType` (TaskEvent.event_type)
+ARRIVED_AT_REQUESTER=1, ARRIVED_AT_TABLE=2, ARRIVED_AT_KITCHEN=3, ARRIVED_AT_DISHWASHING=4, ARRIVED_AT_MENU_LOCATION=5, ARRIVED_AT_DESTINATION=6, NEAR_TABLE_1MIN=7
 
 ### `CommandStatus`
 SENT=1, ACKED=2, CMD_FAILED=3
@@ -356,6 +376,34 @@ ERR_NONE=0, ERR_NETWORK=101, ERR_NAV_FAILED=201, ERR_OBSTACLE=202, ERR_TIMEOUT=2
 
 ---
 
+## 11. 태스크별 통신 시퀀스 요약
+
+### 커맨드 흐름 (HQ→Robot)
+| TaskType | 초기 커맨드 | 후속 커맨드 |
+|---------|------------|-----------|
+| FOLLOW_CUSTOMER(8) | `FollowCommand(FOLLOW_MOVE_TO_REQUESTER)` | `FOLLOW_START` → `FOLLOW_END` 또는 `FOLLOW_GO_TO_TABLE` |
+| DISH_PICKUP(4) | `CollectionCommand(COLLECT_MOVE_TO_REQUESTER)` | `COLLECT_START` → `COLLECT_DONE` → `COLLECT_MOVE_TO_DISHWASHING` → `COLLECT_END` |
+| KIOSK_TO_TABLE(1) | `DeliveryCommand(DELIVERY_MOVE_TO_KITCHEN)` | `DELIVERY_START(step=N)` → `DELIVERY_NEXT` 또는 `DELIVERY_END` |
+| ESCORT_SERVICE(6) | `GuidanceCommand(GUIDANCE_MOVE_TO_REQUESTER)` | `GUIDANCE_START(step=N)` → `GUIDANCE_END` |
+| 그 외 | `Command(MOVE_TO)` | `Command(CANCEL/RESET)` |
+
+### 이벤트 흐름 (Robot→HQ)
+| 이벤트 | 트리거 조건 |
+|-------|-----------|
+| `ARRIVED_AT_REQUESTER` | FollowCmd/CollectCmd/GuidanceCmd + FSM_ARRIVED |
+| `ARRIVED_AT_KITCHEN` | DeliveryCmd(DELIVERY_MOVE_TO_KITCHEN) + FSM_ARRIVED |
+| `ARRIVED_AT_MENU_LOCATION` | DeliveryCmd(DELIVERY_START) + FSM_ARRIVED |
+| `ARRIVED_AT_TABLE` | FollowCmd(FOLLOW_GO_TO_TABLE) + FSM_ARRIVED |
+| `ARRIVED_AT_DISHWASHING` | CollectCmd(COLLECT_MOVE_TO_DISHWASHING) + FSM_ARRIVED |
+| `ARRIVED_AT_DESTINATION` | GuidanceCmd(GUIDANCE_START) + FSM_ARRIVED |
+| `NEAR_TABLE_1MIN` | task_executor 직접 발행 (event_type override) |
+
+### ROS 메시지 변경사항 (v1.3)
+- `RobotCommand.msg`: `task_action`(uint8), `step_index`(int32) 필드 추가
+- `RobotTaskStatus.msg`: `event_type`(uint8) 필드 추가
+
+---
+
 ## 변경 이력
 
 | 버전 | 날짜 | 내용 |
@@ -363,3 +411,4 @@ ERR_NONE=0, ERR_NETWORK=101, ERR_NAV_FAILED=201, ERR_OBSTACLE=202, ERR_TIMEOUT=2
 | 1.0 | 2026-04-12 | 초안 |
 | 1.1 | 2026-04-12 | places·place_waypoints·menu_items 테이블 추가, REST 목록 갱신 |
 | 1.2 | 2026-04-12 | 보안: OpenAPI 비활성·health 분리·TCP 프레임 상한·로봇 연결 토큰·UDP 세션 옵션, `Heartbeat.connection_token` |
+| 1.3 | 2026-04-16 | TaskType FOLLOW_CUSTOMER(8) 추가, 태스크별 커맨드 메시지(FollowCommand/CollectionCommand/DeliveryCommand/GuidanceCommand), TaskEvent + TaskEventType, CommandType 확장(FOLLOW_CMD~GUIDE_CMD), ROS 메시지 필드 추가 |
