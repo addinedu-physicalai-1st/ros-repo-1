@@ -37,7 +37,7 @@ class TaskAssignmentPolicy:
 
     BATTERY_MIN_ASSIGN: int = 20   # 이 미만이면 모든 배정 거부
     BATTERY_MIN_HEAVY: int  = 25   # 이 미만이면 KIOSK_TO_TABLE / ESCORT_SERVICE skip
-    MAX_COLLECTION_BATCH: int = 5
+    MAX_COLLECTION_BATCH: int = 3
 
     # TaskType 값 (proto enum 숫자)
     _DISH_PICKUP    = int(pb.TaskType.DISH_PICKUP)
