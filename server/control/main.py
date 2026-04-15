@@ -43,6 +43,7 @@ from auth import CurrentUser, Permission, generate_api_key, hash_api_key, requir
 from connection_manager import ConnectionManager
 from db import Database, _ts_now_ms
 from robotcafe.db.v1 import robotcafe_pb2 as pb
+from scheduler import TaskAssignmentPolicy, TaskDispatcher
 from tcp_gateway import start_tcp_server
 from udp_receiver import start_udp_receiver
 from ws_broker import WSBroker
@@ -225,11 +226,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         manager.heartbeat_watchdog(stop_watchdog), name="mrta-watchdog"
     )
 
+    # ── 스케줄러 초기화 ──────────────────────────────────────────────
+    dispatcher = TaskDispatcher(
+        db=database,
+        get_conn=_get_db_conn,
+        db_lock=db_lock,
+        manager=manager,
+        policy=TaskAssignmentPolicy(),
+    )
+    manager.set_dispatcher(dispatcher)
+
     app.state.db          = database
     app.state.conn        = conn
     app.state.db_lock     = db_lock
     app.state.manager     = manager
     app.state.broker      = broker
+    app.state.dispatcher  = dispatcher
     app.state.tcp_task    = tcp_task
     app.state.udp_transport = udp_transport
     app.state.watchdog_task = watchdog_task
@@ -363,21 +375,51 @@ async def create_task(
     )
     logger.info("Task created %s by %s", task.task_id, user)
 
-    # Auto-dispatch: find an IDLE robot and send MOVE_TO immediately
-    manager = _get_manager(request)
-    async with lock:
-        idle_robot = await db.get_any_idle_robot(conn)
-    if idle_robot:
-        asyncio.create_task(
-            _dispatch_move_to(
-                db, conn, lock, manager,
-                task_id=task.task_id,
-                robot_id=idle_robot.robot_id,
-                dest_id=body.dest_id,
-            )
-        )
+    # 스케줄러에게 전체 IDLE 로봇 대상 배정 시도 위임
+    asyncio.create_task(
+        request.app.state.dispatcher.try_assign_pending(),
+        name="assign-pending",
+    )
 
     return _pb_to_json(resp)
+
+
+class AssignTaskBody(BaseModel):
+    robot_id: str
+
+
+@app.post("/tasks/{task_id}/assign", summary="Manually assign a task to a robot (ADMIN)")
+async def assign_task(
+    task_id: str,
+    body: AssignTaskBody,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.COMMAND_SEND)),
+) -> dict[str, Any]:
+    """관리자가 특정 로봇에 작업을 강제 배정."""
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    async with lock:
+        task = await db.get_task(conn, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if int(task.status) != int(pb.TaskStatus.PENDING):
+        raise HTTPException(status_code=409, detail="task is not in PENDING state")
+
+    dispatcher: TaskDispatcher = request.app.state.dispatcher
+    battery = await request.app.state.manager.telemetry.get_battery(body.robot_id) or 100
+    if battery < TaskAssignmentPolicy.BATTERY_MIN_ASSIGN:
+        raise HTTPException(
+            status_code=409,
+            detail=f"robot {body.robot_id} battery too low ({battery}%)",
+        )
+
+    sess = await request.app.state.manager.get_session(body.robot_id)
+    if sess is None:
+        raise HTTPException(status_code=409, detail=f"robot {body.robot_id} not connected")
+
+    await dispatcher._dispatch(task, body.robot_id)
+    await dispatcher._policy.on_task_assigned(task, body.robot_id)
+    logger.info("Manual assign task=%s robot=%s by %s", task_id, body.robot_id, user)
+    return {"task_id": task_id, "robot_id": body.robot_id, "status": "assigned"}
 
 
 @app.get("/tasks", summary="List tasks")

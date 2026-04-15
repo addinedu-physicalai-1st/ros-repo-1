@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import aiosqlite
 
@@ -110,6 +110,11 @@ class ConnectionManager:
         self._sessions: dict[str, RobotSession] = {}
         self._sessions_lock = asyncio.Lock()
         self.telemetry = TelemetryCache()
+        self._dispatcher: Optional[Any] = None  # TaskDispatcher (순환참조 방지용 Any)
+
+    def set_dispatcher(self, dispatcher: Any) -> None:
+        """lifespan에서 TaskDispatcher 주입."""
+        self._dispatcher = dispatcher
 
     async def register_session(self, robot_id: str, writer: asyncio.StreamWriter) -> RobotSession:
         async with self._sessions_lock:
@@ -173,11 +178,12 @@ class ConnectionManager:
                 })
         elif packet.HasField("status_payload"):
             sr = packet.status_payload
+            effective_rid = sr.robot_id or rid
             async with self._db_lock:
                 conn = await self._get_conn()
                 await self._db.upsert_robot_from_status(
                     conn,
-                    robot_id=sr.robot_id or rid,
+                    robot_id=effective_rid,
                     status=int(sr.robot_status),
                     battery=sr.battery,
                     last_seen_ms=now_ms,
@@ -187,13 +193,22 @@ class ConnectionManager:
             if self._broker:
                 await self._broker.broadcast({
                     "event": "status",
-                    "robot_id": sr.robot_id or rid,
+                    "robot_id": effective_rid,
                     "robot_status": int(sr.robot_status),
                     "fsm_state": int(sr.fsm_state),
                     "current_task": sr.current_task,
                     "battery": sr.battery,
                     "timestamp_ms": now_ms,
                 })
+            # 로봇이 IDLE 상태가 되면 대기 작업 배정 시도
+            if (
+                self._dispatcher is not None
+                and int(sr.robot_status) == int(pb.RobotStatus.IDLE)
+            ):
+                asyncio.create_task(
+                    self._dispatcher.try_assign_for_robot(effective_rid),
+                    name=f"assign-{effective_rid}",
+                )
         elif packet.HasField("ack_payload"):
             await self._handle_command_ack(packet.ack_payload)
         elif packet.HasField("cmd_payload"):

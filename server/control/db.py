@@ -690,6 +690,20 @@ class Database:
             )
         await conn.commit()
 
+    async def list_pending_tasks_sorted(self, conn: aiosqlite.Connection) -> list[pb.Task]:
+        """PENDING 작업을 priority DESC, created_at_ms ASC 순으로 반환 (스케줄러용)."""
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status = ?
+                ORDER BY priority DESC, created_at_ms ASC
+                """,
+                (int(pb.TaskStatus.PENDING),),
+            )
+        ).fetchall()
+        return [self._row_to_task(r) for r in rows]
+
     async def assign_task_robot(self, conn: aiosqlite.Connection, task_id: str, robot_id: str) -> None:
         now = _ts_now_ms()
         await conn.execute(

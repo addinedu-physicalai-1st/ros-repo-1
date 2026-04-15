@@ -49,6 +49,15 @@ class UdpTelemetryProtocol(asyncio.DatagramProtocol):
                 return
         await self._manager.telemetry.apply_udp_packet(pkt)
 
+        # 배터리 상태 수신 시 자동 충전 트리거 판단
+        if pkt.WhichOneof("telemetry") == "state":
+            dispatcher = self._manager._dispatcher
+            if dispatcher is not None:
+                asyncio.create_task(
+                    dispatcher.maybe_trigger_charge(pkt.robot_id, int(pkt.state.battery_percent)),
+                    name=f"charge-check-{pkt.robot_id}",
+                )
+
     def error_received(self, exc: Exception) -> None:  # type: ignore[override]
         logger.error("UDP error_received: %s", exc)
 
