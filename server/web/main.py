@@ -188,22 +188,35 @@ async def api_checkout(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "task_id": result.get("task_id"), "table": table})
 
 
-_KITCHEN_TYPE_MAP: dict[str, int] = {
-    "menuReady":    1,   # MOVE_TO (kitchen → table)
-    "robotArrived": 0,   # status-only, no command needed
-    "robotLoaded":  0,
-}
-
-
 @app.post("/api/kitchen")
 async def api_kitchen(request: Request) -> JSONResponse:
-    """Kitchen panel: menu ready / robot arrived / loaded events."""
+    """Kitchen panel actions.
+
+    action=menu_ready  → create TABLE_TO_DISPLAY task (dest=KITCHEN, first leg);
+                         disp_id is stored in browser and used for the second leg.
+    other actions      → legacy acknowledge (no robot dispatch).
+    """
     body: dict[str, Any] = await request.json()
-    event_type: str = body.get("type", "")
-    logger.info("Kitchen event: %s %s", event_type, body)
-    # For now acknowledge — command dispatch requires robot_id which kitchen panel
-    # does not yet provide; logged for control operator awareness.
-    return JSONResponse({"ok": True, "received": event_type})
+    action: str = body.get("action", "")
+
+    if action == "menu_ready":
+        disp_id: str = body.get("disp_id", "").strip()
+        if not disp_id:
+            raise HTTPException(status_code=422, detail="disp_id is required for menu_ready")
+        payload = {
+            "task_type": 3,        # TABLE_TO_DISPLAY — robot navigates to display area
+            "dest_id": "KITCHEN",  # first stop: robot goes to the kitchen to pick up food
+            "priority": 3,         # HIGH
+            "requester_id": "",
+        }
+        result = await _control_post("/tasks", payload)
+        task_id: str = result.get("task_id", "")
+        logger.info("Kitchen menu_ready: disp_id=%s → task %s", disp_id, task_id)
+        return JSONResponse({"ok": True, "task_id": task_id, "disp_id": disp_id})
+
+    # Legacy / unknown events — acknowledge without robot dispatch
+    logger.info("Kitchen event: %s %s", action, body)
+    return JSONResponse({"ok": True, "received": action})
 
 
 _TABLE_TASK_MAP: dict[str, int] = {

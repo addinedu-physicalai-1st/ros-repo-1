@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>직원 패널 — 진열 확인</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #111214;
+  --surface: #1a1b1f;
+  --surface2: #222429;
+  --border: rgba(255,255,255,0.07);
+  --border-md: rgba(255,255,255,0.13);
+  --text: #f0efe8;
+  --text-muted: #7a7a82;
+  --text-dim: #3a3a42;
+  --orange: #f0833a;
+  --orange-dim: rgba(240,131,58,0.13);
+  --orange-border: rgba(240,131,58,0.35);
+  --blue: #5ba4f5;
+  --blue-dim: rgba(91,164,245,0.12);
+  --blue-border: rgba(91,164,245,0.32);
+  --green: #5fd68a;
+  --green-dim: rgba(95,214,138,0.11);
+  --green-border: rgba(95,214,138,0.30);
+  --red: #e8605a;
+  --radius: 18px;
+  --radius-sm: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Noto Sans KR', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 1.4rem; height: 54px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky; top: 0; z-index: 50;
+}
+.topbar-left { display: flex; align-items: center; gap: 10px; }
+.topbar-logo { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+.topbar-logo span { color: var(--blue); }
+.badge-staff {
+  background: var(--blue-dim); border: 1px solid var(--blue-border);
+  color: var(--blue); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.07em; padding: 2px 9px;
+  border-radius: 30px; text-transform: uppercase;
+}
+.ws-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-dim); flex-shrink: 0;
+}
+.ws-dot.ok { background: var(--green); }
+.ws-dot.err { background: var(--red); }
+.clock {
+  font-family: 'DM Mono', monospace;
+  font-size: 13px; color: var(--text-muted);
+}
+
+.page { padding: 1.2rem; max-width: 520px; margin: 0 auto; }
+
+.panel { display: none; margin-bottom: 1.6rem; }
+.panel.active { display: block; }
+
+.state-card {
+  border-radius: var(--radius);
+  padding: 1.8rem 1.4rem;
+  text-align: center;
+  border: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+.state-card.blue   { background: var(--blue-dim);   border-color: var(--blue-border); }
+.state-card.green  { background: var(--green-dim);  border-color: var(--green-border); }
+.state-card.orange { background: var(--orange-dim); border-color: var(--orange-border); }
+.state-card.surface { background: var(--surface2); }
+
+.state-icon { font-size: 42px; margin-bottom: 12px; }
+.state-title {
+  font-size: 18px; font-weight: 700; letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+.state-card.blue   .state-title { color: var(--blue); }
+.state-card.green  .state-title { color: var(--green); }
+.state-card.orange .state-title { color: var(--orange); }
+.state-card.surface .state-title { color: var(--text); }
+.state-desc { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+
+.info-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface2); border: 1px solid var(--border-md);
+  border-radius: 30px; padding: 5px 12px;
+  font-size: 12px; color: var(--text); margin-top: 10px;
+}
+.info-badge span { color: var(--blue); font-weight: 700; }
+
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+.pulse { animation: pulse 2s ease-in-out infinite; }
+
+.btn-primary {
+  width: 100%; padding: 16px;
+  background: var(--blue);
+  color: #03152b; font-family: 'Noto Sans KR', sans-serif;
+  font-size: 16px; font-weight: 700;
+  border: none; border-radius: var(--radius-sm);
+  cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+  margin-bottom: 10px;
+}
+.btn-primary:hover { opacity: 0.88; }
+.btn-primary:active { transform: scale(0.98); }
+.btn-primary.green { background: var(--green); color: #04200f; }
+.btn-secondary {
+  width: 100%; padding: 14px; margin-bottom: 10px;
+  background: transparent; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: 'Noto Sans KR', sans-serif; font-size: 14px;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.btn-secondary:hover { border-color: var(--border-md); color: var(--text); }
+
+.log-section { margin-bottom: 2rem; }
+.section-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-muted);
+  margin-bottom: 10px; padding-left: 2px;
+}
+.log-list {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.log-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; border-bottom: 1px solid var(--border);
+  font-size: 12px; animation: fadeIn 0.3s ease;
+}
+.log-item:last-child { border-bottom: none; }
+.log-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.log-dot.orange { background: var(--orange); }
+.log-dot.blue   { background: var(--blue); }
+.log-dot.green  { background: var(--green); }
+.log-dot.red    { background: var(--red); }
+.log-text { flex: 1; color: var(--text); }
+.log-time { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--text-muted); }
+.log-empty { padding: 1.2rem; text-align: center; font-size: 12px; color: var(--text-dim); }
+
+@keyframes fadeIn { from { opacity:0; transform: translateX(-6px); } to { opacity:1; transform: translateX(0); } }
+
+.toast {
+  display: none; position: fixed;
+  bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+  background: var(--surface2); border: 1px solid var(--border-md);
+  border-radius: 30px; padding: 10px 22px;
+  font-size: 13px; color: var(--text); white-space: nowrap;
+  z-index: 400; box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+}
+.toast.show { display: block; animation: toastUp 0.2s ease; }
+.toast.ok   { border-color: var(--green); color: var(--green); }
+.toast.err  { border-color: var(--red); color: var(--red); }
+@keyframes toastUp {
+  from { opacity:0; transform: translateX(-50%) translateY(8px); }
+  to   { opacity:1; transform: translateX(-50%) translateY(0); }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="topbar-logo">직원 <span>Panel</span></div>
+    <div class="badge-staff">Staff</div>
+    <div class="ws-dot" id="wsDot"></div>
+  </div>
+  <div class="clock" id="clock">--:--:--</div>
+</div>
+
+<div class="page">
+
+  <!-- ── PANEL: idle ────────────────────────────────── -->
+  <div class="panel active" id="panel-idle">
+    <div class="state-card surface">
+      <div class="state-icon">🛒</div>
+      <div class="state-title">대기 중</div>
+      <div class="state-desc">주방에서 로봇을 호출하면<br>이 페이지에 진열 확인 알림이 표시됩니다</div>
+    </div>
+  </div>
+
+  <!-- ── PANEL: robot_arriving ─────────────────────── -->
+  <div class="panel" id="panel-robot-arriving">
+    <div class="state-card blue">
+      <div class="state-icon pulse">🚚</div>
+      <div class="state-title">로봇 이동 중</div>
+      <div class="state-desc">로봇이 진열장으로 이동하고 있습니다</div>
+      <div class="info-badge">목적지: <span id="info-disp-arriving">—</span></div>
+    </div>
+  </div>
+
+  <!-- ── PANEL: robot_arrived ──────────────────────── -->
+  <div class="panel" id="panel-robot-arrived">
+    <div class="state-card blue">
+      <div class="state-icon">🤖📍</div>
+      <div class="state-title">로봇 도착!</div>
+      <div class="state-desc">로봇이 진열장에 도착했습니다<br>도착을 확인하면 음식 진열을 시작할 수 있습니다</div>
+      <div class="info-badge">위치: <span id="info-disp-arrived">—</span></div>
+    </div>
+    <button class="btn-primary" onclick="onArrivalOk()">도착 확인 (OK)</button>
+  </div>
+
+  <!-- ── PANEL: waiting_unload ─────────────────────── -->
+  <div class="panel" id="panel-waiting-unload">
+    <div class="state-card orange">
+      <div class="state-icon">📦</div>
+      <div class="state-title">음식 진열 중</div>
+      <div class="state-desc">로봇에서 음식을 꺼내<br>진열장에 배치해 주세요<br>완료되면 아래 버튼을 눌러주세요</div>
+      <div class="info-badge">진열 위치: <span id="info-disp-unload">—</span></div>
+    </div>
+    <button class="btn-primary green" onclick="onUnloadComplete()">음식 진열 완료</button>
+  </div>
+
+  <!-- ── PANEL: robot_departing ────────────────────── -->
+  <div class="panel" id="panel-robot-departing">
+    <div class="state-card green">
+      <div class="state-icon">↩️</div>
+      <div class="state-title">로봇 귀환 중</div>
+      <div class="state-desc">진열 완료! 로봇이 주방으로 귀환합니다</div>
+    </div>
+  </div>
+
+  <!-- ── ACTIVITY LOG ──────────────────────────────── -->
+  <div class="log-section">
+    <div class="section-label">활동 기록</div>
+    <div class="log-list" id="logList">
+      <div class="log-empty" id="logEmpty">활동 기록이 없습니다</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Constants ─────────────────────────────────────────────────
+const LS_KEY = 'kitchen_task_state';
+const FSM_ARRIVED = 5;
+const ROBOT_ARRIVED = 3;
+
+// ── Staff-local state ──────────────────────────────────────────
+// state: 'idle' | 'robot_arriving' | 'robot_arrived' | 'waiting_unload' | 'robot_departing'
+let state = 'idle';
+let kitchenTask = null;   // from localStorage
+
+// ── State helpers ──────────────────────────────────────────────
+function setState(newState) {
+  state = newState;
+  renderPanel();
+}
+
+function renderPanel() {
+  const panels = ['idle','robot-arriving','robot-arrived','waiting-unload','robot-departing'];
+  for (const p of panels) {
+    const el = document.getElementById('panel-' + p);
+    if (el) el.classList.toggle('active', p === state.replace(/_/g, '-'));
+  }
+
+  if (kitchenTask && kitchenTask.disp_id) {
+    for (const id of ['info-disp-arriving','info-disp-arrived','info-disp-unload']) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = kitchenTask.disp_id;
+    }
+  }
+}
+
+// ── Action handlers ────────────────────────────────────────────
+
+function onArrivalOk() {
+  // Staff confirmed robot is at display — robot stays, show unload button
+  addLog('도착 확인 완료 — 음식 진열을 시작하세요', 'blue');
+  setState('waiting_unload');
+}
+
+async function onUnloadComplete() {
+  if (!kitchenTask || !kitchenTask.task_id) return;
+  addLog('음식 진열 완료 — 로봇 주방 귀환 요청 중', 'green');
+  setState('robot_departing');
+
+  // Update localStorage stage=3 so kitchen page knows
+  const updated = { ...kitchenTask, stage: 3 };
+  localStorage.setItem(LS_KEY, JSON.stringify(updated));
+  kitchenTask = updated;
+
+  try {
+    const resp = await fetch(`/api/tasks/${kitchenTask.task_id}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'ok', next_dest: 'KITCHEN' }),
+    });
+    const json = await resp.json();
+    if (resp.ok) {
+      showToast('✓ 로봇이 주방으로 출발했습니다', 'ok');
+      addLog('로봇이 주방으로 귀환 시작', 'green');
+    } else {
+      throw new Error(json.detail || '서버 오류');
+    }
+  } catch (e) {
+    showToast('⚠ 오류: ' + e.message, 'err');
+    addLog('오류: ' + e.message, 'red');
+  }
+}
+
+// ── Sync with kitchen localStorage ────────────────────────────
+function syncKitchenState(data) {
+  kitchenTask = data;
+  if (!data) {
+    setState('idle');
+    return;
+  }
+  // Only respond to stage=2 (robot heading to display)
+  if (data.stage === 2 && state === 'idle') {
+    addLog(`새 태스크 감지 — ${data.disp_id || '?'} 진열 대기`, 'orange');
+    setState('robot_arriving');
+  } else if (data.stage === 3 && (state === 'robot_arrived' || state === 'waiting_unload')) {
+    // Kitchen's retry caused stage reset — go back to idle
+    setState('idle');
+  } else if (!data.stage || data.stage === 1) {
+    // Task in stage 1 (robot going to kitchen) — nothing for staff yet
+    if (state !== 'idle') setState('idle');
+  }
+}
+
+// ── WebSocket ──────────────────────────────────────────────────
+let ws = null;
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen  = () => { document.getElementById('wsDot').className = 'ws-dot ok'; };
+  ws.onclose = () => {
+    document.getElementById('wsDot').className = 'ws-dot err';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => { document.getElementById('wsDot').className = 'ws-dot err'; };
+  ws.onmessage = (evt) => {
+    try { handleWsEvent(JSON.parse(evt.data)); } catch {}
+  };
+}
+
+function handleWsEvent(data) {
+  if (data.event !== 'status') return;
+  if (!kitchenTask || data.current_task !== kitchenTask.task_id) return;
+  if (kitchenTask.stage !== 2) return;  // only care about leg 2 arrivals
+
+  const arrived = (data.robot_status === ROBOT_ARRIVED || data.fsm_state === FSM_ARRIVED);
+  if (!arrived) return;
+
+  if (state === 'robot_arriving') {
+    addLog(`로봇이 ${kitchenTask.disp_id || '진열장'}에 도착했습니다`, 'blue');
+    setState('robot_arrived');
+  }
+}
+
+// ── localStorage sync ──────────────────────────────────────────
+window.addEventListener('storage', (e) => {
+  if (e.key !== LS_KEY) return;
+  const data = e.newValue ? tryParse(e.newValue) : null;
+  syncKitchenState(data);
+});
+
+// ── Log ────────────────────────────────────────────────────────
+const logs = [];
+function addLog(text, color) {
+  const time = new Date().toLocaleTimeString('ko-KR', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  });
+  logs.unshift({ text, color, time });
+  if (logs.length > 30) logs.pop();
+  renderLog();
+}
+function renderLog() {
+  const list = document.getElementById('logList');
+  const empty = document.getElementById('logEmpty');
+  if (logs.length === 0) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  list.innerHTML = logs.map(l => `
+    <div class="log-item">
+      <div class="log-dot ${l.color}"></div>
+      <div class="log-text">${escHtml(l.text)}</div>
+      <div class="log-time">${l.time}</div>
+    </div>
+  `).join('');
+}
+
+// ── Clock ──────────────────────────────────────────────────────
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString('ko-KR', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── Toast ──────────────────────────────────────────────────────
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (type || '');
+  clearTimeout(t._t);
+  t._t = setTimeout(() => { t.className = 'toast'; }, 3000);
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function tryParse(s) { try { return JSON.parse(s); } catch { return null; } }
+
+// ── Boot ───────────────────────────────────────────────────────
+(function init() {
+  // Read current kitchen task state
+  const saved = tryParse(localStorage.getItem(LS_KEY));
+  syncKitchenState(saved);
+  connectWS();
+})();
+</script>
+</body>
+</html>

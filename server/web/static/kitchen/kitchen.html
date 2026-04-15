@@ -25,6 +25,8 @@
   --green-dim: rgba(95,214,138,0.11);
   --green-border: rgba(95,214,138,0.30);
   --red: #e8605a;
+  --red-dim: rgba(232,96,90,0.11);
+  --red-border: rgba(232,96,90,0.30);
   --radius: 18px;
   --radius-sm: 10px;
 }
@@ -36,7 +38,7 @@ body {
   min-height: 100vh;
 }
 
-/* ── HEADER ─────────────────────────── */
+/* ── HEADER ────────────────────────────────────── */
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 1.4rem;
@@ -54,99 +56,110 @@ body {
   letter-spacing: 0.07em; padding: 2px 9px;
   border-radius: 30px; text-transform: uppercase;
 }
+.ws-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-dim); flex-shrink: 0;
+  transition: background 0.3s;
+}
+.ws-dot.ok { background: var(--green); }
+.ws-dot.err { background: var(--red); }
 .clock {
   font-family: 'DM Mono', monospace;
   font-size: 13px; color: var(--text-muted);
 }
 
-/* ── STATUS BAR ─────────────────────── */
-.status-bar {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 10px; padding: 1rem 1.2rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-.stat {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  text-align: center;
-}
-.stat-val {
-  font-family: 'DM Mono', monospace;
-  font-size: 22px; font-weight: 500;
-  line-height: 1;
-}
-.stat-val.orange { color: var(--orange); }
-.stat-val.blue   { color: var(--blue); }
-.stat-val.green  { color: var(--green); }
-.stat-lbl { font-size: 10px; color: var(--text-muted); margin-top: 5px; letter-spacing: 0.04em; }
-
-/* ── MAIN ───────────────────────────── */
+/* ── MAIN ─────────────────────────────────────── */
 .page { padding: 1.2rem; max-width: 520px; margin: 0 auto; }
 
-/* ── ACTION CARDS ───────────────────── */
-.action-section { margin-bottom: 1.6rem; }
+/* ── PANELS ──────────────────────────────────── */
+.panel { display: none; margin-bottom: 1.6rem; }
+.panel.active { display: block; }
+
+/* State card */
+.state-card {
+  border-radius: var(--radius);
+  padding: 1.8rem 1.4rem;
+  text-align: center;
+  border: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+.state-card.orange { background: var(--orange-dim); border-color: var(--orange-border); }
+.state-card.blue   { background: var(--blue-dim);   border-color: var(--blue-border); }
+.state-card.green  { background: var(--green-dim);  border-color: var(--green-border); }
+.state-card.red    { background: var(--red-dim);    border-color: var(--red-border); }
+.state-card.surface { background: var(--surface2); }
+
+.state-icon { font-size: 42px; margin-bottom: 12px; }
+.state-title {
+  font-size: 18px; font-weight: 700; letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+.state-card.orange .state-title { color: var(--orange); }
+.state-card.blue   .state-title { color: var(--blue); }
+.state-card.green  .state-title { color: var(--green); }
+.state-card.red    .state-title { color: var(--red); }
+.state-card.surface .state-title { color: var(--text); }
+
+.state-desc { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+
+/* Info badge */
+.info-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface2); border: 1px solid var(--border-md);
+  border-radius: 30px; padding: 5px 12px;
+  font-size: 12px; color: var(--text); margin-top: 10px;
+}
+.info-badge span { color: var(--orange); font-weight: 700; }
+
+/* Pulse animation for "moving" states */
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+.pulse { animation: pulse 2s ease-in-out infinite; }
+
+/* ── BUTTONS ─────────────────────────────────── */
+.btn-primary {
+  width: 100%; padding: 16px;
+  background: var(--orange);
+  color: #1a0a00; font-family: 'Noto Sans KR', sans-serif;
+  font-size: 16px; font-weight: 700;
+  border: none; border-radius: var(--radius-sm);
+  cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+  margin-bottom: 10px;
+}
+.btn-primary:hover { opacity: 0.88; }
+.btn-primary:active { transform: scale(0.98); }
+.btn-primary:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
+
+.btn-primary.green {
+  background: var(--green);
+  color: #04200f;
+}
+.btn-primary.blue {
+  background: var(--blue);
+  color: #03152b;
+}
+.btn-secondary {
+  width: 100%; padding: 14px; margin-bottom: 10px;
+  background: transparent; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: 'Noto Sans KR', sans-serif; font-size: 14px;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.btn-secondary:hover { border-color: var(--border-md); color: var(--text); }
+.btn-secondary.red {
+  color: var(--red); border-color: var(--red-border);
+}
+.btn-secondary.red:hover { background: var(--red-dim); }
+
+.btn-row { display: flex; gap: 10px; }
+.btn-row .btn-primary, .btn-row .btn-secondary { margin-bottom: 0; }
+
+/* ── LOG ─────────────────────────────────────── */
+.log-section { margin-bottom: 2rem; }
 .section-label {
   font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--text-muted);
   margin-bottom: 10px; padding-left: 2px;
 }
-
-.action-card {
-  border-radius: var(--radius);
-  padding: 1.4rem 1.4rem;
-  cursor: pointer;
-  user-select: none;
-  border: 1px solid var(--border);
-  transition: filter 0.15s, transform 0.1s;
-  display: flex; align-items: center; gap: 1.1rem;
-  margin-bottom: 10px;
-  position: relative;
-  overflow: hidden;
-}
-.action-card:last-child { margin-bottom: 0; }
-.action-card:hover { filter: brightness(1.08); }
-.action-card:active { transform: scale(0.98); }
-
-.action-card.ready {
-  background: var(--orange-dim);
-  border-color: var(--orange-border);
-}
-.action-card.arrived {
-  background: var(--blue-dim);
-  border-color: var(--blue-border);
-}
-.action-card.loaded {
-  background: var(--green-dim);
-  border-color: var(--green-border);
-}
-
-.card-icon {
-  width: 52px; height: 52px; flex-shrink: 0;
-  border-radius: 14px; display: flex; align-items: center; justify-content: center;
-  font-size: 26px;
-}
-.ready  .card-icon { background: rgba(240,131,58,0.18); }
-.arrived .card-icon { background: rgba(91,164,245,0.18); }
-.loaded .card-icon { background: rgba(95,214,138,0.18); }
-
-.card-body { flex: 1; min-width: 0; }
-.card-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
-.ready   .card-title { color: var(--orange); }
-.arrived .card-title { color: var(--blue); }
-.loaded  .card-title { color: var(--green); }
-.card-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
-
-.card-arrow {
-  font-size: 18px; color: var(--text-dim); flex-shrink: 0;
-  transition: transform 0.15s;
-}
-.action-card:hover .card-arrow { transform: translateX(3px); }
-
-/* ── LOG ────────────────────────────── */
-.log-section { margin-bottom: 2rem; }
 .log-list {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -167,22 +180,21 @@ body {
 .log-dot.orange { background: var(--orange); }
 .log-dot.blue   { background: var(--blue); }
 .log-dot.green  { background: var(--green); }
+.log-dot.red    { background: var(--red); }
 .log-text { flex: 1; color: var(--text); }
 .log-time { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--text-muted); }
 .log-empty { padding: 1.2rem; text-align: center; font-size: 12px; color: var(--text-dim); }
 
 @keyframes fadeIn { from { opacity:0; transform: translateX(-6px); } to { opacity:1; transform: translateX(0); } }
 
-/* ── MENU MODAL ─────────────────────── */
+/* ── MENU MODAL ──────────────────────────────── */
 .overlay {
   display: none; position: fixed; inset: 0;
   background: rgba(0,0,0,0.75);
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   z-index: 200; align-items: flex-end; justify-content: center;
-  padding-bottom: 0;
 }
 .overlay.show { display: flex; }
-
 .sheet {
   width: 100%; max-width: 520px;
   background: var(--surface);
@@ -190,6 +202,7 @@ body {
   border-radius: 24px 24px 0 0;
   padding: 1.4rem 1.4rem 2.4rem;
   animation: slideUp 0.3s cubic-bezier(0.34,1.1,0.64,1);
+  max-height: 85vh; overflow-y: auto;
 }
 @keyframes slideUp {
   from { transform: translateY(100%); }
@@ -199,10 +212,7 @@ body {
   width: 36px; height: 4px; background: var(--border-md);
   border-radius: 2px; margin: 0 auto 1.2rem;
 }
-.sheet-title {
-  font-size: 16px; font-weight: 700; margin-bottom: 4px;
-  color: var(--orange);
-}
+.sheet-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; color: var(--orange); }
 .sheet-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 1.2rem; }
 
 .menu-grid {
@@ -210,12 +220,9 @@ body {
   margin-bottom: 1rem;
 }
 .menu-chip {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 14px 10px;
-  text-align: center;
-  cursor: pointer;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 14px 10px;
+  text-align: center; cursor: pointer;
   transition: border-color 0.15s, background 0.15s, transform 0.1s;
   user-select: none;
 }
@@ -226,51 +233,11 @@ body {
   background: var(--orange-dim);
   box-shadow: 0 0 0 1px var(--orange);
 }
-.menu-chip-icon { font-size: 28px; margin-bottom: 7px; }
+.menu-chip.unavailable { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
 .menu-chip-name { font-size: 13px; font-weight: 700; color: var(--text); }
-.menu-chip-loc  { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+.menu-chip-loc  { font-size: 10px; color: var(--text-muted); margin-top: 5px; }
 
-.sheet-qty {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--surface2); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 12px 14px;
-  margin-bottom: 1rem;
-}
-.sheet-qty label { font-size: 12px; color: var(--text-muted); flex: 1; }
-.qty-control { display: flex; align-items: center; gap: 10px; }
-.qty-btn {
-  width: 30px; height: 30px; border-radius: 8px;
-  background: var(--surface); border: 1px solid var(--border-md);
-  color: var(--text); font-size: 18px; font-weight: 500;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-  line-height: 1; transition: background 0.12s;
-}
-.qty-btn:hover { background: var(--border-md); }
-.qty-val {
-  font-family: 'DM Mono', monospace;
-  font-size: 16px; font-weight: 500; min-width: 24px; text-align: center;
-}
-
-.btn-confirm {
-  width: 100%; padding: 14px;
-  background: var(--orange);
-  color: #1a0a00; font-family: 'Noto Sans KR', sans-serif;
-  font-size: 15px; font-weight: 700;
-  border: none; border-radius: var(--radius-sm);
-  cursor: pointer; transition: opacity 0.15s;
-}
-.btn-confirm:disabled { opacity: 0.35; cursor: not-allowed; }
-.btn-confirm:not(:disabled):hover { opacity: 0.88; }
-.btn-cancel {
-  width: 100%; padding: 12px; margin-top: 8px;
-  background: transparent; color: var(--text-muted);
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  font-family: 'Noto Sans KR', sans-serif; font-size: 13px;
-  cursor: pointer; transition: border-color 0.15s;
-}
-.btn-cancel:hover { border-color: var(--border-md); }
-
-/* ── TOAST ──────────────────────────── */
+/* ── TOAST ───────────────────────────────────── */
 .toast {
   display: none; position: fixed;
   bottom: 1.5rem; left: 50%; transform: translateX(-50%);
@@ -281,7 +248,7 @@ body {
 }
 .toast.show { display: block; animation: toastUp 0.2s ease; }
 .toast.ok   { border-color: var(--green-border); color: var(--green); }
-.toast.err  { border-color: rgba(232,96,90,0.35); color: var(--red); }
+.toast.err  { border-color: var(--red-border); color: var(--red); }
 @keyframes toastUp {
   from { opacity:0; transform: translateX(-50%) translateY(8px); }
   to   { opacity:1; transform: translateX(-50%) translateY(0); }
@@ -295,149 +262,417 @@ body {
   <div class="topbar-left">
     <div class="topbar-logo">주방 <span>Panel</span></div>
     <div class="badge-kitchen">Kitchen</div>
+    <div class="ws-dot" id="wsDot" title="서버 연결 상태"></div>
   </div>
   <div class="clock" id="clock">--:--:--</div>
-</div>
-
-<!-- STATUS -->
-<div class="status-bar">
-  <div class="stat">
-    <div class="stat-val orange" id="statReady">0</div>
-    <div class="stat-lbl">준비 요청</div>
-  </div>
-  <div class="stat">
-    <div class="stat-val blue" id="statArrived">0</div>
-    <div class="stat-lbl">로봇 도착</div>
-  </div>
-  <div class="stat">
-    <div class="stat-val green" id="statLoaded">0</div>
-    <div class="stat-lbl">적재 완료</div>
-  </div>
 </div>
 
 <!-- MAIN -->
 <div class="page">
 
-  <div class="action-section">
-    <div class="section-label">액션</div>
-
-    <!-- 메뉴 준비 완료 -->
-    <div class="action-card ready" onclick="openMenuSheet()">
-      <div class="card-icon">🍳</div>
-      <div class="card-body">
-        <div class="card-title">메뉴 준비 완료</div>
-        <div class="card-desc">준비된 메뉴를 선택하고 로봇을 호출합니다</div>
-      </div>
-      <div class="card-arrow">›</div>
+  <!-- ── PANEL: idle ────────────────────────────────── -->
+  <div class="panel active" id="panel-idle">
+    <div class="state-card orange">
+      <div class="state-icon">🍳</div>
+      <div class="state-title">메뉴 준비 완료</div>
+      <div class="state-desc">준비된 메뉴를 선택하고 로봇을 주방으로 호출하세요</div>
     </div>
+    <button class="btn-primary" onclick="openMenuSheet()">메뉴 준비 완료 — 로봇 호출</button>
+  </div>
 
-    <!-- 로봇 도착 확인 -->
-    <div class="action-card arrived" onclick="sendAction('robotArrived', '로봇 도착 확인')">
-      <div class="card-icon">🤖</div>
-      <div class="card-body">
-        <div class="card-title">로봇 도착 확인</div>
-        <div class="card-desc">로봇이 주방에 도착한 것을 확인했습니다</div>
-      </div>
-      <div class="card-arrow">›</div>
+  <!-- ── PANEL: robot_coming ────────────────────────── -->
+  <div class="panel" id="panel-robot-coming">
+    <div class="state-card blue">
+      <div class="state-icon pulse">🤖</div>
+      <div class="state-title">로봇 이동 중</div>
+      <div class="state-desc">로봇이 주방으로 이동하고 있습니다<br>도착하면 알림이 표시됩니다</div>
+      <div class="info-badge">목적지: <span id="info-menu-name">—</span> → <span id="info-disp-id">—</span></div>
     </div>
+    <button class="btn-secondary" onclick="cancelTask()">취소 (대기 장소로 복귀)</button>
+  </div>
 
-    <!-- 적재 완료 -->
-    <div class="action-card loaded" onclick="sendAction('robotLoaded', '적재 완료')">
-      <div class="card-icon">📦</div>
-      <div class="card-body">
-        <div class="card-title">적재 완료</div>
-        <div class="card-desc">준비한 음식을 로봇에 모두 올렸습니다</div>
-      </div>
-      <div class="card-arrow">›</div>
+  <!-- ── PANEL: robot_at_kitchen ────────────────────── -->
+  <div class="panel" id="panel-robot-at-kitchen">
+    <div class="state-card green">
+      <div class="state-icon">🤖✅</div>
+      <div class="state-title">로봇 도착!</div>
+      <div class="state-desc">로봇이 주방에 도착했습니다<br>메뉴를 적재한 후 아래 버튼을 눌러 주세요</div>
+      <div class="info-badge">적재 목적지: <span id="info-disp-at-kitchen">—</span></div>
+    </div>
+    <button class="btn-primary green" onclick="onLoadComplete()">적재 완료 — 진열장으로 출발</button>
+  </div>
+
+  <!-- ── PANEL: robot_going_disp ───────────────────── -->
+  <div class="panel" id="panel-robot-going-disp">
+    <div class="state-card blue">
+      <div class="state-icon pulse">🚚</div>
+      <div class="state-title">진열장 이동 중</div>
+      <div class="state-desc">로봇이 진열장으로 이동 중입니다<br>직원 페이지에서 도착 확인 후 진열을 완료해 주세요</div>
+      <div class="info-badge">목적지: <span id="info-disp-going">—</span></div>
+    </div>
+    <a class="btn-secondary" id="btn-open-staff" href="/static/staff/staff.html" target="_blank" style="display:block; text-align:center; text-decoration:none; line-height:1.2; padding-top:15px;">
+      직원 페이지 열기 ↗
+    </a>
+  </div>
+
+  <!-- ── PANEL: robot_returning ────────────────────── -->
+  <div class="panel" id="panel-robot-returning">
+    <div class="state-card blue">
+      <div class="state-icon pulse">↩️</div>
+      <div class="state-title">로봇 귀환 중</div>
+      <div class="state-desc">직원이 진열을 완료했습니다<br>로봇이 주방으로 귀환하고 있습니다</div>
     </div>
   </div>
 
-  <!-- 로그 -->
+  <!-- ── PANEL: robot_back ─────────────────────────── -->
+  <div class="panel" id="panel-robot-back">
+    <div class="state-card green">
+      <div class="state-icon">🤖🏁</div>
+      <div class="state-title">로봇 귀환 완료</div>
+      <div class="state-desc">로봇이 주방으로 돌아왔습니다<br>업무를 완료하거나 다시 시도하세요</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-primary green" onclick="onFinalOk()" style="flex:2">완료 (대기 장소 복귀)</button>
+      <button class="btn-secondary red" onclick="onFinalRetry()" style="flex:1">재시도</button>
+    </div>
+  </div>
+
+  <!-- ── PANEL: completed ──────────────────────────── -->
+  <div class="panel" id="panel-completed">
+    <div class="state-card green">
+      <div class="state-icon">✅</div>
+      <div class="state-title">업무 완료!</div>
+      <div class="state-desc">메뉴 운반 업무가 완료되었습니다<br>로봇은 대기 장소로 이동합니다</div>
+    </div>
+    <button class="btn-secondary" onclick="reset()">초기화 — 다음 업무 시작</button>
+  </div>
+
+  <!-- ── PANEL: failed ─────────────────────────────── -->
+  <div class="panel" id="panel-failed">
+    <div class="state-card red">
+      <div class="state-icon">⚠️</div>
+      <div class="state-title">오류 발생</div>
+      <div class="state-desc" id="fail-desc">알 수 없는 오류</div>
+    </div>
+    <button class="btn-secondary" onclick="reset()">초기화</button>
+  </div>
+
+  <!-- ── ACTIVITY LOG ──────────────────────────────── -->
   <div class="log-section">
-    <div class="section-label">전송 기록</div>
+    <div class="section-label">활동 기록</div>
     <div class="log-list" id="logList">
-      <div class="log-empty" id="logEmpty">전송 기록이 없습니다</div>
+      <div class="log-empty" id="logEmpty">활동 기록이 없습니다</div>
     </div>
   </div>
-
 </div>
 
 <!-- 메뉴 선택 바텀 시트 -->
 <div class="overlay" id="menuOverlay" onclick="handleOverlay(event)">
   <div class="sheet">
     <div class="sheet-handle"></div>
-    <div class="sheet-title">메뉴 준비 완료</div>
-    <div class="sheet-sub">준비된 메뉴를 선택하고 로봇을 호출하세요</div>
-
+    <div class="sheet-title">메뉴 선택</div>
+    <div class="sheet-sub">준비된 메뉴를 선택하세요. 해당 메뉴의 진열장으로 로봇이 이동합니다.</div>
     <div class="menu-grid" id="menuGrid">
-      <!-- JS로 렌더링 -->
+      <div class="log-empty">메뉴 정보 로딩 중...</div>
     </div>
-
-    <div class="sheet-qty">
-      <label>준비 수량</label>
-      <div class="qty-control">
-        <button class="qty-btn" onclick="changeQty(-1)">−</button>
-        <div class="qty-val" id="qtyVal">1</div>
-        <button class="qty-btn" onclick="changeQty(1)">＋</button>
-      </div>
-    </div>
-
-    <button class="btn-confirm" id="btnConfirm" onclick="confirmMenu()" disabled>
-      메뉴 선택 후 로봇 호출
+    <button class="btn-primary" id="btnConfirm" onclick="confirmMenu()" disabled>
+      로봇 호출
     </button>
-    <button class="btn-cancel" onclick="closeMenuSheet()">취소</button>
+    <button class="btn-secondary" onclick="closeMenuSheet()">취소</button>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script>
-const SERVER_URL = localStorage.getItem('buffetServerUrl') || (window.location.origin + '/api/kitchen');
+// ── Constants ────────────────────────────────────────────────
+const LS_KEY = 'kitchen_task_state';
+const FSM_ARRIVED = 5;
+const ROBOT_ARRIVED = 3;  // RobotStatus.ARRIVED
 
-// 관리자 페이지 localStorage와 공유
-const DEFAULT_MENUS = [
-  { id:1, name:'스테이크', icon:'🥩', location:'A구역 3번 진열대' },
-  { id:2, name:'샐러드',   icon:'🥗', location:'B구역 1번 진열대' },
-  { id:3, name:'초밥',     icon:'🍣', location:'C구역 2번 진열대' },
-  { id:4, name:'음료수',   icon:'🥤', location:'음료 코너' },
-];
+// ── State ────────────────────────────────────────────────────
+// state: 'idle' | 'robot_coming' | 'robot_at_kitchen' |
+//        'robot_going_disp' | 'robot_returning' | 'robot_back' |
+//        'completed' | 'failed'
+let state = 'idle';
+let taskId = null;
+let dispId = null;
+let menuName = null;
+let robotId = null;
 
-function getMenus() {
+// ── localStorage helpers ─────────────────────────────────────
+function saveLsState(stage) {
+  if (!taskId) return;
+  localStorage.setItem(LS_KEY, JSON.stringify({
+    task_id: taskId,
+    disp_id: dispId,
+    menu_name: menuName,
+    robot_id: robotId,
+    stage,
+  }));
+}
+
+function clearLsState() {
+  localStorage.removeItem(LS_KEY);
+}
+
+function loadLsState() {
   try {
-    const stored = localStorage.getItem('buffetMenuItems');
-    if (stored) {
-      const items = JSON.parse(stored);
-      if (items.length > 0) return items.sort((a,b) => a.order - b.order);
+    const raw = localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+// ── State machine ────────────────────────────────────────────
+function setState(newState) {
+  state = newState;
+  renderPanel();
+
+  // Sync localStorage stage for staff page
+  if (newState === 'robot_coming')       saveLsState(1);
+  else if (newState === 'robot_at_kitchen') saveLsState(1);
+  else if (newState === 'robot_going_disp') saveLsState(2);
+  else if (newState === 'robot_returning')  saveLsState(3);
+  else if (newState === 'robot_back')       saveLsState(3);
+  else if (newState === 'completed' || newState === 'idle') clearLsState();
+}
+
+function renderPanel() {
+  const panels = [
+    'idle','robot-coming','robot-at-kitchen','robot-going-disp',
+    'robot-returning','robot-back','completed','failed',
+  ];
+  for (const p of panels) {
+    const el = document.getElementById('panel-' + p);
+    if (el) el.classList.toggle('active', p === state.replace(/_/g, '-'));
+  }
+
+  // Update info labels
+  if (menuName) {
+    const els = document.querySelectorAll(
+      '#info-menu-name, #info-disp-at-kitchen, #info-disp-going'
+    );
+    els.forEach(e => e.textContent = menuName);
+  }
+  if (dispId) {
+    const d = document.getElementById('info-disp-id');
+    if (d) d.textContent = dispId;
+    const d2 = document.getElementById('info-disp-going');
+    if (d2) d2.textContent = dispId;
+  }
+}
+
+// ── Action handlers ──────────────────────────────────────────
+
+async function onLoadComplete() {
+  // Robot is at kitchen — user loaded food → send robot to DISP
+  if (state !== 'robot_at_kitchen' || !taskId || !dispId) return;
+  setState('robot_going_disp');
+  addLog(`적재 완료 — 로봇이 ${dispId}(으)로 출발`, 'green');
+  try {
+    await fetch(`/api/tasks/${taskId}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'ok', next_dest: dispId }),
+    });
+  } catch (e) {
+    showToast('⚠ 서버 오류: ' + e.message, 'err');
+  }
+}
+
+async function onFinalOk() {
+  // Robot returned to kitchen — mark task complete
+  if (state !== 'robot_back' || !taskId) return;
+  addLog('업무 완료 확인 — 로봇 대기 장소 복귀', 'green');
+  try {
+    await fetch(`/api/tasks/${taskId}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'ok' }),
+    });
+  } catch (e) { /* best-effort */ }
+  setState('completed');
+}
+
+async function onFinalRetry() {
+  // Re-dispatch robot to KITCHEN (original dest)
+  if (state !== 'robot_back' || !taskId) return;
+  addLog('재시도 — 로봇을 주방으로 다시 호출', 'orange');
+  setState('robot_coming');
+  try {
+    await fetch(`/api/tasks/${taskId}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'retry' }),
+    });
+  } catch (e) { /* best-effort */ }
+}
+
+async function cancelTask() {
+  addLog('취소됨', 'red');
+  clearLsState();
+  taskId = null; dispId = null; menuName = null; robotId = null;
+  setState('idle');
+}
+
+function reset() {
+  clearLsState();
+  taskId = null; dispId = null; menuName = null; robotId = null;
+  setState('idle');
+}
+
+// ── WebSocket ────────────────────────────────────────────────
+let ws = null;
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById('wsDot').className = 'ws-dot ok';
+  };
+  ws.onclose = () => {
+    document.getElementById('wsDot').className = 'ws-dot err';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => {
+    document.getElementById('wsDot').className = 'ws-dot err';
+  };
+  ws.onmessage = (evt) => {
+    try {
+      const data = JSON.parse(evt.data);
+      handleWsEvent(data);
+    } catch {}
+  };
+}
+
+function handleWsEvent(data) {
+  if (data.event !== 'status') return;
+  if (!taskId || data.current_task !== taskId) return;
+
+  // Track robot_id
+  if (data.robot_id) robotId = data.robot_id;
+
+  const arrived = (data.robot_status === ROBOT_ARRIVED || data.fsm_state === FSM_ARRIVED);
+  if (!arrived) return;
+
+  if (state === 'robot_coming') {
+    // Robot arrived at KITCHEN (first leg)
+    addLog('로봇이 주방에 도착했습니다', 'blue');
+    setState('robot_at_kitchen');
+  } else if (state === 'robot_returning') {
+    // Robot arrived back at KITCHEN (third leg)
+    addLog('로봇이 주방으로 귀환했습니다', 'blue');
+    setState('robot_back');
+  }
+  // stage=2 arrivals (at DISP) are handled by the staff page
+}
+
+// Also listen for localStorage updates from staff page
+window.addEventListener('storage', (e) => {
+  if (e.key !== LS_KEY) return;
+  const data = e.newValue ? JSON.parse(e.newValue) : null;
+  if (!data || data.task_id !== taskId) return;
+
+  if (data.stage === 3 && state === 'robot_going_disp') {
+    // Staff confirmed 음식진열완료 — robot is heading back
+    addLog('직원 진열 완료 — 로봇 귀환 중', 'green');
+    setState('robot_returning');
+  }
+});
+
+// ── Menu sheet ───────────────────────────────────────────────
+let menus = [];
+let selectedMenuId = null;
+
+async function openMenuSheet() {
+  selectedMenuId = null;
+  document.getElementById('btnConfirm').disabled = true;
+
+  // Load menus from server
+  try {
+    const resp = await fetch('/api/menu-items');
+    const json = await resp.json();
+    menus = (json.menu_items || []).filter(m => m.is_available);
+  } catch {
+    menus = [];
+  }
+
+  if (menus.length === 0) {
+    document.getElementById('menuGrid').innerHTML =
+      '<div class="log-empty" style="grid-column:span 2">등록된 메뉴가 없습니다</div>';
+  } else {
+    document.getElementById('menuGrid').innerHTML = menus.map(m => `
+      <div class="menu-chip" id="mchip-${m.menu_id}" onclick="selectMenu(${m.menu_id})">
+        <div class="menu-chip-name">${escHtml(m.name)}</div>
+        <div class="menu-chip-loc">${escHtml(m.place_id)}</div>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('menuOverlay').classList.add('show');
+}
+
+function selectMenu(id) {
+  selectedMenuId = id;
+  document.querySelectorAll('.menu-chip').forEach(c => c.classList.remove('selected'));
+  const chip = document.getElementById('mchip-' + id);
+  if (chip) chip.classList.add('selected');
+  document.getElementById('btnConfirm').disabled = false;
+}
+
+async function confirmMenu() {
+  if (!selectedMenuId) return;
+  const menu = menus.find(m => m.menu_id === selectedMenuId);
+  if (!menu) return;
+  closeMenuSheet();
+
+  menuName = menu.name;
+  dispId   = menu.place_id;
+
+  addLog(`메뉴 준비 완료 · ${menuName} → ${dispId}`, 'orange');
+  setState('robot_coming');
+
+  try {
+    const resp = await fetch('/api/kitchen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'menu_ready', disp_id: dispId }),
+    });
+    const json = await resp.json();
+    if (json.ok && json.task_id) {
+      taskId = json.task_id;
+      saveLsState(1);
+      addLog(`태스크 생성됨: ${taskId.slice(-8)}`, 'blue');
+      showToast('✓ 로봇을 호출했습니다', 'ok');
+    } else {
+      throw new Error(json.detail || '서버 오류');
     }
-  } catch(e) {}
-  return DEFAULT_MENUS;
+  } catch (e) {
+    showToast('⚠ 호출 실패: ' + e.message, 'err');
+    addLog('태스크 생성 실패: ' + e.message, 'red');
+    setState('failed');
+    document.getElementById('fail-desc').textContent = e.message;
+    clearLsState();
+  }
 }
 
-let selectedMenu = null;
-let qty = 1;
-const counts = { ready: 0, arrived: 0, loaded: 0 };
+function closeMenuSheet() {
+  document.getElementById('menuOverlay').classList.remove('show');
+}
+
+function handleOverlay(e) {
+  if (e.target === document.getElementById('menuOverlay')) closeMenuSheet();
+}
+
+// ── Log ──────────────────────────────────────────────────────
 const logs = [];
-
-// ── CLOCK ──────────────────────────────
-function updateClock() {
-  const now = new Date();
-  document.getElementById('clock').textContent =
-    now.toLocaleTimeString('ko-KR', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false });
-}
-setInterval(updateClock, 1000);
-updateClock();
-
-// ── STATS ──────────────────────────────
-function updateStats() {
-  document.getElementById('statReady').textContent   = counts.ready;
-  document.getElementById('statArrived').textContent = counts.arrived;
-  document.getElementById('statLoaded').textContent  = counts.loaded;
-}
-
-// ── LOG ────────────────────────────────
 function addLog(text, color) {
-  logs.unshift({ text, color, time: new Date().toLocaleTimeString('ko-KR', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }) });
-  if (logs.length > 20) logs.pop();
+  const time = new Date().toLocaleTimeString('ko-KR', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  });
+  logs.unshift({ text, color, time });
+  if (logs.length > 30) logs.pop();
   renderLog();
 }
 function renderLog() {
@@ -448,86 +683,58 @@ function renderLog() {
   list.innerHTML = logs.map(l => `
     <div class="log-item">
       <div class="log-dot ${l.color}"></div>
-      <div class="log-text">${l.text}</div>
+      <div class="log-text">${escHtml(l.text)}</div>
       <div class="log-time">${l.time}</div>
     </div>
   `).join('');
 }
 
-// ── SEND ───────────────────────────────
-async function sendAction(type, label, extra) {
-  const payload = { type, label, timestamp: new Date().toISOString(), ...extra };
-  try {
-    const res = await fetch(SERVER_URL, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+// ── Clock ────────────────────────────────────────────────────
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString('ko-KR', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
     });
-    const ok = res.ok;
-    showToast((ok ? '✓ ' : '⚠ ') + label + (ok ? ' 전송됨' : ' — 서버 오류'), ok ? 'ok' : 'err');
-  } catch {
-    showToast('✓ [데모] ' + label + ' 전송됨', 'ok');
-  }
-
-  if (type === 'menuReady')     { counts.ready++;   addLog('메뉴 준비 완료 · ' + (extra.menu||'') + ' × ' + (extra.qty||1) + '개', 'orange'); }
-  if (type === 'robotArrived')  { counts.arrived++;  addLog('로봇 도착 확인', 'blue'); }
-  if (type === 'robotLoaded')   { counts.loaded++;   addLog('적재 완료 — 로봇 출발 대기', 'green'); }
-  updateStats();
 }
+setInterval(updateClock, 1000);
+updateClock();
 
-// ── MENU SHEET ─────────────────────────
-function openMenuSheet() {
-  selectedMenu = null; qty = 1;
-  document.getElementById('qtyVal').textContent = '1';
-  document.getElementById('btnConfirm').disabled = true;
-
-  const menus = getMenus();
-  document.getElementById('menuGrid').innerHTML = menus.map(m => `
-    <div class="menu-chip" id="chip-${m.id}" onclick="selectMenu(${m.id})">
-      <div class="menu-chip-icon">${m.icon || '🍽️'}</div>
-      <div class="menu-chip-name">${m.name}</div>
-      <div class="menu-chip-loc">${m.location || ''}</div>
-    </div>
-  `).join('');
-
-  document.getElementById('menuOverlay').classList.add('show');
-}
-
-function selectMenu(id) {
-  selectedMenu = id;
-  document.querySelectorAll('.menu-chip').forEach(c => c.classList.remove('selected'));
-  const chip = document.getElementById('chip-' + id);
-  if (chip) chip.classList.add('selected');
-  document.getElementById('btnConfirm').disabled = false;
-}
-
-function changeQty(delta) {
-  qty = Math.max(1, Math.min(99, qty + delta));
-  document.getElementById('qtyVal').textContent = qty;
-}
-
-function confirmMenu() {
-  if (!selectedMenu) return;
-  const menus = getMenus();
-  const menu = menus.find(m => m.id === selectedMenu);
-  closeMenuSheet();
-  sendAction('menuReady', '메뉴 준비 완료', { menu: menu ? menu.name : '알 수 없음', qty });
-}
-
-function closeMenuSheet() {
-  document.getElementById('menuOverlay').classList.remove('show');
-}
-function handleOverlay(e) {
-  if (e.target === document.getElementById('menuOverlay')) closeMenuSheet();
-}
-
-// ── TOAST ──────────────────────────────
+// ── Toast ────────────────────────────────────────────────────
 function showToast(msg, type) {
   const t = document.getElementById('toast');
   t.textContent = msg;
-  t.className = 'toast ' + type + ' show';
+  t.className = 'toast show ' + (type || '');
   clearTimeout(t._t);
-  t._t = setTimeout(() => t.className = 'toast', 2800);
+  t._t = setTimeout(() => { t.className = 'toast'; }, 3000);
 }
+
+// ── Helpers ──────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Restore state on page reload ─────────────────────────────
+(function restoreState() {
+  const saved = loadLsState();
+  if (!saved || !saved.task_id) return;
+
+  taskId   = saved.task_id;
+  dispId   = saved.disp_id;
+  menuName = saved.menu_name;
+  robotId  = saved.robot_id || null;
+
+  const stage = saved.stage || 1;
+  if (stage === 1) setState('robot_coming');
+  else if (stage === 2) setState('robot_going_disp');
+  else if (stage === 3) setState('robot_returning');
+
+  addLog(`이전 태스크 복원 (${taskId.slice(-8)}, 단계 ${stage})`, 'blue');
+})();
+
+// ── Boot ─────────────────────────────────────────────────────
+connectWS();
 </script>
 </body>
 </html>
