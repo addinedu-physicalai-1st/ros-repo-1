@@ -449,6 +449,19 @@ class Database:
         )
         await conn.commit()
 
+    async def mark_robot_moving(
+        self,
+        conn: aiosqlite.Connection,
+        robot_id: str,
+        current_task_id: str = "",
+    ) -> None:
+        now = _ts_now_ms()
+        await conn.execute(
+            "UPDATE robots SET status = ?, current_task_id = ?, last_seen_ms = ? WHERE robot_id = ?",
+            (int(pb.RobotStatus.MOVING), current_task_id, now, robot_id),
+        )
+        await conn.commit()
+
     async def mark_robot_offline(self, conn: aiosqlite.Connection, robot_id: str) -> None:
         now = _ts_now_ms()
         await conn.execute(

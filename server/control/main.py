@@ -308,6 +308,7 @@ async def _dispatch_move_to(
         )
         await db.assign_task_robot(conn, task_id, robot_id)
         await db.update_task_status(conn, task_id=task_id, status=int(pb.TaskStatus.IN_PROGRESS))
+        await db.mark_robot_moving(conn, robot_id, current_task_id=task_id)
 
     sess = await manager.get_session(robot_id)
     if sess is None:
