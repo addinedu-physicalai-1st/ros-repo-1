@@ -19,6 +19,7 @@ Usage::
 from __future__ import annotations
 
 import math
+import os
 import sys
 from pathlib import Path as _Path
 from typing import List, Optional, Tuple
@@ -58,7 +59,16 @@ REFRESH_HZ = 10.0
 class Monitor(Node):
     def __init__(self, buffet_map: BuffetMap) -> None:
         super().__init__("planner_monitor")
-        self.set_parameters([Parameter("use_sim_time", value=True)])
+        # Sim uses Gazebo's /clock; real robot uses wall time.
+        use_sim_time = os.environ.get(
+            "DEMO_USE_SIM_TIME", "true"
+        ).lower() in ("1", "true", "yes", "on")
+        self.set_parameters([Parameter("use_sim_time", value=use_sim_time)])
+        self.get_logger().info(
+            f"use_sim_time={use_sim_time} "
+            f"(DEMO_USE_SIM_TIME="
+            f"{os.environ.get('DEMO_USE_SIM_TIME', '<unset>')})"
+        )
         self.bm = buffet_map
         self.graph = buffet_map.graph
 

@@ -21,9 +21,22 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+
+def _env_use_sim_time() -> bool:
+    """Return True iff DEMO_USE_SIM_TIME env var is set to a truthy value.
+
+    Defaults to True (the demo's primary workflow is Gazebo). Set
+    ``DEMO_USE_SIM_TIME=false`` when running against a real robot so
+    the ROS node uses wall time and TF lookups succeed.
+    """
+    return os.environ.get("DEMO_USE_SIM_TIME", "true").lower() in (
+        "1", "true", "yes", "on",
+    )
 
 import rclpy
 from rclpy.node import Node
@@ -188,10 +201,14 @@ class PlannerBridge(Node):
 
     def __init__(self, buffet_map: BuffetMap, goal_label: str) -> None:
         super().__init__("planner_bridge")
-        # Use Gazebo's simulated clock (otherwise TF lookups in 'map'
-        # frame fail because AMCL publishes with sim time but the
-        # node defaults to wall time).
-        self.set_parameters([Parameter("use_sim_time", value=True)])
+        # Clock domain: sim uses Gazebo's /clock; real robot uses wall
+        # time. Controlled by DEMO_USE_SIM_TIME env var (default true).
+        use_sim_time = _env_use_sim_time()
+        self.set_parameters([Parameter("use_sim_time", value=use_sim_time)])
+        self.get_logger().info(
+            f"use_sim_time={use_sim_time} "
+            f"(DEMO_USE_SIM_TIME={os.environ.get('DEMO_USE_SIM_TIME', '<unset>')})"
+        )
 
         self.buffet_map = buffet_map
         self.goal_label = goal_label

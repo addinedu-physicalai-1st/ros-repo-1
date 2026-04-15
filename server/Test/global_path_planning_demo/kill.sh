@@ -42,20 +42,33 @@ stop_group() {
     rm -f "${pidf}"
 }
 
+MODE_FILE="${RUN_DIR}/mode"
+MODE="$(cat "${MODE_FILE}" 2>/dev/null || echo unknown)"
+echo "[kill] mode=${MODE}"
+
 stop_group monitor
 stop_group nav2
-stop_group gazebo
+if [[ "${MODE}" != "real" ]]; then
+    stop_group gazebo
+fi
 
 # Sweep stragglers that ros2 launch likes to leave behind.
-for pat in \
-    "monitor.py" \
-    "nav2_bridge.py" \
-    "ros2 launch pinky_navigation" \
-    "ros2 launch pinky_gz_sim" \
-    "gz sim" \
-    "gz-sim-server" \
-    "ruby.*gz" \
-    "nav2_"; do
+SWEEP_PATTERNS=(
+    "monitor.py"
+    "nav2_bridge.py"
+    "ros2 launch pinky_navigation"
+    "nav2_"
+)
+if [[ "${MODE}" != "real" ]]; then
+    SWEEP_PATTERNS+=(
+        "ros2 launch pinky_gz_sim"
+        "gz sim"
+        "gz-sim-server"
+        "ruby.*gz"
+    )
+fi
+
+for pat in "${SWEEP_PATTERNS[@]}"; do
     pgrep -f "${pat}" >/dev/null 2>&1 && {
         echo "[kill] sweeping ${pat}"
         pkill -INT -f "${pat}" 2>/dev/null || true
@@ -63,14 +76,9 @@ for pat in \
 done
 
 sleep 1
-for pat in \
-    "ros2 launch pinky_navigation" \
-    "ros2 launch pinky_gz_sim" \
-    "gz sim" \
-    "gz-sim-server" \
-    "ruby.*gz" \
-    "nav2_"; do
+for pat in "${SWEEP_PATTERNS[@]}"; do
     pgrep -f "${pat}" >/dev/null 2>&1 && pkill -KILL -f "${pat}" 2>/dev/null || true
 done
 
+rm -f "${MODE_FILE}"
 echo "[kill] done"
