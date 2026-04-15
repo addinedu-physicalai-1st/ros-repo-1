@@ -5,8 +5,13 @@
 #   수거: CollectRequest, StartCollection, CollectionDone, MoveToDishwashing,
 #          RetryCollectRequest, CollectionEnd
 #   안내: MoveToRequester, GuideStart, RetryGuideStart, GuideEnd, RetryMoveToRequester
+#
+# 목표 위치는 x, y, theta(yaw, rad)만 전달하면 됩니다.
+# 나머지 PoseStamped 필드(frame_id, stamp, orientation)는 각 function 노드에서 자동으로 채웁니다.
 
 string command
 string session_id
-geometry_msgs/PoseStamped target_pose
+float64 x
+float64 y
+float64 theta
 int32 count

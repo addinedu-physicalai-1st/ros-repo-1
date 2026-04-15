@@ -43,7 +43,7 @@ class CollectFSM(FSMBase):
         node,
         done_callback: Callable,
         timeout_secs: float = 30.0,
-        max_request_count: int = 5,
+        max_request_count: int = 3,
     ):
         super().__init__(node, 'CollectFSM')
         self._done_callback = done_callback
@@ -122,7 +122,8 @@ class CollectFSM(FSMBase):
         if self._state == CollectState.COLLECT_INIT:
             if command == 'CollectRequest':
                 self._node.get_logger().info(
-                    f'[CollectFSM] CollectRequest 수신. 수거 위치: {msg.target_pose if msg else "N/A"}'
+                    f'[CollectFSM] CollectRequest 수신. 수거 위치: '
+                    f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}' if msg else 'N/A'
                 )
                 self._change_state(CollectState.MOVE_TO_COLLECT_LOC)
                 return True

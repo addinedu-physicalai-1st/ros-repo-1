@@ -1,7 +1,9 @@
 # HQ → ROBOT 작업 시작 요청 서비스
 # task_type: FOLLOW, DELIVERY, COLLECT, GUIDE
 string task_type
-geometry_msgs/PoseStamped[] target_poses
+float64 x
+float64 y
+float64 theta
 string session_id
 ---
 bool accepted

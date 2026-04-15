@@ -3,113 +3,106 @@
 <!--
   safety_layer.launch.xml
   ───────────────────────
-  Full safety pipeline:
+  Full safety pipeline (Camera-LiDAR Fusion 3-Zone System):
 
-      camera hardware (/dev/videoX)
-               │  VideoCapture (네트워크 트래픽 없음)
-               ├──────────────────────────────────────────────────────┐
-               ▼                                                      ▼
-   child_detection_node (YOLO)                         event_recorder_node
-               │                                          │  60s rolling buffer
-               ▼                                          │  safety_events/
-       /child_detected ──────────────────────────────────►│    video.mp4
-               │                                          │    lidar.csv
+      rost_camera node
+               │  /image (CompressedImage)
                ▼
-      navigation / teleop → /cmd_vel_raw
-               │
-       safety_layer_node → /safety_stop_event ──────────►event_recorder_node
-               │
-           /cmd_vel
-               │
-       robot base controller (rost_bringup)
+   child_detection_node (YOLO + LiDAR fusion)
+               │  child_safety_zone (String: NORMAL/MONITOR/CAUTION/STOP)
+               ├───────────────────────┬──────────────────────────────┐
+               ▼                       ▼                              ▼
+      safety_layer_node          event_recorder_node            buzzer_node
+      cmd_vel_raw →                STOP → 60s 버퍼             (CAUTION/STOP
+      CAUTION: 50% 감속              → mp4/csv 저장               경고음)
+      STOP: 속도 0
+      → /cmd_vel
 -->
 
 <launch>
     <arg name="use_sim_time" default="False"/>
 
-    <!-- Path to the YOLO weights file. Override at launch time as needed. -->
-    <arg name="model_path" default="best.pt"/>
+    <!-- YOLO 가중치 파일 경로 (기본값은 config/safety_layer.yaml 에서 관리) -->
+    <arg name="yolo_model" default="best.pt"/>
 
-    <!-- YOLO confidence threshold (0.0 – 1.0). -->
+    <!-- YOLO 신뢰도 임계값 (기본값은 config/safety_layer.yaml 에서 관리) -->
     <arg name="confidence" default="0.5"/>
 
-    <!-- OpenCV VideoCapture 인덱스 (0 = /dev/video0). -->
-    <arg name="camera_index" default="0"/>
+    <!--
+      그 외 모든 파라미터(zone_stop, zone_caution, zone_monitor, angle_window_deg,
+      camera_fx, camera_cx, caution_speed_scale, buffer_seconds, buzzer_pin 등)는
+      config/safety_layer.yaml 에서 수정하세요.
+    -->
 
-    <!-- 초당 캡처 및 추론 횟수. 높을수록 CPU 부하 증가. -->
-    <arg name="capture_rate_hz" default="10.0"/>
-
-    <!-- ── Publish_Camera ───────────────────────────────────────────────── -->
+    <!-- ── Camera publisher ──────────────────────────────────────────────── -->
     <node pkg="rost_camera" exec="camera_node" name="camera_node"
           output="screen">
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
     </node>
 
-    <!-- ── Child detection ───────────────────────────────────────────────── -->
+    <!-- ── Child detection (Camera-LiDAR 3-zone) ────────────────────────── -->
     <!--
-      OpenCV VideoCapture로 카메라를 직접 열고 YOLO 추론 결과만
-      /child_detected 에 퍼블리시합니다. /image_raw 토픽은 사용하지 않습니다.
+      /image + /scan을 구독해 YOLO 추론 및 LiDAR 거리 측정으로
+      NORMAL/MONITOR/CAUTION/STOP 구역을 결정합니다.
+      child_safety_zone (String) → safety_layer_node, event_recorder_node, buzzer_node
     -->
     <node pkg="rost_safety_layer" exec="child_detection_node" name="child_detection_node"
           output="screen">
-        <param name="use_sim_time"     value="$(var use_sim_time)"/>
-        <param name="model_path"       value="$(var model_path)"/>
-        <param name="confidence"       value="$(var confidence)"/>
-        <param name="camera_index"     value="$(var camera_index)"/>
-        <param name="capture_rate_hz"  value="$(var capture_rate_hz)"/>
-        <!-- 모델의 클래스 레이블이 다르면 아래 줄 주석을 해제하여 덮어씁니다. -->
-        <!-- <param name="child_class_names" value="['child', 'person_child']"/> -->
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <!-- config/safety_layer.yaml 에서 기본값 로드 -->
+        <param from="$(find-pkg-share rost_safety_layer)/config/safety_layer.yaml"/>
+        <!-- launch 인수로 자주 바꾸는 항목만 덮어쓰기 -->
+        <param name="yolo_model"  value="$(var yolo_model)"/>
+        <param name="confidence"  value="$(var confidence)"/>
     </node>
 
     <!-- ── Safety layer ──────────────────────────────────────────────────── -->
     <!--
-      Subscribes to /cmd_vel_raw and /child_detected.
-      Publishes safe velocity commands to /cmd_vel.
+      child_safety_zone (String) 구독:
+        STOP    → cmd_vel 속도 0 발행
+        CAUTION → cmd_vel_raw 를 caution_speed_scale 배율로 감속해 cmd_vel 발행
+        NORMAL/MONITOR → cmd_vel_raw 그대로 cmd_vel 발행
     -->
     <node pkg="rost_safety_layer" exec="safety_layer_node" name="safety_layer_node"
           output="screen">
         <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <param from="$(find-pkg-share rost_safety_layer)/config/safety_layer.yaml"/>
+    </node>
+
+    <!-- ── Buzzer node ───────────────────────────────────────────────────── -->
+    <!--
+      child_safety_zone (String) 구독:
+        CAUTION → beep_half_period_s ON/OFF 반복 (삐-삐-삐-)
+        STOP    → 계속 ON (삐 ───)
+        others  → OFF
+    -->
+    <node pkg="rost_safety_layer" exec="buzzer_node" name="buzzer_node"
+          output="screen">
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <param from="$(find-pkg-share rost_safety_layer)/config/safety_layer.yaml"/>
     </node>
 
     <!-- ── Event recorder ───────────────────────────────────────────────── -->
     <!--
-      /safety_stop_event=True 가 되면:
-        1. 직전 60초 버퍼를 video.mp4 로 덤프
-        2. live 프레임·라이다를 계속 기록
-        3. False 가 되면 video.mp4 닫고 lidar.csv 저장
-      camera_index 는 child_detection_node 와 같은 값을 사용하지만
-      두 노드가 독립적으로 cap을 엽니다 (USB 멀티 오픈 허용 여부는 드라이버 의존).
-      동일 카메라를 공유하려면 별도 카메라 서버 노드를 두는 것을 권장합니다.
+      child_safety_zone=STOP 시 직전 buffer_seconds 분량의 영상+라이다를 저장합니다.
     -->
     <node pkg="rost_safety_layer" exec="event_recorder_node" name="event_recorder_node"
           output="screen">
-        <param name="use_sim_time"      value="$(var use_sim_time)"/>
-        <param name="camera_index"      value="$(var camera_index)"/>
-        <param name="capture_rate_hz"   value="$(var capture_rate_hz)"/>
-        <!-- 버퍼 유지 시간(초). 기본 60초. -->
-        <!-- <param name="buffer_seconds" value="60.0"/> -->
-        <!-- 이벤트 저장 루트 디렉터리. 절대 경로 권장. -->
-        <!-- <param name="output_dir"     value="/home/pi/safety_events"/> -->
-        <!-- JPEG 압축 품질 (낮을수록 메모리 절약, 화질 저하). -->
-        <!-- <param name="jpeg_quality"   value="80"/> -->
-    </node>
-
-    <!-- ── Robot base controller ─────────────────────────────────────────── -->
-    <!-- <node pkg="rost_bringup" exec="bringup" name="rost_bringup">
         <param name="use_sim_time" value="$(var use_sim_time)"/>
-    </node> -->
+        <param from="$(find-pkg-share rost_safety_layer)/config/safety_layer.yaml"/>
+    </node>
 
     <!-- ── Navigation / teleop (examples) ───────────────────────────────── -->
     <!--
-      All velocity sources must publish to /cmd_vel_raw so commands flow
-      through the safety layer before reaching the base controller.
+      모든 속도 명령은 /cmd_vel_raw 로 발행해야 safety_layer를 통과합니다.
 
-      Teleop example:
+      Teleop 예:
         <node pkg="teleop_twist_keyboard" exec="teleop_twist_keyboard"
               name="teleop" output="screen">
             <remap from="cmd_vel" to="cmd_vel_raw"/>
         </node>
 
-      Nav2 example — set in your nav2_params.yaml:
+      Nav2 예 — nav2_params.yaml:
           controller_server:
             ros__parameters:
               cmd_vel_topic: cmd_vel_raw

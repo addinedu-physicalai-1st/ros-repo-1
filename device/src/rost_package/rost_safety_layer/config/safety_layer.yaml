@@ -1,0 +1,54 @@
+# safety_layer.yaml
+#
+# rost_safety_layer 전체 파이프라인 파라미터 기본값.
+# launch 파일에서 이 파일을 로드하며, ros2 launch 인수로 값을 덮어쓸 수 있다.
+#
+# 사용 예:
+#   ros2 launch rost_safety_layer safety_layer.launch.xml
+#   ros2 launch rost_safety_layer safety_layer.launch.xml yolo_model:=/abs/path/best.pt
+
+# ── child_detection_node ─────────────────────────────────────────────────────
+child_detection_node:
+  ros__parameters:
+    # YOLO 모델
+    yolo_model:         best.pt       # 모델 파일 경로 (절대경로 권장)
+    confidence:         0.5           # 감지 신뢰도 임계값 (0.0 – 1.0)
+    child_class_names:  [kid]         # 모델의 아이 클래스 레이블
+    yolo_interval_sec:  0.2           # YOLO 추론 최소 간격 (초)
+
+    # 3단계 구역 거리 임계값 (m)
+    zone_stop:          0.3           # 이 거리 미만 → STOP
+    zone_caution:       0.8           # 이 거리 미만 → CAUTION
+    zone_monitor:       1.5           # 이 거리 미만 → MONITOR
+
+    # LiDAR 탐색
+    angle_window_deg:   8.0           # LiDAR 탐색 반폭 (±도)
+    angle_offset_rad:   0.0           # 카메라-LiDAR 마운팅 보정 오프셋 (rad)
+
+    # 카메라 내부 파라미터 (/camera/camera_info 없을 때 fallback)
+    camera_fx:          0.0           # 초점거리 fx (px). 0이면 추론 차단됨
+    camera_cx:          0.0           # 주점 cx (px). 보통 이미지 너비 / 2
+
+    # 개발/디버그
+    show_window:        false         # OpenCV 감지 미리보기 창 표시 여부
+
+# ── safety_layer_node ────────────────────────────────────────────────────────
+safety_layer_node:
+  ros__parameters:
+    publish_rate_hz:      10.0        # 안전 로직 타이머 주기 (Hz)
+    zone_timeout_s:        1.0        # child_safety_zone 토픽 타임아웃 (초)
+    caution_speed_scale:   0.5        # CAUTION 구역 속도 감속 비율 (0.0 – 1.0)
+
+# ── event_recorder_node ──────────────────────────────────────────────────────
+event_recorder_node:
+  ros__parameters:
+    capture_rate_hz:  10.0            # 버퍼 저장 주기 (Hz)
+    buffer_seconds:   60.0            # 롤링 버퍼 유지 시간 (초)
+    output_dir:       safety_events   # 이벤트 저장 루트 디렉터리 (절대경로 권장)
+    jpeg_quality:     80              # JPEG 재압축 품질 (0 – 100)
+
+# ── buzzer_node ───────────────────────────────────────────────────────────────
+buzzer_node:
+  ros__parameters:
+    buzzer_pin:          18           # BCM GPIO 핀 번호 (Raspberry Pi)
+    beep_half_period_s:   0.3         # CAUTION 패턴 반주기 (초): ON→OFF 각각 이 시간

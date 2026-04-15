@@ -101,7 +101,8 @@ class GuideFSM(FSMBase):
         if self._state == GuideState.GUIDE_INIT:
             if command == 'MoveToRequester':
                 self._node.get_logger().info(
-                    f'[GuideFSM] MoveToRequester 수신. 요청자 위치: {msg.target_pose if msg else "N/A"}'
+                    f'[GuideFSM] MoveToRequester 수신. 요청자 위치: '
+                    f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}' if msg else 'N/A'
                 )
                 self._change_state(GuideState.MOVE_TO_GUIDE_REQUESTER)
                 return True
@@ -110,8 +111,6 @@ class GuideFSM(FSMBase):
         elif self._state == GuideState.VERIFY_AND_SELECT:
             if command == 'GuideStart':
                 self._node.get_logger().info('[GuideFSM] GuideStart 수신 → 안내 루프 시작')
-                if msg:
-                    self._current_target_pose = msg.target_pose
                 self._change_state(GuideState.GUIDE_LOOP)
                 self._change_state(GuideState.MOVE_TO_TARGET)
                 return True
@@ -128,8 +127,6 @@ class GuideFSM(FSMBase):
         elif self._state == GuideState.GUIDE_LOOP:
             if command == 'GuideStart':
                 self._node.get_logger().info('[GuideFSM] GuideStart(다음 목적지) 수신 → 이동 시작')
-                if msg:
-                    self._current_target_pose = msg.target_pose
                 self._change_state(GuideState.MOVE_TO_TARGET)
                 return True
             elif command == 'GuideEnd':
@@ -143,8 +140,6 @@ class GuideFSM(FSMBase):
                 self._node.get_logger().info(
                     '[GuideFSM] GuideStart(다음 목적지 또는 OK) 수신 → 루프 재진입'
                 )
-                if msg:
-                    self._current_target_pose = msg.target_pose
                 self._change_state(GuideState.GUIDE_LOOP)
                 self._change_state(GuideState.MOVE_TO_TARGET)
                 return True

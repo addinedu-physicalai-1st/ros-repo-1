@@ -97,7 +97,7 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 from sensor_msgs.msg import CompressedImage, LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import String
 from tf2_ros import TransformException
 
 # ── 기본 상수 ─────────────────────────────────────────────────────────────────
@@ -119,8 +119,11 @@ IMAGE_TOPIC = '/image'
 SCAN_TOPIC = 'scan'
 MAP_TOPIC = '/map'
 AMCL_POSE_TOPIC = '/amcl_pose'
-SAFETY_TOPIC = 'safety_stop_event'
+CHILD_SAFETY_ZONE_TOPIC = 'child_safety_zone'
 STOP_EVENT_FALSE_HOLD_S = 3.0
+STOP_DEBOUNCE_S = 0.5          # STOP 첫 수신 후 이 시간이 지나야 녹화 시작
+
+ZONE_STOP = 'STOP'
 
 # /map 은 Nav2 가 transient_local (latched) QoS 로 발행합니다.
 # 구독자도 동일 QoS 를 사용해야 늦게 참여해도 마지막 메시지를 수신합니다.
@@ -229,6 +232,7 @@ class EventRecorderNode(Node):
         self._last_safety_stop_state: bool = False
         self._event_lidar_rows: list = []
         self._stop_event_false_time: float | None = None
+        self._stop_first_seen_time: float | None = None   # 디바운스용
 
         # TF2 Buffer + TransformListener
         self._tf_buffer = tf2_ros.Buffer()
@@ -242,7 +246,7 @@ class EventRecorderNode(Node):
             LaserScan, SCAN_TOPIC, self._scan_callback, 10,
         )
         self.create_subscription(
-            Bool, SAFETY_TOPIC, self._safety_callback, 10,
+            String, CHILD_SAFETY_ZONE_TOPIC, self._safety_callback, 10,
         )
         # /map: transient_local QoS — Nav2 와 동일하게 맞춰야 메시지를 수신합니다.
         self.create_subscription(
@@ -300,19 +304,28 @@ class EventRecorderNode(Node):
         """AMCL 로봇 포즈를 캐시합니다."""
         self._pose_data = msg
 
-    def _safety_callback(self, msg: Bool):
-        """safety_stop_event 상태 변화에 반응합니다."""
-        if msg.data:
+    def _safety_callback(self, msg: String):
+        """child_safety_zone 상태 변화에 반응합니다. STOP 시 녹화를 시작합니다."""
+        is_stop = (msg.data == ZONE_STOP)
+        if is_stop:
             if not self._recording:
-                self._start_event()
+                # 처음 STOP을 본 시각을 기록해 두고, _capture_tick 에서 디바운스를 확인합니다.
+                if self._stop_first_seen_time is None:
+                    self._stop_first_seen_time = time.monotonic()
+                    self.get_logger().info(
+                        f'STOP 감지. {STOP_DEBOUNCE_S:.1f}s 유지되면 녹화를 시작합니다.'
+                    )
             self._stop_event_false_time = None
-        elif self._recording and self._last_safety_stop_state:
-            self._stop_event_false_time = time.monotonic()
-            self.get_logger().info(
-                f'safety_stop_event=False 감지. '
-                f'{STOP_EVENT_FALSE_HOLD_S:.1f}s 유지되면 녹화를 종료합니다.'
-            )
-        self._last_safety_stop_state = msg.data
+        else:
+            # STOP이 아닌 상태가 오면 디바운스 타이머를 초기화합니다.
+            self._stop_first_seen_time = None
+            if self._recording and self._last_safety_stop_state:
+                self._stop_event_false_time = time.monotonic()
+                self.get_logger().info(
+                    f'child_safety_zone STOP 해제 감지. '
+                    f'{STOP_EVENT_FALSE_HOLD_S:.1f}s 유지되면 녹화를 종료합니다.'
+                )
+        self._last_safety_stop_state = is_stop
 
     # =========================================================================
     # Capture tick (core loop)
@@ -366,7 +379,15 @@ class EventRecorderNode(Node):
                 self._lidar_writer.write(lidar_frame)
 
     def _check_delayed_stop(self):
-        """safety_stop_event=False 가 STOP_EVENT_FALSE_HOLD_S 초 유지되면 종료."""
+        """디바운스 후 녹화 시작 / STOP_EVENT_FALSE_HOLD_S 초 유지 후 녹화 종료."""
+        # ── 디바운스: STOP_DEBOUNCE_S 경과 후 녹화 시작 ──────────────────────
+        if not self._recording and self._stop_first_seen_time is not None:
+            if time.monotonic() - self._stop_first_seen_time >= STOP_DEBOUNCE_S:
+                self._stop_first_seen_time = None
+                self._start_event()
+                return
+
+        # ── 녹화 종료 대기 ────────────────────────────────────────────────────
         if not self._recording or self._stop_event_false_time is None:
             return
         if time.monotonic() - self._stop_event_false_time >= STOP_EVENT_FALSE_HOLD_S:

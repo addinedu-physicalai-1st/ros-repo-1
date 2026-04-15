@@ -24,6 +24,7 @@ from std_msgs.msg import String
 from rost_state_machine.msg import RobotCommand
 from rost_function.core.navigation_client import NavigationClient
 from rost_function.core.event_publisher import EventPublisher
+from rost_function.core.pose_utils import pose_from_xyt
 
 
 class GuideFunctionNode(Node):
@@ -105,41 +106,38 @@ class GuideFunctionNode(Node):
 
         if cmd == 'MoveToRequester':
             # 요청자 위치로 이동
-            self._requester_pose = msg.target_pose
+            self._requester_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self._guide_phase = 'to_requester'
             self.get_logger().info(
                 f'[GuideFunc] MoveToRequester — 요청자 위치로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
         elif cmd == 'RetryMoveToRequester':
             # 새 요청자 위치로 재이동
-            self._requester_pose = msg.target_pose
+            self._requester_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self._guide_phase = 'to_requester'
             self.get_logger().info(
                 f'[GuideFunc] RetryMoveToRequester — 요청자 재이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
         elif cmd == 'GuideStart':
             # 안내 목적지로 이동
-            self._current_target_pose = msg.target_pose
+            self._current_target_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self._guide_phase = 'to_target'
             self.get_logger().info(
                 f'[GuideFunc] GuideStart — 안내 목적지로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._current_target_pose, on_arrived=self._on_arrived_target)
 
         elif cmd == 'RetryGuideStart':
-            # 동일 안내 목적지 재이동
-            if msg.target_pose and msg.target_pose.header.frame_id:
-                self._current_target_pose = msg.target_pose
+            # 동일 안내 목적지 재이동 (HQ가 새 좌표를 보냈으면 갱신)
+            if msg.x != 0.0 or msg.y != 0.0:
+                self._current_target_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[GuideFunc] RetryGuideStart — 동일 목적지 재이동: '
                 f'({self._current_target_pose.pose.position.x:.2f}, '

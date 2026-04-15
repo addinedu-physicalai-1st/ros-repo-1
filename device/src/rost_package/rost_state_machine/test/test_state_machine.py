@@ -25,19 +25,8 @@ HQ 역할을 시뮬레이션하는 테스트 노드.
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32, String
-from geometry_msgs.msg import PoseStamped
 
 from rost_state_machine.msg import RobotCommand, RobotEvent
-
-
-def _make_pose(x: float = 0.0, y: float = 0.0) -> PoseStamped:
-    """간단한 PoseStamped 생성 헬퍼"""
-    pose = PoseStamped()
-    pose.header.frame_id = 'map'
-    pose.pose.position.x = x
-    pose.pose.position.y = y
-    pose.pose.orientation.w = 1.0
-    return pose
 
 
 class HQSimulatorNode(Node):
@@ -88,16 +77,16 @@ class HQSimulatorNode(Node):
     # ------------------------------------------------------------------ #
 
     def _send_command(self, command: str, session_id: str = 'sim-001',
-                      target_pose: PoseStamped = None, count: int = 0) -> None:
+                      x: float = 0.0, y: float = 0.0, theta: float = 0.0,
+                      count: int = 0) -> None:
         """HQ → ROBOT 명령 전송"""
         msg = RobotCommand()
         msg.command = command
         msg.session_id = session_id
+        msg.x = x
+        msg.y = y
+        msg.theta = theta
         msg.count = count
-        if target_pose:
-            msg.target_pose = target_pose
-        else:
-            msg.target_pose = _make_pose()
         self._cmd_pub.publish(msg)
         self.get_logger().info(f'[HQ → ROBOT] 명령 전송: {command}')
 

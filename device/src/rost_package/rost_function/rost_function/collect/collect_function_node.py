@@ -22,8 +22,6 @@ collect_function_node.py
   battery_low        : 배터리 부족 임계값 % (기본 20.0)
 """
 
-import math
-
 import rclpy
 from rclpy.node import Node
 
@@ -34,6 +32,7 @@ from sensor_msgs.msg import BatteryState
 from rost_state_machine.msg import RobotCommand
 from rost_function.core.navigation_client import NavigationClient
 from rost_function.core.event_publisher import EventPublisher
+from rost_function.core.pose_utils import pose_from_xyt
 
 
 class CollectFunctionNode(Node):
@@ -131,21 +130,19 @@ class CollectFunctionNode(Node):
 
         if cmd == 'CollectRequest':
             # 수거 위치로 이동
-            self._requester_pose = msg.target_pose
+            self._requester_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[CollectFunc] CollectRequest — 수거 위치로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
         elif cmd == 'RetryCollectRequest':
             # 새 위치로 재이동
-            new_pose = msg.target_pose if msg.target_pose else self._requester_pose
-            self._requester_pose = new_pose
+            self._requester_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[CollectFunc] RetryCollectRequest — 재이동: '
-                f'({new_pose.pose.position.x:.2f}, {new_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
@@ -206,7 +203,7 @@ class CollectFunctionNode(Node):
         x = self.get_parameter('dishwash_pos_x').value
         y = self.get_parameter('dishwash_pos_y').value
         theta = self.get_parameter('dishwash_pos_theta').value
-        pose = self._make_pose(x, y, theta)
+        pose = pose_from_xyt(self, x, y, theta)
         self.get_logger().info(f'[CollectFunc] 설거지장으로 이동: ({x:.2f}, {y:.2f})')
         self._nav.send_goal(pose, on_arrived=self._on_arrived_dishwash)
 
@@ -216,16 +213,6 @@ class CollectFunctionNode(Node):
         self._session_id = ''
         self._requester_pose = None
         self._request_count = 0
-
-    @staticmethod
-    def _make_pose(x: float, y: float, theta: float) -> PoseStamped:
-        pose = PoseStamped()
-        pose.header.frame_id = 'map'
-        pose.pose.position.x = x
-        pose.pose.position.y = y
-        pose.pose.orientation.z = math.sin(theta / 2.0)
-        pose.pose.orientation.w = math.cos(theta / 2.0)
-        return pose
 
 
 def main(args=None):

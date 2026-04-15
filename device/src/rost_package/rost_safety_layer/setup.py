@@ -14,6 +14,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch',
             glob.glob(os.path.join('launch', '*launch.*'))),
+        ('share/' + package_name + '/config',
+            glob.glob(os.path.join('config', '*.yaml'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,6 +29,8 @@ setup(
             'safety_layer_node=rost_safety_layer.safety_layer_node:main',
             'child_detection_node=rost_safety_layer.child_detection_node:main',
             'event_recorder_node=rost_safety_layer.event_recorder_node:main',
+            'buzzer_node=rost_safety_layer.buzzer_node:main',
+            'fake_scan_node=rost_safety_layer.fake_scan_node:main',
         ],
     },
 )

@@ -103,10 +103,9 @@ class DeliveryFSM(FSMBase):
         if self._state == DeliveryState.DELIVERY_INIT:
             if command == 'MoveToKitchen':
                 self._node.get_logger().info(
-                    f'[DeliveryFSM] MoveToKitchen 수신. 주방 좌표: {msg.target_pose if msg else "N/A"}'
+                    f'[DeliveryFSM] MoveToKitchen 수신. 주방 좌표: '
+                    f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}' if msg else 'N/A'
                 )
-                if msg:
-                    self._current_target_pose = msg.target_pose
                 self._change_state(DeliveryState.MOVE_TO_KITCHEN)
                 return True
 
@@ -114,8 +113,6 @@ class DeliveryFSM(FSMBase):
         elif self._state == DeliveryState.LOADING:
             if command == 'StartDelivery':
                 self._node.get_logger().info('[DeliveryFSM] StartDelivery 수신 → 배송 루프 시작')
-                if msg:
-                    self._current_target_pose = msg.target_pose
                 self._change_state(DeliveryState.DELIVERY_LOOP)
                 # 바로 첫 목적지로 이동
                 self._change_state(DeliveryState.MOVE_TO_MENU_LOC)
@@ -125,8 +122,6 @@ class DeliveryFSM(FSMBase):
         elif self._state == DeliveryState.DELIVERY_LOOP:
             if command == 'StartDelivery':
                 self._node.get_logger().info('[DeliveryFSM] 다음 배송 목적지 수신')
-                if msg:
-                    self._current_target_pose = msg.target_pose
                 self._change_state(DeliveryState.MOVE_TO_MENU_LOC)
                 return True
             elif command == 'DeliveryEnd':
@@ -138,8 +133,6 @@ class DeliveryFSM(FSMBase):
         elif self._state == DeliveryState.UNLOAD_MENU:
             if command == 'StartDelivery':
                 self._node.get_logger().info('[DeliveryFSM] 다음 배송 목적지 수신 → 배송 루프 재진입')
-                if msg:
-                    self._current_target_pose = msg.target_pose
                 self._change_state(DeliveryState.DELIVERY_LOOP)
                 self._change_state(DeliveryState.MOVE_TO_MENU_LOC)
                 return True

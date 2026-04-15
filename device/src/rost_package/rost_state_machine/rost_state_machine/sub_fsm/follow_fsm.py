@@ -121,7 +121,8 @@ class FollowFSM(FSMBase):
         if self._state == FollowState.FOLLOW_INIT:
             if command == 'FollowRequest':
                 self._node.get_logger().info(
-                    f'[FollowFSM] FollowRequest 수신. 목표: {msg.target_pose if msg else "N/A"}'
+                    f'[FollowFSM] FollowRequest 수신. 목표: '
+                    f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}' if msg else 'N/A'
                 )
                 self._change_state(FollowState.MOVE_TO_REQUESTER)
                 return True
@@ -155,11 +156,9 @@ class FollowFSM(FSMBase):
                 self._change_state(FollowState.FOLLOW_END)
                 return True
             elif command == 'GoToTable':
-                if msg:
-                    self._table_pose = msg.target_pose
                 self._node.get_logger().info(
                     f'[FollowFSM] GoToTable → 테이블로 이동: '
-                    f'{msg.target_pose.pose.position if msg else "N/A"}'
+                    f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}' if msg else 'N/A'
                 )
                 self._change_state(FollowState.MOVE_TO_TABLE)
                 return True

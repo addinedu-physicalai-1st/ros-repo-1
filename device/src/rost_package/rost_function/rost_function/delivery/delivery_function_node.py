@@ -25,6 +25,7 @@ from std_msgs.msg import String
 from rost_state_machine.msg import RobotCommand
 from rost_function.core.navigation_client import NavigationClient
 from rost_function.core.event_publisher import EventPublisher
+from rost_function.core.pose_utils import pose_from_xyt
 
 
 class DeliveryFunctionNode(Node):
@@ -106,30 +107,28 @@ class DeliveryFunctionNode(Node):
 
         if cmd == 'MoveToKitchen':
             # 주방으로 이동
-            self._kitchen_pose = msg.target_pose
+            self._kitchen_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self._delivery_phase = 'kitchen'
             self.get_logger().info(
                 f'[DeliveryFunc] MoveToKitchen — 주방으로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._kitchen_pose, on_arrived=self._on_arrived_kitchen)
 
         elif cmd == 'StartDelivery':
             # 배송 목적지 저장 및 이동
-            self._current_menu_pose = msg.target_pose
+            self._current_menu_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self._delivery_phase = 'menu'
             self.get_logger().info(
                 f'[DeliveryFunc] StartDelivery — 배송 목적지로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._current_menu_pose, on_arrived=self._on_arrived_menu_loc)
 
         elif cmd == 'RetryStartDelivery':
-            # 동일 목적지로 재이동
+            # 동일 목적지로 재이동 (이전 목적지가 없으면 현재 msg 값 사용)
             if self._current_menu_pose is None:
-                self._current_menu_pose = msg.target_pose
+                self._current_menu_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[DeliveryFunc] RetryStartDelivery — 동일 목적지 재이동: '
                 f'({self._current_menu_pose.pose.position.x:.2f}, '

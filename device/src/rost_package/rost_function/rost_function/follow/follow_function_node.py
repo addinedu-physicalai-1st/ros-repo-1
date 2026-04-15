@@ -33,6 +33,7 @@ from std_msgs.msg import String
 from rost_state_machine.msg import RobotCommand
 from rost_function.core.navigation_client import NavigationClient
 from rost_function.core.event_publisher import EventPublisher
+from rost_function.core.pose_utils import pose_from_xyt
 
 
 class FollowFunctionNode(Node):
@@ -115,20 +116,18 @@ class FollowFunctionNode(Node):
         self.get_logger().info(f'[FollowFunc] 명령 수신: {cmd}')
 
         if cmd == 'FollowRequest':
-            self._requester_pose = msg.target_pose
+            self._requester_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[FollowFunc] FollowRequest — 요청자 위치로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
         elif cmd == 'RetryFollowRequest':
-            self._requester_pose = msg.target_pose
+            self._requester_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[FollowFunc] RetryFollowRequest — 새 위치로 재이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
@@ -139,12 +138,11 @@ class FollowFunctionNode(Node):
 
         elif cmd == 'GoToTable':
             # 테이블로 이동
-            self._table_pose = msg.target_pose
+            self._table_pose = pose_from_xyt(self, msg.x, msg.y, msg.theta)
             self._is_following = False
             self.get_logger().info(
                 f'[FollowFunc] GoToTable — 테이블로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f}) θ={msg.theta:.2f}'
             )
             self._nav.send_goal(self._table_pose, on_arrived=self._on_arrived_table)
 

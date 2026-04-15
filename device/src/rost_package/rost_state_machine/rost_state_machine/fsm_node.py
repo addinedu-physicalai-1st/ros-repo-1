@@ -47,11 +47,12 @@ class StateMachineNode(Node):
         # ---------------------------------------------------------------- #
         # ROS2 파라미터 선언                                                 #
         # ---------------------------------------------------------------- #
-        self.declare_parameter('timeout_secs', 30.0)   # VERIFY 타임아웃
-        self.declare_parameter('battery_low', 20.0)    # 배터리 부족 임계값 (%)
-        self.declare_parameter('battery_mid', 60.0)    # 배터리 중간 임계값 (%)
-        self.declare_parameter('battery_high', 80.0)   # 배터리 충분 임계값 (%)
-        self.declare_parameter('nav_delay', 5.0)       # 내비게이션 시뮬 지연 (초)
+        self.declare_parameter('timeout_secs', 30.0)      # VERIFY 타임아웃
+        self.declare_parameter('battery_low', 20.0)       # 배터리 부족 임계값 (%)
+        self.declare_parameter('battery_mid', 60.0)       # 배터리 중간 임계값 (%)
+        self.declare_parameter('battery_high', 80.0)      # 배터리 충분 임계값 (%)
+        self.declare_parameter('nav_delay', 5.0)          # 내비게이션 시뮬 지연 (초)
+        self.declare_parameter('max_request_count', 3)    # 수거 횟수 상한
 
         # ---------------------------------------------------------------- #
         # 내부 상태                                                          #
@@ -263,8 +264,9 @@ class StateMachineNode(Node):
         fake_msg = RobotCommand()
         fake_msg.command = command
         fake_msg.session_id = request.session_id
-        if request.target_poses:
-            fake_msg.target_pose = request.target_poses[0]
+        fake_msg.x = request.x
+        fake_msg.y = request.y
+        fake_msg.theta = request.theta
 
         self._top_fsm.handle_command(command, fake_msg)
 

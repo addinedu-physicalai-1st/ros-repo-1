@@ -206,6 +206,7 @@ class TopFSM(FSMBase):
     def _start_sub_fsm(self, state: TopState) -> None:
         """주어진 TopState에 대응하는 Sub FSM을 생성하고 시작한다."""
         timeout_secs = self._node.get_parameter('timeout_secs').value
+        max_request_count = self._node.get_parameter('max_request_count').value
 
         if state == TopState.FOLLOW:
             self._active_sub_fsm = FollowFSM(
@@ -217,7 +218,7 @@ class TopFSM(FSMBase):
             )
         elif state == TopState.COLLECT:
             self._active_sub_fsm = CollectFSM(
-                self._node, self._on_sub_done, timeout_secs
+                self._node, self._on_sub_done, timeout_secs, max_request_count
             )
         elif state == TopState.GUIDE:
             self._active_sub_fsm = GuideFSM(
