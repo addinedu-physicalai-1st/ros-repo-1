@@ -196,7 +196,11 @@ class TaskDispatcher:
         if row is None:
             return
         current_status = int(row["status"])
-        if current_status in (int(pb.RobotStatus.CHARGING), int(pb.RobotStatus.OFFLINE)):
+        if current_status in (
+            int(pb.RobotStatus.CHARGING),
+            int(pb.RobotStatus.OFFLINE),
+            int(pb.RobotStatus.MOVING),
+        ):
             return
 
         sess = await self._manager.get_session(robot_id)

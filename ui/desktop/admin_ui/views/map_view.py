@@ -11,7 +11,7 @@ from utils.config import (MAP_IMG_PATH, COLOR_MOVING, COLOR_WAITING,
                           MAP_POSE_SCALE_PX, MAP_ORIGIN_X, MAP_ORIGIN_Y)
 from utils.api_client import (ApiClient, ApiWorker,
                               CMD_CANCEL, CMD_RETURN_DOCK, CMD_EMERGENCY_STOP,
-                              ROBOT_STATUS_LABELS)
+                              ROBOT_STATUS_LABELS, TASK_TYPE_LABELS)
 
 
 # Map RobotStatus int → display colour
@@ -232,7 +232,7 @@ class MapDashboard(QWidget):
 
             self.map_view.add_robot(r_id, color, QPointF(0, 0))
 
-            card = RobotCard(r_id, s_label, color, battery, f"태스크: {task_id or '없음'}")
+            card = RobotCard(r_id, s_label, color, battery, "태스크: 로딩 중…" if task_id else "태스크: 없음")
             card.btn_stop_imm.clicked.connect(
                 lambda _, rid=r_id, tid=task_id: self._send_cmd(rid, tid, CMD_EMERGENCY_STOP))
             card.btn_stop_next.clicked.connect(
@@ -242,6 +242,9 @@ class MapDashboard(QWidget):
             self._robot_cards[r_id] = card
             self.robots_layout.insertWidget(self.robots_layout.count() - 1, card)
             self.right_title.setText(f"로봇 목록 ({len(self._robot_cards)}대)")
+
+            if task_id:
+                self._fetch_task_label(r_id, task_id)
 
         self.map_view.update_robot_pos(r_id, x, y)
 
@@ -262,6 +265,27 @@ class MapDashboard(QWidget):
         card = self._robot_cards.get(r_id)
         if card is not None:
             card.battery_ui.setLevel(int(data.get("battery_percent", 0)))
+
+    def _fetch_task_label(self, r_id: str, task_id: str) -> None:
+        """태스크 ID로 서버에서 유형/목적지를 조회해 카드 레이블 업데이트."""
+        w = ApiWorker(self._api.get_task, task_id)
+        w.result.connect(lambda data, rid=r_id: self._on_task_label_loaded(rid, data))
+        w.error.connect(lambda _, rid=r_id: self._set_card_dest(rid, f"태스크: {task_id[:8]}…"))
+        w.finished.connect(lambda: self._discard_worker(w))
+        self._workers.append(w)
+        w.start()
+
+    def _on_task_label_loaded(self, r_id: str, data: dict) -> None:
+        task = data.get("task", {})
+        t_type  = int(task.get("task_type", 0))
+        dest_id = task.get("dest_id", "")
+        label   = TASK_TYPE_LABELS.get(t_type, f"유형{t_type}")
+        self._set_card_dest(r_id, f"{label} → {dest_id}" if dest_id else label)
+
+    def _set_card_dest(self, r_id: str, text: str) -> None:
+        card = self._robot_cards.get(r_id)
+        if card is not None:
+            card.dest_lbl.setText(text)
 
     # ── command dispatch ──────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-"""Unit tests for TaskAssignmentPolicy.
+"""Unit tests for TaskAssignmentPolicy and TaskDispatcher.maybe_trigger_charge.
 
 I/O 없이 순수 로직만 검증 — pytest로 빠르게 실행 가능.
 """
@@ -11,10 +11,10 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from robotcafe.db.v1 import robotcafe_pb2 as pb
-from scheduler import TaskAssignmentPolicy
+from scheduler import TaskAssignmentPolicy, TaskDispatcher
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -224,3 +224,70 @@ async def test_empty_queue_returns_none():
     policy = TaskAssignmentPolicy()
     result = await policy.pick_task_for_robot("R1", [], battery=80)
     assert result is None
+
+
+# ──────────────────────────────────────────────────────────────────
+# maybe_trigger_charge: MOVING 중 반복 발동 방지
+# ──────────────────────────────────────────────────────────────────
+
+def _make_dispatcher(robot_status: int) -> tuple["TaskDispatcher", AsyncMock]:
+    """DB가 주어진 robot_status를 반환하는 TaskDispatcher 목 생성."""
+    db = MagicMock()
+    db_lock = asyncio.Lock()
+    policy = TaskAssignmentPolicy()
+
+    # DB row mock: robots.status
+    row_mock = MagicMock()
+    row_mock.__getitem__ = lambda self, key: robot_status if key == "status" else None
+
+    cursor_mock = AsyncMock()
+    cursor_mock.fetchone = AsyncMock(return_value=row_mock)
+
+    conn_mock = AsyncMock()
+    conn_mock.execute = AsyncMock(return_value=cursor_mock)
+
+    send_mock = AsyncMock()
+    manager_mock = MagicMock()
+    manager_mock.get_session = AsyncMock(return_value=MagicMock(next_seq=lambda: 1))
+    manager_mock.send_command_packet = send_mock
+    manager_mock.telemetry = MagicMock()
+    manager_mock.telemetry.get_pose = AsyncMock(return_value=None)
+
+    async def get_conn():
+        return conn_mock
+
+    dispatcher = TaskDispatcher(
+        db=db,
+        get_conn=get_conn,
+        db_lock=db_lock,
+        manager=manager_mock,
+        policy=policy,
+    )
+    db.get_best_wait_place = AsyncMock(return_value={
+        "place_id": "WAIT_A", "x": 1.0, "y": 2.0, "theta": 0.0
+    })
+    return dispatcher, send_mock
+
+
+@pytest.mark.asyncio
+async def test_auto_charge_skips_when_moving():
+    """MOVING 상태인 로봇에게는 자동 충전 커맨드를 보내지 않는다."""
+    dispatcher, send_mock = _make_dispatcher(int(pb.RobotStatus.MOVING))
+    await dispatcher.maybe_trigger_charge("PNK01", battery=15)
+    send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_charge_skips_when_charging():
+    """이미 CHARGING 중이면 자동 충전 커맨드를 보내지 않는다."""
+    dispatcher, send_mock = _make_dispatcher(int(pb.RobotStatus.CHARGING))
+    await dispatcher.maybe_trigger_charge("PNK01", battery=10)
+    send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_charge_triggers_when_idle_and_low_battery():
+    """IDLE 상태이고 배터리가 낮으면 RETURN_DOCK 커맨드를 전송한다."""
+    dispatcher, send_mock = _make_dispatcher(int(pb.RobotStatus.IDLE))
+    await dispatcher.maybe_trigger_charge("PNK01", battery=15)
+    send_mock.assert_called_once()

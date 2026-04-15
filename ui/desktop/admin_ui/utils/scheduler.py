@@ -253,13 +253,9 @@ class TaskScheduler(QObject):
                 if self.robot_stats[rid]["battery"] > 0:
                     self.robot_stats[rid]["battery"] -= 0.01
                 
-                # Auto-charge trigger:
-                # 1. Battery below 20%
-                # 2. OR No pending tasks in queue
-                if self.robot_stats[rid]["battery"] < 20 or not self.pending_queue:
-                    # Don't re-initiate if battery is already 100% and we are just waiting
-                    if self.robot_stats[rid]["battery"] < 99.9:
-                        self.initiate_charging(rid)
+                # Auto-charge trigger: battery below 20% only
+                if self.robot_stats[rid]["battery"] < 20:
+                    self.initiate_charging(rid)
 
         self.task_updated.emit()
 

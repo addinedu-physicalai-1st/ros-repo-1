@@ -22,6 +22,7 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32
 
 from pinky_interfaces.msg import RobotCommand, RobotTaskStatus
+from rostaurant_networking.ack_logic import _BATTERY_INIT, _decide_ack
 from rostaurant_networking.robotcafe.db.v1 import robotcafe_pb2 as pb
 
 from rostaurant_networking.tcp_client import TcpClient
@@ -101,7 +102,8 @@ class RostaurantCommNode(Node):
         self._last_pose_wall = 0.0
         self._last_battery_wall = 0.0
         self._tcp_seq = 0
-        self._pending_cmd_id: str = ""  # cmd_id of last received Command, cleared after EXECUTED ACK
+        self._pending_cmd_id: str = ""  # cmd_id of last received Command, cleared after ACK
+        self._latest_battery: int = _BATTERY_INIT  # /battery 토픽에서 캐시
 
         self._cmd_queue: queue.Queue[RobotCommand] = queue.Queue(maxsize=200)
 
@@ -158,13 +160,14 @@ class RostaurantCommNode(Node):
         self._schedule(self._udp.send_packet(pkt))
 
     def _on_battery(self, msg: Float32) -> None:
+        self._latest_battery = int(round(float(msg.data)))
         now = time.monotonic()
         if now - self._last_battery_wall < 0.95:
             return
         self._last_battery_wall = now
         st = pb.TelemetryState(
             robot_id=self._robot_id,
-            battery_percent=int(round(float(msg.data))),
+            battery_percent=self._latest_battery,
             # state fields omitted — actual state is reported via TCP StatusReport only
         )
         st.timestamp.FromMilliseconds(int(time.time() * 1000))
@@ -177,7 +180,7 @@ class RostaurantCommNode(Node):
             robot_status=int(msg.robot_status),
             fsm_state=int(msg.fsm_state),
             current_task=msg.current_task,
-            battery=int(msg.battery),
+            battery=self._latest_battery,  # /battery 토픽에서 캐시된 최신 값
             last_error=int(msg.last_error),
         )
         sr.reported_at.FromMilliseconds(int(time.time() * 1000))
@@ -189,24 +192,25 @@ class RostaurantCommNode(Node):
 
         self._schedule(_send())
 
-        # Send EXECUTED ACK when robot reports FSM_ARRIVED (=5)
-        if int(msg.fsm_state) == int(pb.FsmState.FSM_ARRIVED) and self._pending_cmd_id:
+        # ACK 전송 결정: FSM_ARRIVED → EXECUTED, FSM_NAV_FAILED → ACK_FAILED
+        ack_status = _decide_ack(int(msg.fsm_state), self._pending_cmd_id)
+        if ack_status is not None:
             cmd_id = self._pending_cmd_id
             self._pending_cmd_id = ""  # consume so we don't send twice
 
-            async def _send_executed() -> None:
+            async def _send_ack(cid: str = cmd_id, ast: int = ack_status) -> None:
                 ack = pb.CommandAck(
-                    cmd_id=cmd_id,
+                    cmd_id=cid,
                     robot_id=self._robot_id,
-                    status=pb.AckStatus.EXECUTED,
+                    status=ast,
                 )
                 ack.acked_at.FromMilliseconds(int(time.time() * 1000))
                 self._tcp_seq += 1
                 pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, ack_payload=ack)
                 await self._tcp.send_packet(pkt)
-                logger.info("CommandAck EXECUTED cmd_id=%s", cmd_id)
+                logger.info("CommandAck status=%s cmd_id=%s", pb.AckStatus.Name(ast), cid)
 
-            self._schedule(_send_executed())
+            self._schedule(_send_ack())
 
     def enqueue_command(self, cmd: pb.Command) -> None:
         self._pending_cmd_id = cmd.cmd_id

@@ -120,6 +120,10 @@ class ApiClient:
         """GET /tasks → {"tasks": [...], "total": int}"""
         return self._get("/tasks", limit=limit, offset=offset)
 
+    def get_task(self, task_id: str) -> dict:
+        """GET /tasks/{task_id} → {"task": {...}}"""
+        return self._get(f"/tasks/{task_id}")
+
     def create_task(
         self,
         task_type: int,
