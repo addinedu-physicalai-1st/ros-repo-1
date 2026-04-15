@@ -30,6 +30,8 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 
+from typing import Optional
+
 from rost_state_machine.msg import RobotCommand
 from rost_function.core.navigation_client import NavigationClient
 from rost_function.core.event_publisher import EventPublisher
@@ -54,9 +56,10 @@ class FollowFunctionNode(Node):
         # ---------------------------------------------------------------- #
         self._current_state: str = ''
         self._session_id: str = ''
-        self._requester_pose: PoseStamped = None   # 요청자 위치
-        self._table_pose: PoseStamped = None        # 테이블 위치 (GoToTable)
-        self._is_following: bool = False            # 동행 중 여부
+        self._requester_pose: PoseStamped = None          # 요청자 위치
+        self._table_pose: PoseStamped = None               # 테이블 위치 (GoToTable)
+        self._is_following: bool = False                   # 동행 중 여부
+        self._pending_command: Optional[RobotCommand] = None  # state 전이 전 도착한 명령 버퍼
 
         # ---------------------------------------------------------------- #
         # 공통 모듈                                                          #
@@ -97,7 +100,16 @@ class FollowFunctionNode(Node):
         if state == 'FOLLOW':
             self.get_logger().info('[FollowFunc] FOLLOW 태스크 진입. HQ 명령 대기...')
             self._reset_session()
-        elif state not in ('FOLLOW',):
+            # 상태 전이 전에 도착한 pending 명령 처리
+            if self._pending_command is not None:
+                pending = self._pending_command
+                self._pending_command = None
+                self.get_logger().info(
+                    f'[FollowFunc] pending 명령 처리: {pending.command}'
+                )
+                self._process_command(pending)
+        else:
+            self._pending_command = None
             if self._nav.is_navigating() or self._is_following:
                 self.get_logger().info('[FollowFunc] 태스크 종료. 이동 중지 및 세션 초기화.')
                 self._stop_all()
@@ -109,8 +121,16 @@ class FollowFunctionNode(Node):
     def _on_command(self, msg: RobotCommand) -> None:
         """HQ 명령 수신 — FOLLOW 상태일 때만 처리"""
         if self._current_state != 'FOLLOW':
+            if msg.command == 'FollowRequest':
+                self.get_logger().info(
+                    f'[FollowFunc] FOLLOW 상태 아님 — FollowRequest 버퍼링 (현재: {self._current_state})'
+                )
+                self._pending_command = msg
             return
 
+        self._process_command(msg)
+
+    def _process_command(self, msg: RobotCommand) -> None:
         cmd = msg.command
         self._session_id = msg.session_id
         self.get_logger().info(f'[FollowFunc] 명령 수신: {cmd}')

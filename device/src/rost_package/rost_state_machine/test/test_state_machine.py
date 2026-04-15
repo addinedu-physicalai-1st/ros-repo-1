@@ -25,24 +25,11 @@ HQ 역할을 시뮬레이션하는 테스트 노드.
                        CollectionDone 발행까지 대기 시간 (초), 기본값 = 3.0
 """
 
-import math
-
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32, String
 
 from rost_state_machine.msg import RobotCommand, RobotEvent
-
-
-def _make_pose(x: float = 0.0, y: float = 0.0, theta: float = 0.0) -> PoseStamped:
-    """PoseStamped 생성 헬퍼 (theta: yaw 각도, 라디안)"""
-    pose = PoseStamped()
-    pose.header.frame_id = 'map'
-    pose.pose.position.x = x
-    pose.pose.position.y = y
-    pose.pose.orientation.z = math.sin(theta / 2.0)
-    pose.pose.orientation.w = math.cos(theta / 2.0)
-    return pose
 
 
 class HQSimulatorNode(Node):
@@ -262,7 +249,7 @@ class HQSimulatorNode(Node):
             ('[FOLLOW] FollowRequest 전송',
              lambda: self._send_command(
                  'FollowRequest', 'follow-001',
-                 _make_pose(1.0, 2.0)
+                 1.0, 2.0, 0.0
              )),
             # 로봇이 자동으로 MOVE_TO_REQUESTER → VERIFY_REQUESTER (nav_delay 후)
             ('[FOLLOW] FollowStart 전송 (요청자 확인 완료)',
@@ -278,19 +265,19 @@ class HQSimulatorNode(Node):
             ('[DELIVERY] MoveToKitchen 전송',
              lambda: self._send_command(
                  'MoveToKitchen', 'delivery-001',
-                 _make_pose(5.0, 0.0)
+                 5.0, 0.0, 0.0
              )),
             # 로봇이 주방으로 이동 후 LOADING 상태 진입
             ('[DELIVERY] StartDelivery 전송 (첫 번째 테이블, 좌표 3,4)',
              lambda: self._send_command(
                  'StartDelivery', 'delivery-001',
-                 _make_pose(3.0, 4.0)
+                 3.0, 4.0, 0.0
              )),
             # 로봇이 목적지 이동 후 UNLOAD_MENU 상태 진입
             ('[DELIVERY] StartDelivery 전송 (두 번째 테이블, 좌표 6,4)',
              lambda: self._send_command(
                  'StartDelivery', 'delivery-001',
-                 _make_pose(6.0, 4.0)
+                 6.0, 4.0, 0.0
              )),
             ('[DELIVERY] DeliveryEnd 전송 (배송 완료)',
              lambda: self._send_command('DeliveryEnd', 'delivery-001')),
@@ -302,7 +289,7 @@ class HQSimulatorNode(Node):
             ('[COLLECT] CollectRequest 전송',
              lambda: self._send_command(
                  'CollectRequest', 'collect-001',
-                 _make_pose(2.0, 3.0)
+                 2.0, 3.0, 0.0
              )),
             # 로봇이 수거 위치로 이동 후 VERIFY_COLLECT 상태 진입
             ('[COLLECT] StartCollection 전송 (수거 시작)',
@@ -340,7 +327,7 @@ class HQSimulatorNode(Node):
             ('[COLLECT_GZ] CollectRequest 전송 → 수거 위치 (1.36, -0.63, 0.0)으로 이동',
              lambda: self._send_command(
                  'CollectRequest', 'collect-gz-001',
-                 _make_pose(1.36, 0.032, 0.0)
+                 1.36, 0.032, 0.0
              )),
             # 이후는 이벤트 기반으로 처리:
             #   ArrivedAtRequester 수신 → StartCollection 발행
@@ -357,7 +344,7 @@ class HQSimulatorNode(Node):
             steps += [
                 (f'[COLLECT {i+1}/5] CollectRequest 전송',
                  lambda s=session: self._send_command(
-                     'CollectRequest', s, _make_pose(2.0, 3.0)
+                     'CollectRequest', s, 2.0, 3.0, 0.0
                  )),
                 (f'[COLLECT {i+1}/5] StartCollection 전송',
                  lambda s=session: self._send_command('StartCollection', s)),
@@ -377,19 +364,19 @@ class HQSimulatorNode(Node):
             ('[GUIDE] MoveToRequester 전송',
              lambda: self._send_command(
                  'MoveToRequester', 'guide-001',
-                 _make_pose(0.0, 0.0)
+                 0.0, 0.0, 0.0
              )),
             # 로봇이 요청자 위치로 이동 후 VERIFY_AND_SELECT 상태 진입
             ('[GUIDE] GuideStart 전송 (첫 번째 목적지: 화장실)',
              lambda: self._send_command(
                  'GuideStart', 'guide-001',
-                 _make_pose(10.0, 2.0)
+                 10.0, 2.0, 0.0
              )),
             # 로봇이 목적지로 이동 후 VERIFY_ARRIVAL 상태 진입
             ('[GUIDE] GuideStart 전송 (두 번째 목적지: 출구)',
              lambda: self._send_command(
                  'GuideStart', 'guide-001',
-                 _make_pose(15.0, 0.0)
+                 15.0, 0.0, 0.0
              )),
             ('[GUIDE] GuideEnd 전송 (안내 완료)',
              lambda: self._send_command('GuideEnd', 'guide-001')),
@@ -401,12 +388,12 @@ class HQSimulatorNode(Node):
             ('[RETRY] FollowRequest 전송',
              lambda: self._send_command(
                  'FollowRequest', 'retry-001',
-                 _make_pose(3.0, 3.0)
+                 3.0, 3.0, 0.0
              )),
             ('[RETRY] RetryFollowRequest 전송 (요청자가 자리 이동)',
              lambda: self._send_command(
                  'RetryFollowRequest', 'retry-001',
-                 _make_pose(4.0, 3.0)
+                 4.0, 3.0, 0.0
              )),
             ('[RETRY] FollowStart 전송',
              lambda: self._send_command('FollowStart', 'retry-001')),

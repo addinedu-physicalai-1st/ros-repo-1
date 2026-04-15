@@ -18,8 +18,8 @@ top_function_node:
     standby_pos_x: 0.0            # 대기장소 X 좌표 (m)
     standby_pos_y: 0.0            # 대기장소 Y 좌표 (m)
     standby_pos_theta: 0.0        # 대기장소 방향 (rad)
-    charging_pos_x: 1.36           # 충전소 X 좌표 (m)
-    charging_pos_y: -0.63           # 충전소 Y 좌표 (m)
+    charging_pos_x: 1.4          # 충전소 X 좌표 (m)
+    charging_pos_y: 0.0          # 충전소 Y 좌표 (m)
     charging_pos_theta: 0.0       # 충전소 방향 (rad)
 
 follow_function_node:

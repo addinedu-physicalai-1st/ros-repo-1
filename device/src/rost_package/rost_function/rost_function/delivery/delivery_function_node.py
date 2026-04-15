@@ -22,6 +22,8 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 
+from typing import Optional
+
 from rost_state_machine.msg import RobotCommand
 from rost_function.core.navigation_client import NavigationClient
 from rost_function.core.event_publisher import EventPublisher
@@ -45,10 +47,11 @@ class DeliveryFunctionNode(Node):
         # ---------------------------------------------------------------- #
         self._current_state: str = ''
         self._session_id: str = ''
-        self._kitchen_pose: PoseStamped = None    # 주방 위치
-        self._current_menu_pose: PoseStamped = None  # 현재 배송 목적지
+        self._kitchen_pose: PoseStamped = None           # 주방 위치
+        self._current_menu_pose: PoseStamped = None      # 현재 배송 목적지
         # 내부 배송 단계: 'init' | 'kitchen' | 'menu'
         self._delivery_phase: str = 'init'
+        self._pending_command: Optional[RobotCommand] = None  # state 전이 전 도착한 명령 버퍼
 
         # ---------------------------------------------------------------- #
         # 공통 모듈                                                          #
@@ -88,7 +91,16 @@ class DeliveryFunctionNode(Node):
         if state == 'DELIVERY':
             self.get_logger().info('[DeliveryFunc] DELIVERY 태스크 진입. HQ 명령 대기...')
             self._reset_session()
-        elif state not in ('DELIVERY',):
+            # 상태 전이 전에 도착한 pending 명령 처리
+            if self._pending_command is not None:
+                pending = self._pending_command
+                self._pending_command = None
+                self.get_logger().info(
+                    f'[DeliveryFunc] pending 명령 처리: {pending.command}'
+                )
+                self._process_command(pending)
+        else:
+            self._pending_command = None
             if self._nav.is_navigating():
                 self.get_logger().info('[DeliveryFunc] 태스크 종료. 이동 중지.')
                 self._nav.cancel_goal()
@@ -99,8 +111,16 @@ class DeliveryFunctionNode(Node):
 
     def _on_command(self, msg: RobotCommand) -> None:
         if self._current_state != 'DELIVERY':
+            if msg.command == 'MoveToKitchen':
+                self.get_logger().info(
+                    f'[DeliveryFunc] DELIVERY 상태 아님 — MoveToKitchen 버퍼링 (현재: {self._current_state})'
+                )
+                self._pending_command = msg
             return
 
+        self._process_command(msg)
+
+    def _process_command(self, msg: RobotCommand) -> None:
         cmd = msg.command
         self._session_id = msg.session_id
         self.get_logger().info(f'[DeliveryFunc] 명령 수신: {cmd}')

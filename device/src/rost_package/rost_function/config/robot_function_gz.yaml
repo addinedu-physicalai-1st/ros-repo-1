@@ -13,8 +13,8 @@ top_function_node:
     standby_pos_x: 0.0
     standby_pos_y: 0.0
     standby_pos_theta: 0.0
-    charging_pos_x: 1.36
-    charging_pos_y: -0.63
+    charging_pos_x: 1.4
+    charging_pos_y: 0.0
     charging_pos_theta: 0.0
 
 follow_function_node:

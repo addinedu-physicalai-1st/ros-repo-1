@@ -38,6 +38,8 @@
     <node pkg="rost_camera" exec="camera_node" name="camera_node"
           output="screen">
         <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <!-- config/safety_layer.yaml 의 camera_node 섹션에서 camera_index 등 로드 -->
+        <param from="$(find-pkg-share rost_safety_layer)/config/safety_layer.yaml"/>
     </node>
 
     <!-- ── Child detection (Camera-LiDAR 3-zone) ────────────────────────── -->
