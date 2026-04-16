@@ -281,6 +281,14 @@ async def api_task_respond(task_id: str, request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.post("/api/tasks/{task_id}/cancel")
+async def api_task_cancel(task_id: str) -> JSONResponse:
+    """Proxy: cancel a task and return the assigned robot to its waiting area."""
+    result = await _control_post(f"/tasks/{task_id}/cancel", {})
+    logger.info("Task cancelled via kitchen: task_id=%s", task_id)
+    return JSONResponse(result)
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}

@@ -509,7 +509,21 @@ async function onFinalRetry() {
 }
 
 async function cancelTask() {
-  addLog('취소됨', 'red');
+  // 서버 통신은 best-effort — 성공·실패와 관계없이 UI는 항상 idle로 복귀
+  if (taskId) {
+    addLog('취소 요청 중…', 'orange');
+    try {
+      const resp = await fetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' });
+      if (resp.ok) {
+        addLog('태스크 취소됨 — 로봇이 대기 장소로 복귀합니다', 'red');
+      } else {
+        const err = await resp.text();
+        addLog(`서버 취소 응답 오류 (무시하고 복귀): ${err}`, 'orange');
+      }
+    } catch (e) {
+      addLog(`서버 연결 실패 (무시하고 복귀): ${e.message}`, 'orange');
+    }
+  }
   clearLsState();
   taskId = null; dispId = null; menuName = null; robotId = null;
   setState('idle');

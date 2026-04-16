@@ -59,3 +59,55 @@ export const respondTask = async (
     return { ok: false }
   }
 }
+
+export interface MenuItem {
+  menu_id: number
+  name: string
+  place_id: string
+  is_available: boolean
+}
+
+/** GET /api/menu-items — fetch available menu items */
+export const fetchMenuItems = async (): Promise<{ menu_items: MenuItem[] }> => {
+  try {
+    const res = await fetch('/api/menu-items')
+    if (!res.ok) return { menu_items: [] }
+    return await res.json()
+  } catch {
+    return { menu_items: [] }
+  }
+}
+
+export interface MenuItemRaw {
+  menu_id: number
+  name: string
+  place_id: string
+  is_available: boolean
+}
+
+/** POST /api/kitchen — create TABLE_TO_DISPLAY task (robot goes to kitchen first) */
+export const createKitchenTask = async (
+  dispId: string,
+): Promise<{ ok: boolean; task_id?: string; detail?: string }> => {
+  try {
+    const res = await fetch('/api/kitchen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'menu_ready', disp_id: dispId }),
+    })
+    const json = await res.json()
+    return { ok: res.ok, task_id: json.task_id, detail: json.detail }
+  } catch (e: unknown) {
+    return { ok: false, detail: String(e) }
+  }
+}
+
+/** POST /api/tasks/{taskId}/cancel — cancel task and return robot to waiting area */
+export const cancelTask = async (taskId: string): Promise<{ ok: boolean }> => {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' })
+    return { ok: res.ok }
+  } catch {
+    return { ok: false }
+  }
+}

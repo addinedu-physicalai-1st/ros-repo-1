@@ -22,6 +22,9 @@ _TASKTYPE_TO_INT: dict = {
     "KIOSK_TO_TABLE": 1, "TABLE_TO_TOILET": 2, "TABLE_TO_DISPLAY": 3,
     "DISH_PICKUP": 4, "ROBOT_SWAP": 5, "ESCORT_SERVICE": 6, "RETURN_TO_DOCK": 7,
 }
+_PRIORITY_TO_INT: dict = {
+    "LOW": 1, "NORMAL": 2, "HIGH": 3, "CRITICAL": 4,
+}
 
 
 def _status_int(val) -> int:
@@ -36,6 +39,16 @@ def _tasktype_int(val) -> int:
     if isinstance(val, int):
         return val
     return _TASKTYPE_TO_INT.get(str(val), 0)
+
+
+def _priority_int(val) -> int:
+    """proto enum 문자열('HIGH') 또는 정수(3) 모두 정수로 변환."""
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return _PRIORITY_TO_INT.get(str(val).upper(), 2)
 
 
 class _RealTask:
@@ -680,7 +693,7 @@ class TaskManagementPage(QWidget):
             ttype    = _tasktype_int(t.get("task_type", 0))
             robot    = t.get("robot_id", "") or "-"
             status_i = _status_int(t.get("status", 0))
-            priority = int(t.get("priority", 2))
+            priority = _priority_int(t.get("priority", 2))
             created  = t.get("created_at_ms", 0)
             try:
                 t_str = _dt.datetime.fromtimestamp(int(created) / 1000).strftime("%H:%M:%S") if created else "-"

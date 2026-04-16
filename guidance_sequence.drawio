@@ -1,0 +1,223 @@
+<mxfile host="app.diagrams.net" agent="Claude Code">
+  <diagram name="안내 서비스 시퀀스 다이어그램" id="guidance-seq">
+    <mxGraphModel dx="3306" dy="1971" grid="0" gridSize="10" guides="1" tooltips="1" connect="0" arrows="0" fold="0" page="1" pageScale="1" pageWidth="1654" pageHeight="2200" math="0" shadow="1">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=26;fontStyle=1;fontColor=#1a1a2e;" value="안내(Guidance) 서비스 통신 시퀀스 다이어그램" vertex="1">
+          <mxGeometry height="50" width="1600" x="27" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=19;fontColor=#555555;" value="TCP Binary (Protobuf) · Port 9000  |  UDP Telemetry · Port 9001" vertex="1">
+          <mxGeometry height="34" width="1600" x="27" y="72" as="geometry" />
+        </mxCell>
+        <mxCell id="h_user" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=19;fontStyle=1;arcSize=20;" value="👤 User&#xa;(Table UI)" vertex="1">
+          <mxGeometry height="80" width="150" x="125" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="h_hq" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=19;fontStyle=1;arcSize=20;" value="🖥️ HQ Server&#xa;(Control)" vertex="1">
+          <mxGeometry height="80" width="150" x="645" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="h_robot" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=19;fontStyle=1;arcSize=20;" value="🤖 Robot&#xa;(FSM)" vertex="1">
+          <mxGeometry height="80" width="150" x="1315" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="l_user" edge="1" parent="1" style="endArrow=none;dashed=1;strokeColor=#6c8ebf;strokeWidth=2;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="200" y="190" as="sourcePoint" />
+            <mxPoint x="200" y="2050" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="l_hq" edge="1" parent="1" style="endArrow=none;dashed=1;strokeColor=#82b366;strokeWidth=2;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="720" y="190" as="sourcePoint" />
+            <mxPoint x="720" y="2050" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="l_robot" edge="1" parent="1" style="endArrow=none;dashed=1;strokeColor=#d6b656;strokeWidth=2;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1390" y="190" as="sourcePoint" />
+            <mxPoint x="1390" y="2050" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase1_bar" parent="1" style="text;html=1;strokeColor=#1a6634;fillColor=#c8e6c9;align=center;verticalAlign=middle;fontSize=19;fontStyle=1;rounded=1;" value="① 안내 요청" vertex="1">
+          <mxGeometry height="36" width="180" x="360" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="m1_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=22;fontColor=#1565c0;fontStyle=1;" value="POST /api/request&#xa;{ type: &quot;escort&quot;, table_id: &quot;T03&quot; }" vertex="1">
+          <mxGeometry height="60" width="510" x="210" y="256" as="geometry" />
+        </mxCell>
+        <mxCell id="m1_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#1565c0;strokeWidth=2;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="200" y="316" as="sourcePoint" />
+            <mxPoint x="720" y="316" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="hq_box1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#388e3c;fontSize=17;align=left;" value="Task 생성 (PENDING)&#xa;type=ESCORT_SERVICE&#xa;battery 체크 &gt; 25%" vertex="1">
+          <mxGeometry height="94" width="310" x="565" y="336" as="geometry" />
+        </mxCell>
+        <mxCell id="m2_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=22;fontColor=#555;" value="200 OK { task_id: &quot;T-001&quot; }" vertex="1">
+          <mxGeometry height="30" width="510" x="210" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="m2_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;strokeColor=#1565c0;strokeWidth=1.5;dashed=1;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="720" y="480" as="sourcePoint" />
+            <mxPoint x="200" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase2_bar" parent="1" style="text;html=1;strokeColor=#1a6634;fillColor=#c8e6c9;align=center;verticalAlign=middle;fontSize=19;fontStyle=1;rounded=1;" value="② 로봇 이동 (→ 요청자 위치)" vertex="1">
+          <mxGeometry height="36" width="330" x="870" y="456" as="geometry" />
+        </mxCell>
+        <mxCell id="m3_lbl_top" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=19;fontColor=#2e7d32;fontStyle=1;" value="[TCP] GuidanceCommand" vertex="1">
+          <mxGeometry height="34" width="660" x="730" y="510" as="geometry" />
+        </mxCell>
+        <mxCell id="m3_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#2e7d32;strokeWidth=2.5;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="720" y="544" as="sourcePoint" />
+            <mxPoint x="1390" y="544" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m3_lbl_bot" parent="1" style="text;html=1;align=center;verticalAlign=top;fontSize=22;fontColor=#388e3c;" value="action=GUIDANCE_MOVE_TO_REQUESTER (1)  |  target_id=&quot;T03&quot;" vertex="1">
+          <mxGeometry height="28" width="660" x="730" y="544" as="geometry" />
+        </mxCell>
+        <mxCell id="fsm1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9c4;strokeColor=#f9a825;fontSize=17;" value="FSM: GUIDE_INIT&#xa;→ MOVE_TO_GUIDE_REQUESTER" vertex="1">
+          <mxGeometry height="68" width="270" x="1384" y="565" as="geometry" />
+        </mxCell>
+        <mxCell id="udp1_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=22;fontColor=#e65100;" value="[UDP] TelemetryPose  { x, y, theta, linear_x }  ← 주행 중 연속 전송" vertex="1">
+          <mxGeometry height="28" width="660" x="730" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="udp1" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;strokeColor=#e65100;strokeWidth=1.5;dashed=1;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1390" y="668" as="sourcePoint" />
+            <mxPoint x="720" y="668" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m4_lbl_top" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=19;fontColor=#6a1b9a;fontStyle=1;" value="[TCP] TaskEvent" vertex="1">
+          <mxGeometry height="34" width="660" x="730" y="696" as="geometry" />
+        </mxCell>
+        <mxCell id="m4_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#6a1b9a;strokeWidth=2.5;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1390" y="730" as="sourcePoint" />
+            <mxPoint x="720" y="730" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m4_lbl_bot" parent="1" style="text;html=1;align=center;verticalAlign=top;fontSize=22;fontColor=#7b1fa2;" value="event_type=ARRIVED_AT_REQUESTER (1)  |  task_id=&quot;T-001&quot;" vertex="1">
+          <mxGeometry height="28" width="660" x="730" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="hq_box2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#388e3c;fontSize=17;align=left;" value="task_steps 업데이트 DONE&#xa;Task status = IN_PROGRESS" vertex="1">
+          <mxGeometry height="68" width="310" x="560" y="781" as="geometry" />
+        </mxCell>
+        <mxCell id="m5_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=16;fontColor=#555;" value="WebSocket / Poll  ← 로봇 도착 알림" vertex="1">
+          <mxGeometry height="30" width="510" x="205" y="863" as="geometry" />
+        </mxCell>
+        <mxCell id="m5_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;strokeColor=#1565c0;strokeWidth=1.5;dashed=1;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="715" y="893" as="sourcePoint" />
+            <mxPoint x="195" y="893" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase3_bar" parent="1" style="text;html=1;strokeColor=#1a6634;fillColor=#c8e6c9;align=center;verticalAlign=middle;fontSize=19;fontStyle=1;rounded=1;" value="③ 운영자 확인 → 목적지 안내 시작" vertex="1">
+          <mxGeometry height="36" width="360" x="235" y="933" as="geometry" />
+        </mxCell>
+        <mxCell id="m6_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=22;fontColor=#1565c0;fontStyle=1;" value="POST /api/tasks/T-001/respond&#xa;{ status: &quot;ok&quot;, next_dest: &quot;DISP_01&quot;, step_index: 0 }" vertex="1">
+          <mxGeometry height="60" width="510" x="205" y="987" as="geometry" />
+        </mxCell>
+        <mxCell id="m6_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#1565c0;strokeWidth=2;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="195" y="1047" as="sourcePoint" />
+            <mxPoint x="715" y="1047" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m7_lbl_top" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=19;fontColor=#2e7d32;fontStyle=1;" value="[TCP] GuidanceCommand" vertex="1">
+          <mxGeometry height="34" width="660" x="730" y="1056" as="geometry" />
+        </mxCell>
+        <mxCell id="m7_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#2e7d32;strokeWidth=2.5;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="720" y="1090" as="sourcePoint" />
+            <mxPoint x="1390" y="1090" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m7_lbl_bot" parent="1" style="text;html=1;align=center;verticalAlign=top;fontSize=22;fontColor=#388e3c;" value="action=GUIDANCE_START (2)  |  target_id=&quot;DISP_01&quot;  |  step_index=0" vertex="1">
+          <mxGeometry height="28" width="660" x="730" y="1090" as="geometry" />
+        </mxCell>
+        <mxCell id="fsm2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9c4;strokeColor=#f9a825;fontSize=17;" value="FSM: VERIFY_AND_SELECT&#xa;→ GUIDE_LOOP → MOVE_TO_TARGET" vertex="1">
+          <mxGeometry height="68" width="270" x="1400" y="1134" as="geometry" />
+        </mxCell>
+        <mxCell id="udp2_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=22;fontColor=#e65100;" value="[UDP] TelemetryPose  { x, y, theta }  ← 목적지로 이동 중" vertex="1">
+          <mxGeometry height="28" width="660" x="730" y="1224" as="geometry" />
+        </mxCell>
+        <mxCell id="udp2" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;strokeColor=#e65100;strokeWidth=1.5;dashed=1;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1390" y="1252" as="sourcePoint" />
+            <mxPoint x="720" y="1252" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m8_lbl_top" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=19;fontColor=#6a1b9a;fontStyle=1;" value="[TCP] TaskEvent" vertex="1">
+          <mxGeometry height="34" width="660" x="730" y="1282" as="geometry" />
+        </mxCell>
+        <mxCell id="m8_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#6a1b9a;strokeWidth=2.5;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1390" y="1316" as="sourcePoint" />
+            <mxPoint x="720" y="1316" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m8_lbl_bot" parent="1" style="text;html=1;align=center;verticalAlign=top;fontSize=22;fontColor=#7b1fa2;" value="event_type=ARRIVED_AT_DESTINATION (6)  |  task_id=&quot;T-001&quot;" vertex="1">
+          <mxGeometry height="28" width="660" x="730" y="1316" as="geometry" />
+        </mxCell>
+        <mxCell id="phase4_bar" parent="1" style="text;html=1;strokeColor=#1a6634;fillColor=#c8e6c9;align=center;verticalAlign=middle;fontSize=19;fontStyle=1;rounded=1;" value="④ 안내 종료 → 도킹 복귀" vertex="1">
+          <mxGeometry height="36" width="290" x="255" y="1316" as="geometry" />
+        </mxCell>
+        <mxCell id="m9_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=22;fontColor=#1565c0;fontStyle=1;" value="POST /api/tasks/T-001/respond&#xa;{ status: &quot;ok&quot; }  ← next_dest 없음 (종료)" vertex="1">
+          <mxGeometry height="60" width="510" x="210" y="1372" as="geometry" />
+        </mxCell>
+        <mxCell id="m9_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#1565c0;strokeWidth=2;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="200" y="1432" as="sourcePoint" />
+            <mxPoint x="720" y="1432" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m10_lbl_top" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=19;fontColor=#2e7d32;fontStyle=1;" value="[TCP] GuidanceCommand" vertex="1">
+          <mxGeometry height="34" width="660" x="725" y="1466" as="geometry" />
+        </mxCell>
+        <mxCell id="m10_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#2e7d32;strokeWidth=2.5;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="715" y="1500" as="sourcePoint" />
+            <mxPoint x="1385" y="1500" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m10_lbl_bot" parent="1" style="text;html=1;align=center;verticalAlign=top;fontSize=22;fontColor=#388e3c;" value="action=GUIDANCE_END (4)" vertex="1">
+          <mxGeometry height="28" width="660" x="725" y="1500" as="geometry" />
+        </mxCell>
+        <mxCell id="m11_lbl" parent="1" style="text;html=1;align=center;verticalAlign=bottom;fontSize=22;fontColor=#388e3c;" value="[TCP] Command  action=RETURN_DOCK (4)" vertex="1">
+          <mxGeometry height="34" width="660" x="725" y="1554" as="geometry" />
+        </mxCell>
+        <mxCell id="m11_arr" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#2e7d32;strokeWidth=2;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="715" y="1588" as="sourcePoint" />
+            <mxPoint x="1385" y="1588" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="fsm3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9c4;strokeColor=#f9a825;fontSize=17;" value="FSM: GUIDE_END&#xa;→ FSM_RETURNING" vertex="1">
+          <mxGeometry height="68" width="270" x="1395" y="1620" as="geometry" />
+        </mxCell>
+        <mxCell id="hq_box3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#388e3c;fontSize=17;align=left;" value="Task status = COMPLETED&#xa;completed_at_ms 기록" vertex="1">
+          <mxGeometry height="68" width="310" x="560" y="1620" as="geometry" />
+        </mxCell>
+        <mxCell id="legend_bg" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#bdbdbd;fontSize=17;" value="" vertex="1">
+          <mxGeometry height="110" width="840" x="57" y="1720" as="geometry" />
+        </mxCell>
+        <mxCell id="legend_title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=17;fontStyle=1;" value="범례:" vertex="1">
+          <mxGeometry height="34" width="70" x="73" y="1730" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=17;fontColor=#2e7d32;" value="━━► TCP 명령 (HQ→Robot)" vertex="1">
+          <mxGeometry height="34" width="280" x="147" y="1730" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=17;fontColor=#6a1b9a;" value="━━► TCP 이벤트 (Robot→HQ)" vertex="1">
+          <mxGeometry height="34" width="290" x="457" y="1730" as="geometry" />
+        </mxCell>
+        <mxCell id="leg3" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=17;fontColor=#e65100;" value="- - ► UDP 텔레메트리 (Robot→HQ)" vertex="1">
+          <mxGeometry height="34" width="310" x="147" y="1770" as="geometry" />
+        </mxCell>
+        <mxCell id="leg4" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=17;fontColor=#1565c0;" value="- - ► HTTP REST (User↔HQ)" vertex="1">
+          <mxGeometry height="34" width="280" x="457" y="1770" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
