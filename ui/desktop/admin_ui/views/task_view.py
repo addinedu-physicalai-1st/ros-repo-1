@@ -44,6 +44,7 @@ class _RealTask:
         t_type   = _tasktype_int(task_dict.get("task_type", 0))
         status_i = _status_int(task_dict.get("status", 0))
         dest_id  = task_dict.get("dest_id", "")
+        self.task_id  = task_dict.get("task_id", "")
         self.robot_id = task_dict.get("robot_id", "")
         self.type     = f"{TASK_TYPE_LABELS.get(t_type, str(t_type))} → {dest_id}"
         self.progress = {1: 0, 2: 50, 3: 100, 4: 0, 5: 0}.get(status_i, 0)
@@ -180,10 +181,13 @@ class FsmIndicator(QWidget):
 # ── RobotStatusCard ───────────────────────────────────────────────────────────
 
 class RobotStatusCard(QFrame):
-    def __init__(self, robot_id, scheduler, parent=None):
+    def __init__(self, robot_id, scheduler, api, parent=None):
         super().__init__(parent)
         self.robot_id = robot_id
         self.scheduler = scheduler
+        self._api = api
+        self._current_task_id: str = ""
+        self._workers: list = []
         self.initUI()
 
     def initUI(self):
@@ -254,7 +258,37 @@ class RobotStatusCard(QFrame):
         self.layout.addWidget(self.info_stack)
 
     def cancel_task(self):
-        self.scheduler.cancel_task_by_robot(self.robot_id)
+        if not self._current_task_id:
+            return
+        reply = QMessageBox.question(
+            self, "작업 취소 확인",
+            f"로봇 {self.robot_id}의 작업을 취소하고\n대기장소로 복귀시키겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.btn_cancel.setEnabled(False)
+        w = ApiWorker(self._api.cancel_task, self._current_task_id)
+        w.result.connect(self._on_cancel_done)
+        w.error.connect(self._on_cancel_error)
+        w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
+        self._workers.append(w)
+        w.start()
+
+    def _on_cancel_done(self, data: dict):
+        self.btn_cancel.setEnabled(True)
+        action = data.get("action", "")
+        if action == "cancel_and_return_dock":
+            dock = data.get("dock_id", "")
+            QMessageBox.information(self, "취소 완료",
+                f"작업이 취소되었습니다.\n로봇 {self.robot_id}이(가) 대기장소({dock})로 복귀합니다.")
+        else:
+            QMessageBox.information(self, "취소 완료", "대기 중 작업이 취소되었습니다.")
+
+    def _on_cancel_error(self, msg: str):
+        self.btn_cancel.setEnabled(True)
+        QMessageBox.warning(self, "취소 실패", f"작업 취소에 실패했습니다.\n{msg}")
 
     def show_assign_menu(self):
         menu = QMenu(self)
@@ -272,6 +306,7 @@ class RobotStatusCard(QFrame):
         self.battery_ui.setLevel(battery)
 
         if task:
+            self._current_task_id = getattr(task, "task_id", "")
             self.opacity_effect.setOpacity(1.0)
             self.active_widget.setVisible(True)
             self.idle_widget.setVisible(False)
@@ -280,7 +315,9 @@ class RobotStatusCard(QFrame):
             self.progress_bar.setValue(int(task.progress))
             is_collector = (self.robot_id == self.scheduler.collector_robot_id and task.type == TaskType.COLLECT)
             self.collector_badge.setVisible(is_collector)
+            self.btn_cancel.setEnabled(True)
         else:
+            self._current_task_id = ""
             self.opacity_effect.setOpacity(0.5)
             self.active_widget.setVisible(False)
             self.idle_widget.setVisible(True)
@@ -530,7 +567,7 @@ class TaskManagementPage(QWidget):
         # Remove stretch, insert cards, re-add stretch
         stretch_item = self._monitor_layout.takeAt(self._monitor_layout.count() - 1)
         for rid in active_ids:
-            card = RobotStatusCard(rid, self.scheduler)
+            card = RobotStatusCard(rid, self.scheduler, self._api)
             self.robot_cards[rid] = card
             self._monitor_layout.addWidget(card)
         if stretch_item:
@@ -619,8 +656,7 @@ class TaskManagementPage(QWidget):
 
             cancel_btn = QPushButton("강제 취소")
             cancel_btn.setStyleSheet("background-color: #F56C6C; color: white; padding: 4px 10px; border-radius: 3px;")
-            cancel_btn.clicked.connect(lambda _, tid=task_id: QMessageBox.information(
-                self, "알림", f"태스크 {tid[:8]}…\n취소 기능은 로봇 명령 탭에서 CANCEL 명령으로 처리하세요."))
+            cancel_btn.clicked.connect(lambda _, tid=task_id, rid=robot_id: self._confirm_and_cancel(tid, rid))
             self.task_table.setCellWidget(row, 4, cancel_btn)
 
         # ── 대기열 테이블: PENDING(1) 태스크 ─────────────────────────
@@ -703,6 +739,35 @@ class TaskManagementPage(QWidget):
 
     def update_ui(self):
         self._refresh_robot_cards()
+
+    def _confirm_and_cancel(self, task_id: str, robot_id: str):
+        """하단 테이블의 강제 취소 버튼 핸들러."""
+        robot_str = f"로봇 {robot_id}" if robot_id and robot_id != "미할당" else "미배정 작업"
+        reply = QMessageBox.question(
+            self, "강제 취소 확인",
+            f"{robot_str}의 작업({task_id[:8]}…)을 취소하겠습니까?\n"
+            "진행 중인 경우 로봇이 대기장소로 복귀합니다.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        w = ApiWorker(self._api.cancel_task, task_id)
+        w.result.connect(lambda data: self._on_force_cancel_done(data, robot_id))
+        w.error.connect(lambda msg: QMessageBox.warning(self, "취소 실패", f"작업 취소 실패\n{msg}"))
+        w.finished.connect(lambda: self._discard(w))
+        self._workers.append(w)
+        w.start()
+
+    def _on_force_cancel_done(self, data: dict, robot_id: str):
+        action = data.get("action", "")
+        if action == "cancel_and_return_dock":
+            dock = data.get("dock_id", "")
+            QMessageBox.information(self, "취소 완료",
+                f"작업이 취소되었습니다.\n로봇 {robot_id}이(가) 대기장소({dock})로 복귀합니다.")
+        else:
+            QMessageBox.information(self, "취소 완료", "작업이 취소되었습니다.")
+        QTimer.singleShot(500, self._load_tasks)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

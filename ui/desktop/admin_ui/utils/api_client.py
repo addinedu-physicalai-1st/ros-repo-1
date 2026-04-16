@@ -154,6 +154,10 @@ class ApiClient:
             "target_id": target_id,
         })
 
+    def cancel_task(self, task_id: str) -> dict:
+        """POST /tasks/{task_id}/cancel → 작업 취소 + 로봇 대기장소 복귀"""
+        return self._post(f"/tasks/{task_id}/cancel", {})
+
     def get_places(self, active_only: bool = True) -> dict:
         """GET /places → {"places": [...]}"""
         return self._get("/places", active_only=1 if active_only else 0)

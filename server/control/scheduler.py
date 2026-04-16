@@ -416,15 +416,42 @@ class TaskDispatcher:
             return pkt, int(pb.CommandType.MOVE_TO)
 
     async def _get_idle_robot_ids(self) -> list[str]:
+        """TCP 세션이 있고 robots.status == IDLE 인 로봇 목록 반환.
+
+        로봇이 IDLE을 보고했으나 IN_PROGRESS 태스크가 남아 있으면 좀비 태스크로
+        간주하고 FAILED 처리한 뒤 배정 가능 목록에 포함한다.
+        """
         session_ids = await self._manager.get_all_session_ids()
         idle: list[str] = []
         async with self._db_lock:
             conn = await self._get_conn()
             for rid in session_ids:
+                # 1. 로봇 DB 상태 확인 — IDLE 아니면 배정 대상 아님
                 cur = await conn.execute(
                     "SELECT status FROM robots WHERE robot_id = ?", (rid,)
                 )
                 row = await cur.fetchone()
-                if row and int(row["status"]) == int(pb.RobotStatus.IDLE):
-                    idle.append(rid)
+                if not row or int(row["status"]) != int(pb.RobotStatus.IDLE):
+                    continue
+
+                # 2. IDLE인데 IN_PROGRESS 태스크가 있으면 좀비 → FAILED 자동 처리
+                zombie_cur = await conn.execute(
+                    "SELECT task_id FROM tasks WHERE robot_id = ? AND status = ? LIMIT 1",
+                    (rid, int(pb.TaskStatus.IN_PROGRESS)),
+                )
+                zombie_row = await zombie_cur.fetchone()
+                if zombie_row:
+                    zombie_id = str(zombie_row[0])
+                    now_ms = _ts_now_ms()
+                    await conn.execute(
+                        "UPDATE tasks SET status=?, updated_at_ms=?, completed_at_ms=?"
+                        " WHERE task_id=?",
+                        (int(pb.TaskStatus.FAILED), now_ms, now_ms, zombie_id),
+                    )
+                    await conn.commit()
+                    logger.warning(
+                        "Auto-failed zombie task=%s for idle robot=%s", zombie_id, rid
+                    )
+
+                idle.append(rid)
         return idle

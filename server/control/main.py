@@ -471,6 +471,110 @@ async def get_task(
     return _pb_to_json(pb.GetTaskResponse(task=task))
 
 
+@app.post("/tasks/{task_id}/cancel", summary="Cancel a task and return robot to dock (ADMIN)")
+async def cancel_task_endpoint(
+    task_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require(Permission.ROBOT_COMMAND)),
+) -> dict[str, Any]:
+    """진행 중 또는 대기 중인 작업을 취소하고 로봇을 대기장소로 복귀시킨다."""
+    db, conn, lock = _get_db(request), _get_conn(request), _get_lock(request)
+    manager = _get_manager(request)
+    broker  = _get_broker(request)
+
+    async with lock:
+        task = await db.get_task(conn, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+
+    status_i = int(task.status)
+    if status_i not in (int(pb.TaskStatus.PENDING), int(pb.TaskStatus.IN_PROGRESS)):
+        raise HTTPException(
+            status_code=409,
+            detail=f"task is not cancellable (status={pb.TaskStatus.Name(task.status)})",
+        )
+
+    robot_id = task.robot_id
+
+    # PENDING (미배정): DB만 CANCELLED로 변경
+    if status_i == int(pb.TaskStatus.PENDING):
+        async with lock:
+            await db.update_task_status(
+                conn, task_id=task_id,
+                status=int(pb.TaskStatus.CANCELLED), completed=True,
+            )
+        if broker:
+            await broker.broadcast({
+                "event": "task_cancelled",
+                "task_id": task_id,
+                "robot_id": robot_id or "",
+                "timestamp_ms": _ts_now_ms(),
+            })
+        logger.info("Task cancelled (pending) task=%s by %s", task_id, user)
+        return {"task_id": task_id, "status": "cancelled", "action": "pending_cancelled"}
+
+    # IN_PROGRESS: CANCEL 커맨드 전송 → RETURN_DOCK 전송 → CANCELLED 기록
+    sess = await manager.get_session(robot_id)
+    if sess:
+        cancel_cmd_id = str(uuid.uuid4())
+        now_ms = _ts_now_ms()
+        cancel_cmd = pb.Command(
+            cmd_id=cancel_cmd_id, task_id=task_id, robot_id=robot_id,
+            command=pb.CommandType.CANCEL,
+            status=pb.CommandStatus.SENT,
+        )
+        cancel_cmd.sent_at.FromMilliseconds(now_ms)
+        async with lock:
+            await db.insert_command(
+                conn, cmd_id=cancel_cmd_id, task_id=task_id,
+                robot_id=robot_id, command=int(pb.CommandType.CANCEL),
+                target_id="", status=int(pb.CommandStatus.SENT), sent_at_ms=now_ms,
+            )
+        cancel_pkt = pb.TcpPacket(
+            robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cancel_cmd,
+        )
+        try:
+            await manager.send_command_packet(robot_id, cancel_pkt)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Cancel command send failed robot=%s: %s", robot_id, e)
+
+    dock_id = await _send_return_dock(
+        db, conn, lock, manager,
+        task_id=task_id, robot_id=robot_id,
+        task_status=int(pb.TaskStatus.CANCELLED),
+    )
+
+    # 로봇 DB 상태를 IDLE로 즉시 초기화 — MOVING 상태로 남아 있으면
+    # _get_idle_robot_ids() 에서 누락되어 대기 중 태스크가 배정되지 않음
+    async with lock:
+        await db.mark_robot_idle(conn, robot_id)
+
+    if broker:
+        await broker.broadcast({
+            "event": "task_cancelled",
+            "task_id": task_id,
+            "robot_id": robot_id,
+            "dock_id": dock_id,
+            "timestamp_ms": _ts_now_ms(),
+        })
+    logger.info("Task cancelled (in_progress) task=%s robot=%s dock=%s by %s",
+                task_id, robot_id, dock_id, user)
+
+    # 대기 중인 태스크가 있으면 즉시 재배정 시도
+    dispatcher: TaskDispatcher = request.app.state.dispatcher
+    asyncio.create_task(
+        dispatcher.try_assign_pending(),
+        name=f"reassign-after-cancel-{task_id[:8]}",
+    )
+
+    return {
+        "task_id": task_id,
+        "status": "cancelled",
+        "action": "cancel_and_return_dock",
+        "dock_id": dock_id,
+    }
+
+
 async def _send_return_dock(
     db: Any,
     conn: Any,
