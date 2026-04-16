@@ -10,7 +10,7 @@
 # ── camera_node ──────────────────────────────────────────────────────────────
 camera_node:
   ros__parameters:
-    camera_index:   3             # VideoCapture 인덱스 (/dev/video0 → 0, /dev/video3 → 3)
+    camera_index:   0             # VideoCapture 인덱스 (/dev/video0 → 0, /dev/video3 → 3)
     fps:            10.0          # 퍼블리시 주기 (Hz)
     jpeg_quality:   90            # JPEG 압축 품질 (0 – 100). YOLO 성능을 위해 90 이상 권장
 

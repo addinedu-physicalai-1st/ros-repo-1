@@ -69,7 +69,7 @@ jpeg_quality      int    80      JPEG 재압축 품질 (0–100)
 
 Topics
 ------
-Subscribe  /image              sensor_msgs/CompressedImage
+Subscribe  UDP 239.255.0.1:5000  JPEG 압축 카메라 이미지 (백그라운드 스레드)
 Subscribe  /scan               sensor_msgs/LaserScan
 Subscribe  /map                nav_msgs/OccupancyGrid   (transient_local QoS)
 Subscribe  /amcl_pose          geometry_msgs/PoseWithCovarianceStamped
@@ -79,6 +79,9 @@ Subscribe  /safety_stop_event  std_msgs/Bool
 import csv
 import math
 import os
+import socket
+import struct
+import threading
 import time
 from collections import deque
 from datetime import datetime
@@ -96,9 +99,13 @@ from rclpy.qos import (
     QoSProfile,
     QoSReliabilityPolicy,
 )
-from sensor_msgs.msg import CompressedImage, LaserScan
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 from tf2_ros import TransformException
+
+# ── UDP Multicast ──────────────────────────────────────────────────────────────
+MULTICAST_GROUP = '239.255.0.1'
+MULTICAST_PORT  = 5000
 
 # ── 기본 상수 ─────────────────────────────────────────────────────────────────
 FRAME_W = 640
@@ -115,7 +122,6 @@ CROP_SIZE = 200
 # TF fallback 렌더링 시 픽셀/미터 스케일 (로컬 프레임)
 LOCAL_SCALE = 40.0  # px/m
 
-IMAGE_TOPIC = '/image'
 SCAN_TOPIC = 'scan'
 MAP_TOPIC = '/map'
 AMCL_POSE_TOPIC = '/amcl_pose'
@@ -211,6 +217,7 @@ class EventRecorderNode(Node):
 
         self._latest_scan: LaserScan | None = None
         self._latest_frame: np.ndarray | None = None
+        self._frame_lock = threading.Lock()  # _latest_frame 보호 (UDP 스레드 ↔ 타이머)
 
         # 맵·포즈 캐시
         self._map_data: OccupancyGrid | None = None
@@ -238,10 +245,20 @@ class EventRecorderNode(Node):
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
-        # ── Subscribers ───────────────────────────────────────────────────────
-        self.create_subscription(
-            CompressedImage, IMAGE_TOPIC, self._image_callback, 10,
+        # ── UDP Multicast 수신 스레드 ──────────────────────────────────────────
+        self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        self._udp_sock.bind(('', MULTICAST_PORT))
+        mreq = struct.pack('4sL', socket.inet_aton(MULTICAST_GROUP), socket.INADDR_ANY)
+        self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        self._udp_thread = threading.Thread(target=self._udp_recv_loop, daemon=True)
+        self._udp_thread.start()
+        self.get_logger().info(
+            f'UDP multicast receiver joined {MULTICAST_GROUP}:{MULTICAST_PORT}'
         )
+
+        # ── Subscribers ───────────────────────────────────────────────────────
         self.create_subscription(
             LaserScan, SCAN_TOPIC, self._scan_callback, 10,
         )
@@ -260,7 +277,7 @@ class EventRecorderNode(Node):
         self.create_timer(1.0 / self._capture_rate, self._capture_tick)
 
         self.get_logger().info('EventRecorderNode started.')
-        self.get_logger().info(f'  Subscribing  : {IMAGE_TOPIC} (CompressedImage)')
+        self.get_logger().info(f'  Image source : UDP {MULTICAST_GROUP}:{MULTICAST_PORT}')
         self.get_logger().info(
             f'  Subscribing  : {MAP_TOPIC} (transient_local QoS), '
             f'{AMCL_POSE_TOPIC}, {SCAN_TOPIC}'
@@ -275,16 +292,34 @@ class EventRecorderNode(Node):
     # Subscriber callbacks
     # =========================================================================
 
-    def _image_callback(self, msg: CompressedImage):
-        """CompressedImage → BGR ndarray 로 디코딩 후 self._latest_frame 에 저장."""
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if frame is None:
-            self.get_logger().warn(
-                'Failed to decode CompressedImage.', throttle_duration_sec=2.0,
-            )
-            return
-        self._latest_frame = frame
+    # =========================================================================
+    # UDP 수신 루프 (백그라운드 스레드)
+    # =========================================================================
+
+    def _udp_recv_loop(self):
+        """
+        멀티캐스트 UDP 패킷을 블로킹 수신하여 _latest_frame 을 갱신합니다.
+        패킷 포맷: [frame_id(uint32 BE)][data_len(uint32 BE)][JPEG bytes]
+        """
+        while True:
+            try:
+                packet, _ = self._udp_sock.recvfrom(65535)
+            except OSError:
+                break
+
+            if len(packet) < 8:
+                continue
+
+            _frame_id, data_len = struct.unpack('>II', packet[:8])
+            jpeg_bytes = packet[8:8 + data_len]
+
+            np_arr = np.frombuffer(jpeg_bytes, np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
+
+            with self._frame_lock:
+                self._latest_frame = frame
 
     def _scan_callback(self, msg: LaserScan):
         """최신 라이다 스캔을 캐시합니다."""
@@ -340,10 +375,11 @@ class EventRecorderNode(Node):
         """
         self._check_delayed_stop()
 
-        frame = self._latest_frame
+        with self._frame_lock:
+            frame = self._latest_frame
         if frame is None:
             self.get_logger().warn(
-                '/image 미수신 — 프레임 없음.', throttle_duration_sec=2.0,
+                'UDP 이미지 미수신 — 프레임 없음.', throttle_duration_sec=2.0,
             )
             return
 
@@ -793,7 +829,7 @@ class EventRecorderNode(Node):
     # =========================================================================
 
     def destroy_node(self):
-        """노드 종료 시 열린 파일을 안전하게 닫습니다."""
+        """노드 종료 시 열린 파일과 UDP 소켓을 안전하게 닫습니다."""
         if self._recording:
             self.get_logger().warn('종료 시 기록 중 — 이벤트 파일 강제 닫기.')
             self._stop_event()
@@ -802,6 +838,7 @@ class EventRecorderNode(Node):
             self._lidar_writer.release()
             self._lidar_writer = None
 
+        self._udp_sock.close()
         super().destroy_node()
 
 

@@ -57,6 +57,7 @@ pip install -r web/requirements.txt
 
 ```bash
 cd server
+rm control/rostaurant.db*
 MRTA_ADMIN_KEY_OUT=~/admin_key.txt ./start.sh
 ```
 

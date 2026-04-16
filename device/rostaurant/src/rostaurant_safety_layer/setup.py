@@ -31,6 +31,7 @@ setup(
             'event_recorder_node=rostaurant_safety_layer.event_recorder_node:main',
             'buzzer_node=rostaurant_safety_layer.buzzer_node:main',
             'fake_scan_node=rostaurant_safety_layer.fake_scan_node:main',
+            'yolo_viewer_node=rostaurant_safety_layer.yolo_viewer_node:main',
         ],
     },
 )

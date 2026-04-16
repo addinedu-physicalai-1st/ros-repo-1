@@ -212,3 +212,9 @@ __marimo__/
 build/
 install/
 log/
+
+# ROS DB
+rostaurant.db*
+rostaurant.db
+
+safety_events/

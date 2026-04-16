@@ -61,13 +61,16 @@ ROS Parameters
 
 import math
 import os
+import socket
+import struct
+import threading
 import time
 
 import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, CompressedImage, LaserScan
+from sensor_msgs.msg import CameraInfo, LaserScan
 from std_msgs.msg import String
 from ultralytics import YOLO
 
@@ -77,8 +80,11 @@ try:
 except ImportError:
     _HAS_PINKY = False
 
+# ── UDP Multicast ──────────────────────────────────────────────────────────────
+MULTICAST_GROUP = '239.255.0.1'
+MULTICAST_PORT  = 5000
+
 # ── Topic names ────────────────────────────────────────────────────────────────
-IMAGE_TOPIC = '/image'
 SCAN_TOPIC = '/scan'
 CAMERA_INFO_TOPIC = '/camera/camera_info'
 CHILD_SAFETY_ZONE_TOPIC = 'child_safety_zone'
@@ -118,7 +124,7 @@ class ChildDetectionNode(Node):
 
     Subscribes
     ----------
-    /image               sensor_msgs/CompressedImage  - JPEG 압축 카메라 이미지
+    UDP 239.255.0.1:5000  JPEG 압축 카메라 이미지 (백그라운드 스레드)
     /scan                sensor_msgs/LaserScan         - 360도 LiDAR 스캔
     /camera/camera_info  sensor_msgs/CameraInfo        - 카메라 내부 파라미터 (선택)
 
@@ -180,14 +186,27 @@ class ChildDetectionNode(Node):
         self._last_frame_t = None     # float (monotonic) | None
         self._last_infer_t = 0.0      # float (monotonic): 마지막 추론 시각
         self._current_zone = None     # str | None: 마지막으로 결정된 구역
+        self._frame_lock   = threading.Lock()  # _latest_frame, _last_frame_t 보호
 
         # ── Publishers ─────────────────────────────────────────────────────────
         self._safety_zone_pub = self.create_publisher(String, CHILD_SAFETY_ZONE_TOPIC, 10)
 
         # ── Subscribers ────────────────────────────────────────────────────────
-        self.create_subscription(CompressedImage, IMAGE_TOPIC, self._image_callback, 10)
         self.create_subscription(LaserScan, SCAN_TOPIC, self._scan_callback, 10)
         self.create_subscription(CameraInfo, CAMERA_INFO_TOPIC, self._camera_info_callback, 10)
+
+        # ── UDP Multicast 수신 스레드 ──────────────────────────────────────────
+        self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        self._udp_sock.bind(('', MULTICAST_PORT))
+        mreq = struct.pack('4sL', socket.inet_aton(MULTICAST_GROUP), socket.INADDR_ANY)
+        self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        self._udp_thread = threading.Thread(target=self._udp_recv_loop, daemon=True)
+        self._udp_thread.start()
+        self.get_logger().info(
+            f'UDP multicast receiver joined {MULTICAST_GROUP}:{MULTICAST_PORT}'
+        )
 
         # ── LED / Emotion service clients ──────────────────────────────────────
         self._led_client = None
@@ -205,7 +224,7 @@ class ChildDetectionNode(Node):
         self.create_timer(1.0 / HEARTBEAT_HZ, self._heartbeat_callback)
 
         self.get_logger().info('ChildDetectionNode (camera-LiDAR fusion) started.')
-        self.get_logger().info(f'  Image topic        : {IMAGE_TOPIC}')
+        self.get_logger().info(f'  Image source       : UDP {MULTICAST_GROUP}:{MULTICAST_PORT}')
         self.get_logger().info(f'  Scan topic         : {SCAN_TOPIC}')
         self.get_logger().info(f'  zone_stop={self._zone_stop}m  '
                                f'zone_caution={self._zone_caution}m  '
@@ -217,21 +236,39 @@ class ChildDetectionNode(Node):
             f'  Publishing         : {CHILD_SAFETY_ZONE_TOPIC} → safety_layer / event_recorder'
         )
 
-    # ── Subscription callbacks ─────────────────────────────────────────────────
+    # ── UDP 수신 루프 (백그라운드 스레드) ─────────────────────────────────────
 
-    def _image_callback(self, msg: CompressedImage):
-        """CompressedImage를 디코딩하고 rate-limit된 추론을 트리거합니다."""
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if frame is None:
-            self.get_logger().warn(
-                'Failed to decode CompressedImage.',
-                throttle_duration_sec=1.0,
-            )
-            return
-        self._latest_frame = frame
-        self._last_frame_t = time.monotonic()
-        self._maybe_infer()
+    def _udp_recv_loop(self):
+        """
+        멀티캐스트 UDP 패킷을 블로킹 수신하여 프레임을 갱신합니다.
+        패킷 포맷: [frame_id(uint32 BE)][data_len(uint32 BE)][JPEG bytes]
+        """
+        while True:
+            try:
+                packet, _ = self._udp_sock.recvfrom(65535)
+            except OSError:
+                # 소켓이 닫히면 루프 종료
+                break
+
+            if len(packet) < 8:
+                continue
+
+            _frame_id, data_len = struct.unpack('>II', packet[:8])
+            jpeg_bytes = packet[8:8 + data_len]
+
+            np_arr = np.frombuffer(jpeg_bytes, np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
+
+            with self._frame_lock:
+                self._latest_frame = frame
+                self._last_frame_t = time.monotonic()
+
+            # YOLO 추론 트리거 (rate-limit 내부에서 처리)
+            self._maybe_infer()
+
+    # ── Subscription callbacks ─────────────────────────────────────────────────
 
     def _scan_callback(self, msg: LaserScan):
         """항상 최신 LiDAR 스캔을 유지합니다. 추론 주기와 무관하게 갱신."""
@@ -273,7 +310,8 @@ class ChildDetectionNode(Node):
             )
             return
 
-        frame = self._latest_frame
+        with self._frame_lock:
+            frame = self._latest_frame
         scan  = self._latest_scan
 
         # ── YOLO inference ─────────────────────────────────────────────────────
@@ -394,11 +432,14 @@ class ChildDetectionNode(Node):
         - camera timeout 시 STOP 퍼블리시 (fail-safe)
         - 정상 시 현재 zone 재퍼블리시 (safety_layer 타임아웃 방지)
         """
-        if self._last_frame_t is None:
+        with self._frame_lock:
+            last_frame_t = self._last_frame_t
+
+        if last_frame_t is None:
             # 아직 첫 프레임 미수신 — safety_layer 자체 타임아웃이 처리
             return
 
-        elapsed = time.monotonic() - self._last_frame_t
+        elapsed = time.monotonic() - last_frame_t
         if elapsed > CAMERA_TIMEOUT_S:
             self.get_logger().warn(
                 f'/image silent for {elapsed:.1f} s (timeout={CAMERA_TIMEOUT_S} s) '
@@ -452,6 +493,13 @@ class ChildDetectionNode(Node):
         req = Emotion.Request()
         req.emotion = _ZONE_EMOTION[zone]
         self._emotion_client.call_async(req)
+
+    # ── Cleanup ────────────────────────────────────────────────────────────────
+
+    def destroy_node(self):
+        """노드 종료 시 UDP 소켓을 닫아 수신 스레드를 종료합니다."""
+        self._udp_sock.close()
+        super().destroy_node()
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

@@ -17,9 +17,9 @@
 """
 Camera Node — Rost Pro 단일 카메라 퍼블리셔.
 
-카메라를 단 한 번만 열고, JPEG 압축 후 /image 토픽으로 퍼블리시합니다.
-여러 노드(child_detection_node, event_recorder_node 등)가 이 토픽을
-구독하므로 카메라 접근 충돌 없이 동일한 프레임을 공유할 수 있습니다.
+카메라를 단 한 번만 열고, JPEG 압축 후 UDP Multicast로 전송합니다.
+여러 노드(child_detection_node, event_recorder_node 등)가 멀티캐스트 그룹에
+가입하여 동일한 프레임을 수신합니다.
 
 Architecture
 ------------
@@ -32,47 +32,53 @@ Architecture
   cv2.imencode  (JPEG q=90)
        │  bytes
        ▼
-  /image  (sensor_msgs/CompressedImage)
+  UDP Multicast 239.255.0.1:5000
+       │  [frame_id(4B) | data_len(4B) | JPEG]
        │
        ├──▶  child_detection_node   (YOLO)
        └──▶  event_recorder_node    (rolling buffer)
 
 ROS Parameters
 --------------
-camera_index   int    0      VideoCapture 인덱스 (/dev/video0)
+camera_index   int    3      VideoCapture 인덱스 (/dev/video3)
 fps            float  10.0   타이머 주기 (Hz)
 jpeg_quality   int    90     JPEG 압축 품질 (0–100)
                ↑ YOLO 성능 보존을 위해 기본값 90을 권장합니다.
 """
 
+import socket
+import struct
+
 import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage
 
-# ── Topic ──────────────────────────────────────────────────────────────────────
-IMAGE_TOPIC = '/image'
+# ── UDP Multicast ──────────────────────────────────────────────────────────────
+MULTICAST_GROUP = '239.255.0.1'
+MULTICAST_PORT  = 5000
+# loopback UDP 최대 페이로드(65535 - IP헤더20 - UDP헤더8) 에서 헤더 8바이트 제외
+UDP_MAX_PAYLOAD = 65499
 
 # ── Default constants ──────────────────────────────────────────────────────────
-DEFAULT_CAMERA_INDEX = 3
+DEFAULT_CAMERA_INDEX = 0
 DEFAULT_FPS = 10.0
 DEFAULT_JPEG_QUALITY = 90   # YOLO 성능 저하를 막기 위해 90 이상 권장
 
 # 카메라 출력 해상도 고정값 — 모든 다운스트림 노드가 이 크기를 기대합니다.
 FRAME_W = 640
-FRAME_H = 360
+FRAME_H = 480
 
 
 class CameraNode(Node):
     """
-    단일 카메라 퍼블리셔 노드.
+    단일 카메라 UDP 멀티캐스트 송신 노드.
 
-    Publishes
-    ---------
-    /image  (sensor_msgs/CompressedImage)
-        JPEG 압축 프레임. 다운스트림 노드가 np.frombuffer + cv2.imdecode 로
-        원본 BGR 배열을 복원합니다.
+    Sends
+    -----
+    UDP Multicast 239.255.0.1:5000
+        패킷: [frame_id(uint32 BE)][data_len(uint32 BE)][JPEG bytes]
+        다운스트림 노드가 멀티캐스트 그룹에 가입하여 수신합니다.
     """
 
     def __init__(self):
@@ -115,9 +121,15 @@ class CameraNode(Node):
                 f'JPEG quality: {self._jpeg_quality}'
             )
 
-        # ── Publisher ──────────────────────────────────────────────────────────
-        # QoS depth=10: 구독자가 일시적으로 느려도 최대 10 프레임까지 버퍼링합니다.
-        self._pub = self.create_publisher(CompressedImage, IMAGE_TOPIC, 10)
+        # ── UDP Multicast 소켓 ────────────────────────────────────────────────
+        self._frame_id = 0
+        self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        # 같은 머신의 수신 노드가 자신이 보낸 패킷을 받을 수 있도록 loopback 활성화
+        self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        self.get_logger().info(
+            f'UDP multicast socket ready → {MULTICAST_GROUP}:{MULTICAST_PORT}'
+        )
 
         # ── Capture timer ──────────────────────────────────────────────────────
         # while True 대신 ROS2 타이머를 사용합니다.
@@ -125,7 +137,7 @@ class CameraNode(Node):
         self._timer = self.create_timer(1.0 / fps, self._capture_and_publish)
 
         self.get_logger().info(
-            f'CameraNode started — publishing {IMAGE_TOPIC} at {fps} Hz.'
+            f'CameraNode started — multicast {MULTICAST_GROUP}:{MULTICAST_PORT} at {fps} Hz.'
         )
 
     # ── Timer callback ─────────────────────────────────────────────────────────
@@ -171,23 +183,27 @@ class CameraNode(Node):
             )
             return
 
-        # ── CompressedImage 메시지 구성 ────────────────────────────────────────
-        msg = CompressedImage()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'camera'
-        msg.format = 'jpeg'
-        # np.ndarray → bytes 변환: copy=False 로 불필요한 메모리 복사를 피합니다.
-        msg.data = jpeg_buf.tobytes()
+        # ── UDP Multicast 전송 ─────────────────────────────────────────────────
+        jpeg_bytes = jpeg_buf.tobytes()
+        if len(jpeg_bytes) > UDP_MAX_PAYLOAD:
+            self.get_logger().warn(
+                f'Frame too large ({len(jpeg_bytes)} B > {UDP_MAX_PAYLOAD} B) — dropped.',
+                throttle_duration_sec=2.0,
+            )
+            return
 
-        self._pub.publish(msg)
+        self._frame_id = (self._frame_id + 1) & 0xFFFFFFFF
+        header = struct.pack('>II', self._frame_id, len(jpeg_bytes))
+        self._udp_sock.sendto(header + jpeg_bytes, (MULTICAST_GROUP, MULTICAST_PORT))
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
     def destroy_node(self):
-        """노드 종료 시 카메라 핸들을 안전하게 해제합니다."""
+        """노드 종료 시 카메라 핸들과 UDP 소켓을 안전하게 해제합니다."""
         if self._cap.isOpened():
             self._cap.release()
             self.get_logger().info('Camera released.')
+        self._udp_sock.close()
         super().destroy_node()
 
 
