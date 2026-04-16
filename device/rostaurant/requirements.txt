@@ -1,0 +1,8 @@
+# 로봇(rostaurant 워크스페이스) Python 의존성
+# ros2 launch 실행 전 아래 명령으로 설치:
+#   pip install -r device/rostaurant/requirements.txt --break-system-packages
+#
+# 주의: python3-protobuf (apt) 는 버전이 낮아 runtime_version 오류 발생.
+#       pip 버전을 사용해야 합니다.
+
+protobuf>=4.25
