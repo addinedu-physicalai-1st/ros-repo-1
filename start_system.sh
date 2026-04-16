@@ -51,6 +51,10 @@ PINKY2_IP="${PINKY2_IP:?PINKY2_IP is not set. Define it in .env or export it.}"
 PINKY1_DOMAIN_ID="${PINKY1_DOMAIN_ID:-41}"
 PINKY2_DOMAIN_ID="${PINKY2_DOMAIN_ID:-42}"
 
+# Initial pose per robot: "x y z yaw" (set in .env or defaults)
+PINKY1_INIT_POSE="${PINKY1_INIT_POSE:-0.0 0.0 0.0 0.0}"
+PINKY2_INIT_POSE="${PINKY2_INIT_POSE:-0.05 -0.766 0.0 0.0}"
+
 # Auto-detect map path
 if [[ -z "${MRTA_MAP_PATH:-}" ]]; then
     for candidate in \
@@ -121,6 +125,32 @@ if [[ "${START_ROBOTS}" == "true" ]]; then
     # Wait for SSH commands to complete
     wait
     echo "[system] Robots started."
+
+    # Set initial poses via /initialpose topic
+    echo "[system] Setting initial poses..."
+    if [[ -f /opt/ros/jazzy/setup.bash ]]; then
+        source /opt/ros/jazzy/setup.bash
+        [[ -f "${SCRIPT_DIR}/install/setup.bash" ]] && source "${SCRIPT_DIR}/install/setup.bash"
+    fi
+
+    _publish_initial_pose() {
+        local ip="$1" domain_id="$2" pose_str="$3" name="$4"
+        read px py pz pyaw <<< "${pose_str}"
+        # Convert yaw to quaternion z/w
+        local qz qw
+        qz=$(python3 -c "import math; print(math.sin(${pyaw}/2))")
+        qw=$(python3 -c "import math; print(math.cos(${pyaw}/2))")
+        ssh "pinky@${ip}" "source /opt/ros/jazzy/setup.bash && \
+            ROS_DOMAIN_ID=${domain_id} ros2 topic pub /initialpose \
+            geometry_msgs/msg/PoseWithCovarianceStamped \
+            \"{header: {frame_id: 'map'}, pose: {pose: {position: {x: ${px}, y: ${py}, z: ${pz}}, orientation: {z: ${qz}, w: ${qw}}}}}\" \
+            --once" >/dev/null 2>&1 &
+    }
+
+    _publish_initial_pose "${PINKY1_IP}" "${PINKY1_DOMAIN_ID}" "${PINKY1_INIT_POSE}" "pinky1"
+    _publish_initial_pose "${PINKY2_IP}" "${PINKY2_DOMAIN_ID}" "${PINKY2_INIT_POSE}" "pinky2"
+    wait
+    echo "[system] Initial poses set."
     echo
 fi
 
@@ -183,7 +213,7 @@ if [[ "${START_ROBOTS}" == "true" ]]; then
             [[ -f "${SCRIPT_DIR}/install/setup.bash" ]] && source "${SCRIPT_DIR}/install/setup.bash"
         fi
         export DEMO_USE_SIM_TIME=false
-        python3 "${BRIDGE_SCRIPT}" \
+        /usr/bin/python3 "${BRIDGE_SCRIPT}" \
             --robot-ids pinky1 pinky2 \
             --domain-ids "${PINKY1_DOMAIN_ID}" "${PINKY2_DOMAIN_ID}" \
             >"${RUN_DIR}/bridge.log" 2>&1 &
@@ -202,7 +232,7 @@ if [[ -f "${DASHBOARD_DIR}/main.py" ]] && [[ -n "${DISPLAY:-}" || -n "${WAYLAND_
         CONTROL_BASE_URL="http://localhost:${MRTA_PORT}" \
         ADMIN_API_KEY="${ADMIN_API_KEY:-}" \
         MRTA_MAP_PATH="${MRTA_MAP_PATH:-}" \
-        exec python3 main.py
+        exec /usr/bin/python3 main.py
     ) >"${RUN_DIR}/dashboard.log" 2>&1 &
     DASHBOARD_PID=$!
     echo "${DASHBOARD_PID}" >"${RUN_DIR}/dashboard.pid"

@@ -118,6 +118,14 @@ def _build_nav_path(points: List[Tuple[float, float]], frame_id: str = "map") ->
     return path_msg
 
 
+# Shared state across all RobotBridge instances (demo simulator pattern).
+# Protected by _shared_lock.
+_shared_lock = threading.Lock()
+_active_paths: dict[str, List[int]] = {}  # robot_id → planned waypoint IDs
+_active_path_idx: dict[str, int] = {}     # robot_id → next unvisited wp index
+_robot_poses: dict[str, Tuple[float, float]] = {}  # robot_id → (x, y)
+
+
 class RobotBridge(threading.Thread):
     """Bidirectional bridge for one robot."""
 
@@ -191,6 +199,9 @@ class RobotBridge(threading.Thread):
         goal_xy = None
         near_since = None
         preempted = False
+        pending_goal = None      # (tx, ty, tt) waiting for clear path
+        pending_cmd_id = ""
+        last_replan_t = 0.0
 
         try:
             while not self._stop_event.is_set():
@@ -229,18 +240,28 @@ class RobotBridge(threading.Thread):
                         pass
 
                 # ── Inbound: TCP commands from server ─────────
+                # ── Inbound: TCP commands from server ─────────
                 if tcp_sock:
                     cmd = self._try_recv_command(tcp_sock, tag)
                     if cmd is not None:
-                        tx = cmd.get("x", 0.0)
-                        ty = cmd.get("y", 0.0)
-                        tt = cmd.get("theta", 0.0)
-                        print(f"{tag} CMD MOVE_TO ({tx:.2f}, {ty:.2f}, {math.degrees(tt):.0f}°)")
+                        pending_goal = (
+                            cmd.get("x", 0.0),
+                            cmd.get("y", 0.0),
+                            cmd.get("theta", 0.0),
+                        )
+                        pending_cmd_id = cmd.get("cmd_id", "")
+                        last_replan_t = 0.0
+                        print(f"{tag} CMD MOVE_TO ({pending_goal[0]:.2f}, "
+                              f"{pending_goal[1]:.2f}, "
+                              f"{math.degrees(pending_goal[2]):.0f}°)")
 
-                        # Build path
+                # ── Pending goal: try to plan and dispatch ────
+                if pending_goal and not self._nav_busy:
+                    if now - last_replan_t >= 2.0:  # retry every 2s
+                        last_replan_t = now
+                        tx, ty, tt = pending_goal
                         path_msg = self._plan_nav_path(tx, ty, tt)
                         if path_msg and path_msg.poses:
-                            # Send to Nav2
                             if nav_client.wait_for_server(timeout_sec=3.0):
                                 goal_msg = FollowPath.Goal()
                                 goal_msg.path = path_msg
@@ -249,7 +270,8 @@ class RobotBridge(threading.Thread):
 
                                 future = nav_client.send_goal_async(goal_msg)
                                 rclpy.spin_until_future_complete(
-                                    node, future, executor=executor, timeout_sec=5.0,
+                                    node, future, executor=executor,
+                                    timeout_sec=5.0,
                                 )
                                 gh = future.result()
                                 if gh and gh.accepted:
@@ -260,19 +282,13 @@ class RobotBridge(threading.Thread):
                                     preempted = False
                                     self._current_status = pb.RobotStatus.MOVING
                                     self._nav_busy = True
-                                    print(f"{tag} Nav2 goal accepted ({len(path_msg.poses)} pts)")
+                                    pending_goal = None
+                                    print(f"{tag} Nav2 goal accepted "
+                                          f"({len(path_msg.poses)} pts)")
                                 else:
                                     print(f"{tag} Nav2 goal REJECTED")
-                                    # Send ack as failed
-                                    if cmd.get("cmd_id"):
-                                        self._send_command_ack(
-                                            tcp_sock, tag, cmd["cmd_id"],
-                                            pb.AckStatus.REJECTED,
-                                        )
-                            else:
-                                print(f"{tag} Nav2 not available")
                         else:
-                            print(f"{tag} No path, sending direct goal")
+                            print(f"{tag} Path blocked, waiting...")
 
                 # ── Navigation monitoring ─────────────────────
                 if result_future is not None:
@@ -295,6 +311,11 @@ class RobotBridge(threading.Thread):
                         result_future = None
                         goal_xy = None
                         self._nav_busy = False
+
+                        # Clear shared path reservation
+                        with _shared_lock:
+                            _active_paths.pop(self.robot_id, None)
+                            _active_path_idx.pop(self.robot_id, None)
 
                         # After ARRIVED, send IDLE after a short delay
                         time.sleep(0.5)
@@ -338,6 +359,8 @@ class RobotBridge(threading.Thread):
 
     # ── TF ────────────────────────────────────────────────────────────
 
+    WP_PROXIMITY = 0.12  # metres — consider waypoint visited
+
     def _update_pose(self, tf_buf) -> None:
         try:
             t = tf_buf.lookup_transform(
@@ -352,46 +375,121 @@ class RobotBridge(threading.Thread):
                 1.0 - 2.0 * (q.y * q.y + q.z * q.z),
             )
             self._pose = (x, y, theta)
+
+            # Update shared pose + track waypoint visitation
+            with _shared_lock:
+                _robot_poses[self.robot_id] = (x, y)
+                wps = _active_paths.get(self.robot_id, [])
+                idx = _active_path_idx.get(self.robot_id, 0)
+                if wps and idx < len(wps) and self._buffet_map:
+                    wp = self._buffet_map.graph.waypoints.get(wps[idx])
+                    if wp and math.hypot(x - wp.x, y - wp.y) <= self.WP_PROXIMITY:
+                        _active_path_idx[self.robot_id] = idx + 1
         except Exception:
             pass
 
-    # ── Path planning ─────────────────────────────────────────────────
+    # ── Path planning (mirrors demo simulator._plan_robot) ───────────
 
     def _plan_nav_path(self, goal_x: float, goal_y: float,
                        goal_theta: float) -> Optional[NavPath]:
-        """Plan a nav_msgs/Path to (goal_x, goal_y).
+        """Plan a nav_msgs/Path using the demo's quasi-static model.
 
-        If the path_planning library is available and robot pose is known,
-        uses A* waypoint planning. Otherwise falls back to a straight
-        line from current position to goal.
+        1. Other robots' REMAINING paths are reserved (not visited wps).
+        2. Other robots' current positions are added as dynamic obstacles.
+        3. If blocked by reservation, return None (caller retries later).
         """
-        if self._buffet_map and _HAS_PLANNER and self._pose:
-            bm = self._buffet_map
-            graph = bm.graph
+        if not (self._buffet_map and _HAS_PLANNER and self._pose):
+            return None
 
-            # Find nearest waypoint to goal
-            best_wp, best_d = None, math.inf
-            for wp in graph.waypoints.values():
-                d = math.hypot(wp.x - goal_x, wp.y - goal_y)
-                if d < best_d:
-                    best_d = d
-                    best_wp = wp.wp_id
+        bm = self._buffet_map
+        graph = bm.graph
+        from path_planning import DynamicObstacle
 
-            if best_wp is not None:
-                plan = plan_path_from_point(
-                    bm, (self._pose[0], self._pose[1]), best_wp,
-                )
-                if plan is not None:
-                    points = densify_path(graph, plan.waypoints, step=0.05)
-                    return _build_nav_path(points)
+        # Find nearest waypoint to goal
+        best_wp, best_d = None, math.inf
+        for wp in graph.waypoints.values():
+            d = math.hypot(wp.x - goal_x, wp.y - goal_y)
+            if d < best_d:
+                best_d = d
+                best_wp = wp.wp_id
+        if best_wp is None:
+            return None
 
-        # Fallback: straight line
-        if self._pose:
-            return _build_nav_path([
-                (self._pose[0], self._pose[1]),
-                (goal_x, goal_y),
-            ])
-        return _build_nav_path([(goal_x, goal_y)])
+        # Current robot's nearest waypoint (to exclude from reservation)
+        current_wp = None
+        nearest_d = math.inf
+        for wp in graph.waypoints.values():
+            d = math.hypot(wp.x - self._pose[0], wp.y - self._pose[1])
+            if d < nearest_d:
+                nearest_d = d
+                current_wp = wp.wp_id
+
+        with _shared_lock:
+            # 1) Dynamic obstacles: ONLY other robots that are MOVING
+            #    (idle robots should not block paths)
+            dyn_obs = []
+            for rid, pos in _robot_poses.items():
+                if rid != self.robot_id and rid in _active_paths:
+                    dyn_obs.append(DynamicObstacle(
+                        obs_id=hash(rid) & 0xFFFF,
+                        x=pos[0], y=pos[1],
+                        radius=0.12,
+                        label=rid,
+                    ))
+
+            # 2) Reserved paths: ONLY other robots with active paths
+            reserved = []
+            for rid, wps in _active_paths.items():
+                if rid == self.robot_id:
+                    continue
+                idx = _active_path_idx.get(rid, 0)
+                remaining = [w for w in wps[idx:] if w != current_wp]
+                if remaining:
+                    reserved.append(remaining)
+
+        # Plan with dynamic obstacles + reserved paths
+        # If robot is ON a waypoint, use wp→wp planning to avoid
+        # diagonal free-start entry segments.
+        from path_planning.planner import plan_path as wp_plan_path
+
+        WP_ON_THRESHOLD = 0.08
+        start_wp = None
+        for wp in graph.waypoints.values():
+            if math.hypot(wp.x - self._pose[0], wp.y - self._pose[1]) <= WP_ON_THRESHOLD:
+                start_wp = wp.wp_id
+                break
+
+        plan_waypoints = None
+        if start_wp is not None and start_wp != best_wp:
+            path_wps, cost = wp_plan_path(
+                bm, start_wp, best_wp,
+                dynamic_obstacles=dyn_obs if dyn_obs else None,
+                reserved_paths=reserved if reserved else None,
+            )
+            plan_waypoints = path_wps
+        else:
+            result = plan_path_from_point(
+                bm, (self._pose[0], self._pose[1]), best_wp,
+                dynamic_obstacles=dyn_obs if dyn_obs else None,
+                reserved_paths=reserved if reserved else None,
+            )
+            plan_waypoints = result.waypoints if result else None
+
+        if plan_waypoints is None:
+            return None
+
+        # Register planned waypoints for other robots to see
+        with _shared_lock:
+            _active_paths[self.robot_id] = list(plan_waypoints)
+            _active_path_idx[self.robot_id] = 0
+
+        points = densify_path(graph, plan_waypoints, step=0.05)
+        wp_labels = []
+        for wp_id in plan_waypoints:
+            wp = graph.waypoints[wp_id]
+            wp_labels.append(wp.label or f"({wp.x:.2f},{wp.y:.2f})")
+        print(f"[{self.robot_id}] Path: {' → '.join(wp_labels)}")
+        return _build_nav_path(points)
 
     # ── TCP connection ────────────────────────────────────────────────
 

@@ -1,18 +1,21 @@
 import math
 import sys
 from pathlib import Path
+from typing import Tuple
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGraphicsView, QGraphicsScene, QScrollArea, QFrame,
-                             QMessageBox, QGraphicsLineItem)
+                             QMessageBox, QGraphicsLineItem, QMenu, QAction,
+                             QInputDialog)
 from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap, QPen
-from PyQt5.QtCore import Qt, QTimer, QPointF
+from PyQt5.QtCore import Qt, QTimer, QPointF, pyqtSignal
 
 from components.map_items import RobotMapItem, WaypointItem, PathLineItem
 from components.widgets import RobotCard
 from utils.config import (MAP_IMG_PATH, COLOR_MOVING, COLOR_WAITING,
                           COLOR_COLLECT, COLOR_CHARGING,
-                          MAP_POSE_SCALE_PX, MAP_ORIGIN_X, MAP_ORIGIN_Y)
+                          MAP_POSE_SCALE_PX, MAP_ORIGIN_X, MAP_ORIGIN_Y,
+                          MAP_ROTATED_CCW90)
 from utils.api_client import (ApiClient, ApiWorker,
                               CMD_CANCEL, CMD_RETURN_DOCK, CMD_EMERGENCY_STOP,
                               ROBOT_STATUS_LABELS, TASK_TYPE_LABELS)
@@ -62,14 +65,24 @@ if not _MAP_YAML:
 
 
 def _world_to_scene(x: float, y: float) -> QPointF:
-    """Convert world metres to scene pixels."""
+    """Convert world metres to scene pixels (original map coordinates)."""
     return QPointF(
         MAP_ORIGIN_X + x * MAP_POSE_SCALE_PX,
         MAP_ORIGIN_Y - y * MAP_POSE_SCALE_PX,
     )
 
 
+def _scene_to_world(sx: float, sy: float) -> Tuple[float, float]:
+    """Convert scene pixels to world metres."""
+    wx = (sx - MAP_ORIGIN_X) / MAP_POSE_SCALE_PX
+    wy = (MAP_ORIGIN_Y - sy) / MAP_POSE_SCALE_PX
+    return wx, wy
+
+
 class MapWidget(QGraphicsView):
+    # Signal: (waypoint_label, world_x, world_y)
+    waypoint_clicked = pyqtSignal(str, float, float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
@@ -86,6 +99,11 @@ class MapWidget(QGraphicsView):
 
         self.scene.addPixmap(self.bg_pixmap)
         self.setSceneRect(0, 0, self.bg_pixmap.width(), self.bg_pixmap.height())
+
+        # Rotate view CCW 90° so physical space matches screen layout
+        if MAP_ROTATED_CCW90:
+            self.rotate(-90)
+
         self.robots: dict[str, RobotMapItem] = {}
         self._robot_color_idx: dict[str, int] = {}
         self._next_color_idx = 0
@@ -94,6 +112,9 @@ class MapWidget(QGraphicsView):
         self._buffet_map: BuffetMap | None = None
         self._wp_items: list = []
         self._edge_items: list = []
+
+        # Per-robot planned path line items
+        self._path_items: dict[str, PathLineItem] = {}
 
         self._load_waypoint_graph()
 
@@ -150,10 +171,19 @@ class MapWidget(QGraphicsView):
         self.scene.addItem(robot)
         self.robots[r_id] = robot
 
+        # Create planned path line item
+        path_item = PathLineItem([], robot_color, dashed=True, opacity=0.7, width=3)
+        path_item.setZValue(3)
+        self.scene.addItem(path_item)
+        self._path_items[r_id] = path_item
+
     def remove_robot(self, r_id: str) -> None:
         item = self.robots.pop(r_id, None)
         if item is not None:
             self.scene.removeItem(item)
+        path = self._path_items.pop(r_id, None)
+        if path is not None:
+            self.scene.removeItem(path)
 
     def update_robot_pos(self, r_id: str, x: float, y: float,
                          yaw: float = 0.0) -> None:
@@ -163,12 +193,52 @@ class MapWidget(QGraphicsView):
         self.robots[r_id].setPos(sp)
         self.robots[r_id].set_yaw(yaw)
 
+    def set_planned_path(self, r_id: str, world_points: list) -> None:
+        """Show a planned path for a robot. *world_points* is [(x,y), ...]."""
+        path_item = self._path_items.get(r_id)
+        if not path_item:
+            return
+        scene_pts = [_world_to_scene(x, y) for x, y in world_points]
+        color = self._get_robot_color(r_id)
+        path_item.set_points(scene_pts, color)
+
+    def clear_planned_path(self, r_id: str) -> None:
+        """Clear a robot's planned path."""
+        path_item = self._path_items.get(r_id)
+        if path_item:
+            path_item.set_points([])
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
 
     def fit_view(self):
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
+
+    def mouseDoubleClickEvent(self, event):
+        """Double-click on map → find nearest waypoint → emit signal."""
+        if not self._buffet_map:
+            return super().mouseDoubleClickEvent(event)
+
+        scene_pos = self.mapToScene(event.pos())
+        wx, wy = _scene_to_world(scene_pos.x(), scene_pos.y())
+
+        # Find nearest waypoint
+        graph = self._buffet_map.graph
+        best_wp, best_d = None, math.inf
+        for wp in graph.waypoints.values():
+            d = math.hypot(wp.x - wx, wp.y - wy)
+            if d < best_d:
+                best_d = d
+                best_wp = wp
+
+        # Snap threshold (in metres)
+        max_snap = max(0.15, self._buffet_map.width_m * 0.08)
+        if best_wp and best_d <= max_snap:
+            label = best_wp.label or f"({best_wp.x:.2f},{best_wp.y:.2f})"
+            self.waypoint_clicked.emit(label, best_wp.x, best_wp.y)
+        else:
+            super().mouseDoubleClickEvent(event)
 
 
 class MapDashboard(QWidget):
@@ -178,6 +248,16 @@ class MapDashboard(QWidget):
         self._robot_cards: dict[str, RobotCard] = {}
         self._robot_meta: dict[str, dict] = {}
         self._workers: list[ApiWorker] = []
+
+        # Path planning state per robot
+        # goal_wp_id → target waypoint id (None = no active goal)
+        self._robot_goals: dict[str, tuple[int, str]] = {}  # r_id → (wp_id, label)
+        # Cached planned waypoint IDs per robot (for reserved_paths)
+        self._robot_planned_wps: dict[str, list[int]] = {}
+        # Waypoint visit index per robot (tracks remaining path)
+        self._robot_wp_idx: dict[str, int] = {}
+        # Latest known world pose per robot
+        self._robot_poses: dict[str, tuple[float, float]] = {}
 
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_all_poses)
@@ -201,6 +281,7 @@ class MapDashboard(QWidget):
         left_layout.addWidget(title_lbl)
 
         self.map_view = MapWidget()
+        self.map_view.waypoint_clicked.connect(self._on_waypoint_clicked)
         left_layout.addWidget(self.map_view, 1)
 
         legend_frame = QFrame()
@@ -297,6 +378,13 @@ class MapDashboard(QWidget):
             self._workers.append(w)
             w.start()
 
+        # Also poll robot status to clear path when IDLE/ARRIVED
+        wr = ApiWorker(self._api.get_robots)
+        wr.result.connect(self._on_robots_status_polled)
+        wr.finished.connect(lambda: self._discard_worker(wr))
+        self._workers.append(wr)
+        wr.start()
+
         for r_id in list(self._robot_cards.keys()):
             wb = ApiWorker(self._api.get_telemetry_battery, r_id)
             wb.result.connect(lambda data, rid=r_id: self._on_battery_updated(rid, data))
@@ -335,6 +423,16 @@ class MapDashboard(QWidget):
                 self._fetch_task_label(r_id, task_id)
 
         self.map_view.update_robot_pos(r_id, x, y, yaw)
+        self._robot_poses[r_id] = (x, y)
+
+        # Track waypoint visitation (advance index when near next wp)
+        wps = self._robot_planned_wps.get(r_id, [])
+        idx = self._robot_wp_idx.get(r_id, 0)
+        bm = self.map_view._buffet_map
+        if wps and idx < len(wps) and bm:
+            wp = bm.graph.waypoints.get(wps[idx])
+            if wp and math.hypot(x - wp.x, y - wp.y) <= 0.12:
+                self._robot_wp_idx[r_id] = idx + 1
 
     def _on_pose_error(self, r_id: str):
         removed = False
@@ -352,6 +450,28 @@ class MapDashboard(QWidget):
         card = self._robot_cards.get(r_id)
         if card is not None:
             card.battery_ui.setLevel(int(data.get("battery_percent", 0)))
+
+    def _on_robots_status_polled(self, data: dict):
+        for robot in data.get("robots", []):
+            r_id = robot.get("robot_id", "")
+            status = robot.get("status", "")
+            # Track which robots are MOVING (protect their goals)
+            if status == "MOVING" and r_id:
+                self._robot_was_moving = getattr(self, "_robot_was_moving", set())
+                self._robot_was_moving.add(r_id)
+            # Clear goal ONLY if robot was MOVING and is now IDLE (= arrived)
+            if status in ("IDLE", "CHARGING") and r_id:
+                was_moving = getattr(self, "_robot_was_moving", set())
+                if r_id in was_moving and r_id in self._robot_goals:
+                    self._robot_goals.pop(r_id, None)
+                    self._robot_planned_wps.pop(r_id, None)
+                    self._robot_wp_idx.pop(r_id, None)
+                    self.map_view.clear_planned_path(r_id)
+                    was_moving.discard(r_id)
+
+        # Replan paths for robots with active goals
+        if self._robot_goals:
+            self._replan_all_paths()
 
     def _fetch_task_label(self, r_id: str, task_id: str) -> None:
         w = ApiWorker(self._api.get_task, task_id)
@@ -383,6 +503,245 @@ class MapDashboard(QWidget):
         w.finished.connect(lambda: self._discard_worker(w))
         self._workers.append(w)
         w.start()
+
+    # ── waypoint click → task creation ──────────────────────────────────────
+
+    def _on_waypoint_clicked(self, label: str, wx: float, wy: float) -> None:
+        """Double-click on a waypoint → select robot → create task + assign."""
+        # Get available (IDLE) robots
+        idle_robots = []
+        for r_id, meta in self._robot_meta.items():
+            if r_id in self.map_view.robots:
+                idle_robots.append(r_id)
+
+        if not idle_robots:
+            QMessageBox.information(self, "로봇 없음", "연결된 로봇이 없습니다.")
+            return
+
+        # Find matching place_id for this waypoint label
+        # Map waypoint labels to place_ids
+        _LABEL_TO_PLACE = {
+            "Kitchen": "KITCHEN",
+            "Entrance": "KIOSK_1",
+            "Charging": "WAIT_A",
+            "Return": "EXIT_DINE",
+            "Table-N": "TBL_01",
+            "Table-S": "TBL_02",
+        }
+        dest_id = _LABEL_TO_PLACE.get(label, "")
+
+        if not dest_id:
+            QMessageBox.information(
+                self, "목적지 미설정",
+                f"'{label}' 웨이포인트에 매핑된 place가 없습니다.",
+            )
+            return
+
+        # Select robot
+        if len(idle_robots) == 1:
+            robot_id = idle_robots[0]
+        else:
+            robot_id, ok = QInputDialog.getItem(
+                self, "로봇 선택",
+                f"'{label}'(으)로 보낼 로봇을 선택하세요:",
+                idle_robots, 0, False,
+            )
+            if not ok:
+                return
+
+        # Find goal waypoint ID
+        graph = self.map_view._buffet_map.graph if self.map_view._buffet_map else None
+        goal_wp_id = None
+        if graph:
+            best_d = math.inf
+            for wp in graph.waypoints.values():
+                d = math.hypot(wp.x - wx, wp.y - wy)
+                if d < best_d:
+                    best_d = d
+                    goal_wp_id = wp.wp_id
+
+        # Ensure robot pose is cached (fetch synchronously if needed)
+        if robot_id not in self._robot_poses:
+            try:
+                pose_data = self._api.get_telemetry_pose(robot_id)
+                pose = pose_data.get("latest_pose", {})
+                self._robot_poses[robot_id] = (
+                    float(pose.get("x", 0)), float(pose.get("y", 0)),
+                )
+            except Exception:
+                pass
+
+        # Register goal and replan immediately
+        if goal_wp_id is not None:
+            self._robot_goals[robot_id] = (goal_wp_id, label)
+            print(f"[click] {robot_id} goal=wp#{goal_wp_id} ({label}), "
+                  f"pose={self._robot_poses.get(robot_id)}", flush=True)
+            self._replan_all_paths()
+
+        # Create task + assign
+        self._create_and_assign_task(dest_id, label, robot_id)
+
+    def _create_and_assign_task(self, dest_id: str, label: str,
+                                robot_id: str) -> None:
+        """Create a MOVE_TO task and assign it to the selected robot."""
+
+        def _do_create():
+            result = self._api.create_task(
+                task_type=2,  # TABLE_TO_TOILET (generic MOVE_TO)
+                dest_id=dest_id,
+                requester_id="admin",
+                priority=2,
+            )
+            task_id = result.get("task_id", "")
+            if task_id:
+                self._api.assign_task(task_id, robot_id)
+            return result
+
+        w = ApiWorker(_do_create)
+        w.result.connect(
+            lambda data: self._on_task_dispatched(robot_id, label, data))
+        w.error.connect(lambda msg: QMessageBox.warning(
+            self, "태스크 생성 실패", f"{msg}"))
+        w.finished.connect(lambda: self._discard_worker(w))
+        self._workers.append(w)
+        w.start()
+
+    def _replan_all_paths(self) -> None:
+        """Recompute paths for all robots with active goals.
+
+        Called periodically from the poll timer. Implements the
+        demo monitor's dynamic replanning logic:
+        - Each robot's path is computed from its CURRENT position
+        - Other robots' planned paths are passed as reserved_paths
+        - If a path is blocked, the robot waits (path cleared)
+        - When the blocking robot moves away, the path opens up
+        """
+        bm = self.map_view._buffet_map
+        if not bm or not _HAS_PATH_PLANNING:
+            return
+
+        from path_planning import plan_path, plan_path_from_point, DynamicObstacle
+
+        graph = bm.graph
+        # Sort: robots already moving get priority (plan first)
+        sorted_ids = sorted(
+            self._robot_goals.keys(),
+            key=lambda rid: 0 if rid in self._robot_planned_wps else 1,
+        )
+
+        new_plans: dict[str, list[int]] = {}
+
+        for r_id in sorted_ids:
+            goal_info = self._robot_goals.get(r_id)
+            if not goal_info:
+                continue
+            goal_wp_id, label = goal_info
+
+            pose = self._robot_poses.get(r_id)
+            if not pose:
+                continue
+            rwx, rwy = pose
+
+            # Check if arrived
+            goal_wp = graph.waypoints.get(goal_wp_id)
+            if goal_wp and math.hypot(rwx - goal_wp.x, rwy - goal_wp.y) < 0.12:
+                self._robot_goals.pop(r_id, None)
+                self._robot_planned_wps.pop(r_id, None)
+                self._robot_wp_idx.pop(r_id, None)
+                self.map_view.clear_planned_path(r_id)
+                continue
+
+            # Current robot's nearest waypoint (exclude from reservation)
+            current_wp = None
+            nearest_d = math.inf
+            for wp in graph.waypoints.values():
+                d = math.hypot(wp.x - rwx, wp.y - rwy)
+                if d < nearest_d:
+                    nearest_d = d
+                    current_wp = wp.wp_id
+
+            # Dynamic obstacles: ONLY other robots that have active goals
+            # (idle robots at destinations should NOT block paths)
+            dyn_obs = []
+            for other_id, other_pose in self._robot_poses.items():
+                if other_id != r_id and other_id in self._robot_goals:
+                    dyn_obs.append(DynamicObstacle(
+                        obs_id=hash(other_id) & 0xFFFF,
+                        x=other_pose[0], y=other_pose[1],
+                        radius=0.12, label=other_id,
+                    ))
+
+            # Reserved paths: other robots' REMAINING waypoints only
+            reserved = []
+            for other_id in self._robot_goals:
+                if other_id == r_id:
+                    continue
+                # Use new_plans if available, else cached
+                other_wps = new_plans.get(other_id,
+                             self._robot_planned_wps.get(other_id, []))
+                if not other_wps:
+                    continue
+                other_idx = self._robot_wp_idx.get(other_id, 0)
+                remaining = [w for w in other_wps[other_idx:]
+                             if w != current_wp]
+                if remaining:
+                    reserved.append(remaining)
+
+            try:
+                WP_ON_THRESHOLD = 0.08
+                start_wp = None
+                for wp in graph.waypoints.values():
+                    if math.hypot(wp.x - rwx, wp.y - rwy) <= WP_ON_THRESHOLD:
+                        start_wp = wp.wp_id
+                        break
+
+                dyn_labels = [d.label for d in dyn_obs] if dyn_obs else []
+                res_summary = [len(r) for r in reserved] if reserved else []
+                print(f"[replan-dbg] {r_id}: pos=({rwx:.2f},{rwy:.2f}) "
+                      f"start_wp={start_wp} goal={goal_wp_id} "
+                      f"dyn={dyn_labels} res_lens={res_summary}",
+                      flush=True)
+
+                if start_wp is not None and start_wp != goal_wp_id:
+                    path_wps, cost = plan_path(
+                        bm, start_wp, goal_wp_id,
+                        dynamic_obstacles=dyn_obs if dyn_obs else None,
+                        reserved_paths=reserved if reserved else None,
+                    )
+                    plan_waypoints = path_wps if path_wps else None
+                else:
+                    result = plan_path_from_point(
+                        bm, (rwx, rwy), goal_wp_id,
+                        dynamic_obstacles=dyn_obs if dyn_obs else None,
+                        reserved_paths=reserved if reserved else None,
+                    )
+                    plan_waypoints = result.waypoints if result else None
+            except Exception as e:
+                print(f"[replan] {r_id} plan error: {e}", flush=True)
+                plan_waypoints = None
+
+            if plan_waypoints:
+                new_plans[r_id] = list(plan_waypoints)
+                self._robot_wp_idx[r_id] = 0
+                points = [(rwx, rwy)]
+                for wp_id in plan_waypoints:
+                    wp = graph.waypoints[wp_id]
+                    points.append((wp.x, wp.y))
+                print(f"[replan] {r_id} → {label}: {len(plan_waypoints)} wps, "
+                      f"{len(points)} pts", flush=True)
+                self.map_view.set_planned_path(r_id, points)
+            else:
+                new_plans[r_id] = []
+                print(f"[replan] {r_id} → {label}: BLOCKED", flush=True)
+                self.map_view.clear_planned_path(r_id)
+
+        self._robot_planned_wps = new_plans
+
+    def _on_task_dispatched(self, robot_id: str, label: str, data: dict):
+        task_id = data.get("task_id", "?")
+        card = self._robot_cards.get(robot_id)
+        if card:
+            card.dest_lbl.setText(f"→ {label}")
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

@@ -139,6 +139,10 @@ class ApiClient:
             "priority": priority,
         })
 
+    def assign_task(self, task_id: str, robot_id: str) -> dict:
+        """POST /tasks/{task_id}/assign"""
+        return self._post(f"/tasks/{task_id}/assign", {"robot_id": robot_id})
+
     def send_command(
         self,
         robot_id: str,

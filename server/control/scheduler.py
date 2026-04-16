@@ -314,19 +314,11 @@ class TaskDispatcher:
         final_y     = float(place["y"]     or 0.0) if place else 0.0
         final_theta = float(place["theta"] or 0.0) if place else 0.0
 
-        # --- Path planning injection ---
-        # If the map is loaded, plan a waypoint path from the robot's
-        # current position to the destination. The robot receives the
-        # first intermediate waypoint; subsequent waypoints are sent
-        # automatically when the robot reports ARRIVED.
+        # Path planning is handled by ros2_bridge (not the server).
+        # The server sends the FINAL destination coordinates directly;
+        # the bridge computes A* waypoint paths with reserved_paths
+        # and dynamic_obstacles for multi-robot conflict avoidance.
         target_x, target_y, target_theta = final_x, final_y, final_theta
-        self._waypoint_queues.pop(robot_id, None)
-        self._active_wp_paths.pop(robot_id, None)
-
-        if self._buffet_map is not None:
-            target_x, target_y, target_theta = self._plan_waypoint_route(
-                robot_id, final_x, final_y, final_theta,
-            )
 
         cmd_id  = str(uuid.uuid4())
         now_ms  = _ts_now_ms()

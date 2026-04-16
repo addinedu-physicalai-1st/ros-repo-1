@@ -49,11 +49,9 @@ class RobotMapItem(QGraphicsObject):
         # Yaw arrow
         arrow_len = 32
         dx = math.cos(self.yaw) * arrow_len
-        # Qt Y is inverted (down = positive), so negate sin
         dy = -math.sin(self.yaw) * arrow_len
         painter.setPen(QPen(QColor("white"), 3))
         painter.drawLine(QPointF(0, 0), QPointF(dx, dy))
-        # Arrowhead
         head_len = 10
         angle = math.atan2(dy, dx)
         p1 = QPointF(
@@ -68,13 +66,22 @@ class RobotMapItem(QGraphicsObject):
         painter.setPen(Qt.NoPen)
         painter.drawPolygon(QPolygonF([QPointF(dx, dy), p1, p2]))
 
-        # Text
+        # Text (counter-rotate to stay upright if view is rotated)
+        painter.save()
+        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+        if view:
+            vt = view.transform()
+            # Extract rotation angle and counter-rotate
+            rot = math.atan2(vt.m12(), vt.m11())
+            if abs(rot) > 0.01:
+                painter.rotate(math.degrees(-rot))
         painter.setPen(QPen(QColor("white")))
         font = QFont()
         font.setPointSize(10)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(QRectF(-30, -30, 60, 60), Qt.AlignCenter, self.r_id)
+        painter.restore()
 
     def set_yaw(self, yaw: float) -> None:
         """Set orientation in radians (ROS convention: 0=east, CCW+)."""
@@ -127,8 +134,15 @@ class WaypointItem(QGraphicsItem):
         painter.setPen(QPen(QColor("#1f77b4"), 1.5))
         painter.setBrush(QBrush(QColor("#1f77b4")))
         painter.drawEllipse(-r, -r, r * 2, r * 2)
-        # Label
+        # Label (counter-rotate to stay upright)
         if self.label:
+            painter.save()
+            view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            if view:
+                vt = view.transform()
+                rot = math.atan2(vt.m12(), vt.m11())
+                if abs(rot) > 0.01:
+                    painter.rotate(math.degrees(-rot))
             painter.setPen(QPen(QColor("#555555")))
             font = QFont()
             font.setPointSize(7)
@@ -137,17 +151,22 @@ class WaypointItem(QGraphicsItem):
                 QRectF(-40, -r - 14, 80, 14),
                 Qt.AlignCenter, self.label,
             )
+            painter.restore()
 
 
 # ── Path line ─────────────────────────────────────────────────────────────────
 
 class PathLineItem(QGraphicsItem):
-    """Dashed line showing a planned path (list of scene-coordinate points)."""
+    """Line showing a path (list of scene-coordinate points)."""
 
-    def __init__(self, points: list, color: QColor, parent=None):
+    def __init__(self, points: list, color: QColor, dashed: bool = False,
+                 opacity: float = 0.4, width: float = 2.5, parent=None):
         super().__init__(parent)
         self._points = points
         self._color = color
+        self._dashed = dashed
+        self._opacity = opacity
+        self._width = width
         self._rect = QRectF()
         self._compute_rect()
 
@@ -177,8 +196,9 @@ class PathLineItem(QGraphicsItem):
         if len(self._points) < 2:
             return
         painter.setRenderHint(QPainter.Antialiasing)
-        pen = QPen(self._color, 3)
-        pen.setStyle(Qt.DashLine)
+        painter.setOpacity(self._opacity)
+        pen = QPen(self._color, self._width)
+        pen.setStyle(Qt.DashLine if self._dashed else Qt.SolidLine)
         painter.setPen(pen)
         for i in range(len(self._points) - 1):
             painter.drawLine(self._points[i], self._points[i + 1])
