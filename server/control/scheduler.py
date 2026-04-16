@@ -172,7 +172,10 @@ class TaskDispatcher:
         if sess is None:
             return
 
-        battery = await self._manager.telemetry.get_battery(robot_id) or 100
+        battery = await self._manager.telemetry.get_battery(robot_id)
+        if battery is None:
+            logger.debug("try_assign_for_robot: skip %s (no battery telemetry)", robot_id)
+            return
 
         async with self._db_lock:
             conn = await self._get_conn()

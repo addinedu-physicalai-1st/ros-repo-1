@@ -291,3 +291,37 @@ async def test_auto_charge_triggers_when_idle_and_low_battery():
     dispatcher, send_mock = _make_dispatcher(int(pb.RobotStatus.IDLE))
     await dispatcher.maybe_trigger_charge("PNK01", battery=15)
     send_mock.assert_called_once()
+
+
+# ──────────────────────────────────────────────────────────────────
+# 텔레메트리 미수신 시 배당 차단
+# ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_try_assign_skips_when_no_battery_telemetry():
+    """배터리 텔레메트리가 없으면 (None) 작업 배당을 건너뛴다."""
+    policy = TaskAssignmentPolicy()
+    db = MagicMock()
+    db_lock = asyncio.Lock()
+
+    conn_mock = AsyncMock()
+    pending_task = make_task(SERVE)
+    db.list_pending_tasks_sorted = AsyncMock(return_value=[pending_task])
+    db.get_place = AsyncMock(return_value={"x": 0.0, "y": 0.0, "theta": 0.0})
+
+    send_mock = AsyncMock()
+    manager_mock = MagicMock()
+    manager_mock.get_session = AsyncMock(return_value=MagicMock(next_seq=lambda: 1))
+    manager_mock.send_command_packet = send_mock
+    manager_mock.telemetry = MagicMock()
+    manager_mock.telemetry.get_battery = AsyncMock(return_value=None)  # 미수신
+
+    async def get_conn():
+        return conn_mock
+
+    dispatcher = TaskDispatcher(
+        db=db, get_conn=get_conn, db_lock=db_lock, manager=manager_mock, policy=policy,
+    )
+
+    await dispatcher.try_assign_for_robot("PNK01")
+    send_mock.assert_not_called()

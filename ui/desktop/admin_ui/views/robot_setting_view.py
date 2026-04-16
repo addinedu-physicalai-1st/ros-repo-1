@@ -255,7 +255,6 @@ class RobotSettingPage(QWidget):
         for robot in self._robots:
             r_id    = robot.get("robot_id", "")
             s_int   = robot.get("status", 0)
-            battery = robot.get("battery_last", 0)
             task_id = robot.get("current_task_id", "") or ""
             # IP not returned by API — display placeholder
             ip = "—"
@@ -264,7 +263,8 @@ class RobotSettingPage(QWidget):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(r_id))
             self.table.setItem(row, 1, QTableWidgetItem(ROBOT_STATUS_LABELS.get(s_int, "알 수 없음")))
-            self.table.setItem(row, 2, QTableWidgetItem(f"{battery}%"))
+            # Battery: start with "—" until live telemetry responds
+            self.table.setItem(row, 2, QTableWidgetItem("—"))
             self.table.setItem(row, 3, QTableWidgetItem(ip))
 
             cmd_btn = QPushButton("⚡ 명령 전송")
@@ -276,6 +276,25 @@ class RobotSettingPage(QWidget):
             edit_btn.setStyleSheet("background-color: #ECF5FF; color: #409EFF; border-radius: 3px; border: 1px solid #B3D8FF;")
             edit_btn.clicked.connect(lambda _, rid=r_id, addr=ip: self.open_robot_config(rid, addr))
             self.table.setCellWidget(row, 5, edit_btn)
+
+            # Fetch live battery from UDP telemetry cache
+            wb = ApiWorker(self._api.get_telemetry_battery, r_id)
+            wb.result.connect(lambda data, rid=r_id: self._on_battery_loaded(rid, data))
+            # On error (404 = no telemetry received): leave "—"
+            wb.finished.connect(lambda: self._discard(wb))
+            self._workers.append(wb)
+            wb.start()
+
+    def _on_battery_loaded(self, r_id: str, data: dict):
+        """Update battery cell with live UDP telemetry value."""
+        battery = data.get("battery_percent")
+        if battery is None:
+            return
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item and item.text() == r_id:
+                self.table.setItem(row, 2, QTableWidgetItem(f"{battery}%"))
+                break
 
     # ── command dialog ────────────────────────────────────────────────────────
 
