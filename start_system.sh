@@ -173,7 +173,27 @@ if [[ "${START_MONITOR}" == "true" && "${START_ROBOTS}" == "true" ]]; then
     echo
 fi
 
-# ── 4) Dashboard (PyQt5 admin GUI) ─────────────────────────────────
+# ── 4) ROS2-to-Control bridge (relays TF → TCP/UDP telemetry) ─────
+if [[ "${START_ROBOTS}" == "true" ]]; then
+    BRIDGE_SCRIPT="${SERVER_DIR}/control/ros2_bridge.py"
+    if [[ -f "${BRIDGE_SCRIPT}" ]]; then
+        echo "[system] Starting ROS2 bridge..."
+        if [[ -f /opt/ros/jazzy/setup.bash ]]; then
+            source /opt/ros/jazzy/setup.bash
+            [[ -f "${SCRIPT_DIR}/install/setup.bash" ]] && source "${SCRIPT_DIR}/install/setup.bash"
+        fi
+        export DEMO_USE_SIM_TIME=false
+        python3 "${BRIDGE_SCRIPT}" \
+            --robot-ids pinky1 pinky2 \
+            --domain-ids "${PINKY1_DOMAIN_ID}" "${PINKY2_DOMAIN_ID}" \
+            >"${RUN_DIR}/bridge.log" 2>&1 &
+        BRIDGE_PID=$!
+        echo "${BRIDGE_PID}" >"${RUN_DIR}/bridge.pid"
+        echo "[system] Bridge PID: ${BRIDGE_PID}"
+    fi
+fi
+
+# ── 5) Dashboard (PyQt5 admin GUI) ─────────────────────────────────
 DASHBOARD_DIR="${SCRIPT_DIR}/ui/desktop/admin_ui"
 if [[ -f "${DASHBOARD_DIR}/main.py" ]] && [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
     echo "[system] Starting admin dashboard..."
@@ -203,6 +223,7 @@ echo "============================================================"
 echo "  System running"
 echo "============================================================"
 echo "  Servers PID    : ${SERVERS_PID}"
+[[ -f "${RUN_DIR}/bridge.pid" ]] && echo "  Bridge PID     : $(cat "${RUN_DIR}/bridge.pid")"
 [[ -f "${RUN_DIR}/dashboard.pid" ]] && echo "  Dashboard PID  : $(cat "${RUN_DIR}/dashboard.pid")"
 [[ -f "${RUN_DIR}/monitor.pid" ]] && echo "  Monitor PID    : $(cat "${RUN_DIR}/monitor.pid")"
 if [[ "${START_ROBOTS}" == "true" ]]; then
@@ -218,6 +239,7 @@ cleanup() {
     echo ""
     echo "[system] Shutting down... use kill_system.sh for full cleanup."
     [[ -f "${RUN_DIR}/dashboard.pid" ]] && kill "$(cat "${RUN_DIR}/dashboard.pid")" 2>/dev/null || true
+    [[ -f "${RUN_DIR}/bridge.pid" ]] && kill "$(cat "${RUN_DIR}/bridge.pid")" 2>/dev/null || true
     [[ -f "${RUN_DIR}/monitor.pid" ]] && kill "$(cat "${RUN_DIR}/monitor.pid")" 2>/dev/null || true
     kill "${SERVERS_PID}" 2>/dev/null || true
     wait 2>/dev/null || true

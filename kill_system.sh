@@ -63,7 +63,21 @@ fi
 # Sweep any leftover dashboard processes
 pkill -f "admin_ui/main.py" 2>/dev/null || true
 
-# ── 2) Monitor ─────────────────────────────────────────────────────
+# ── 2) ROS2 Bridge ─────────────────────────────────────────────────
+BRIDGE_PID_FILE="${RUN_DIR}/bridge.pid"
+if [[ -f "${BRIDGE_PID_FILE}" ]]; then
+    pid="$(cat "${BRIDGE_PID_FILE}")"
+    if kill -0 "${pid}" 2>/dev/null; then
+        echo "[kill] Stopping ROS2 bridge (PID ${pid})..."
+        kill -INT "${pid}" 2>/dev/null || true
+        sleep 1
+        kill -0 "${pid}" 2>/dev/null && kill -TERM "${pid}" 2>/dev/null || true
+    fi
+    rm -f "${BRIDGE_PID_FILE}"
+fi
+pkill -f "ros2_bridge.py" 2>/dev/null || true
+
+# ── 3) Monitor ─────────────────────────────────────────────────────
 MONITOR_PID_FILE="${RUN_DIR}/monitor.pid"
 if [[ -f "${MONITOR_PID_FILE}" ]]; then
     pid="$(cat "${MONITOR_PID_FILE}")"
@@ -77,12 +91,12 @@ if [[ -f "${MONITOR_PID_FILE}" ]]; then
 fi
 pkill -f "python3.*monitor.py.*--domain-ids" 2>/dev/null || true
 
-# ── 3) Demo stack (if running via demo start.sh) ──────────────────
+# ── 4) Demo stack (if running via demo start.sh) ──────────────────
 if [[ -f "${DEMO_DIR}/kill.sh" ]]; then
     (cd "${DEMO_DIR}" && bash kill.sh 2>/dev/null) || true
 fi
 
-# ── 4) Control + Web servers ──────────────────────────────────────
+# ── 5) Control + Web servers ──────────────────────────────────────
 SERVERS_PID_FILE="${RUN_DIR}/servers.pid"
 if [[ -f "${SERVERS_PID_FILE}" ]]; then
     pid="$(cat "${SERVERS_PID_FILE}")"
@@ -100,7 +114,7 @@ for pat in "uvicorn main:app" "python3 -m uvicorn"; do
     pkill -f "${pat}" 2>/dev/null || true
 done
 
-# ── 5) Pinky robots (optional) ────────────────────────────────────
+# ── 6) Pinky robots (optional) ────────────────────────────────────
 if [[ "${KILL_ROBOTS}" == "true" ]]; then
     echo "[kill] Stopping pinky robots..."
     for ip in "${PINKY1_IP}" "${PINKY2_IP}"; do
