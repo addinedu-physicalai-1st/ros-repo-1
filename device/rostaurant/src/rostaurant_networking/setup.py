@@ -13,7 +13,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         (f"share/{package_name}/launch", glob("launch/*.py")),
     ],
-    install_requires=["setuptools", "protobuf>=4.25"],
+    install_requires=["setuptools", "protobuf>=6.31.1"],
     zip_safe=True,
     maintainer="pinklab",
     maintainer_email="kyung133851@pinklab.art",

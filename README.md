@@ -24,25 +24,20 @@ Browser ◀──WS───  Web Server        ◀──WS───  Control Se
 
 ---
 
-## 빠른 시작
+## 처음 실행하는 분을 위한 단계별 안내
 
-### 필수 요건
+> 터미널을 여러 개 열어야 합니다. 각 단계마다 **어느 터미널**인지 표시되어 있으니 잘 읽고 따라하세요.
 
-| 항목 | 버전/설명 | 적용 대상 |
-|------|----------|----|
-| Python | 3.10 이상 | 서버 PC |
-| ROS2 | Jazzy | 로봇 |
-| empy | **3.3.4** (`pip install empy==3.3.4`) | 로봇 (빌드 시) |
-| PyQt5 | `sudo apt install python3-pyqt5 python3-requests` | 서버 PC (대시보드) |
-
-### 1. 저장소 클론
+### 0단계 — 저장소 클론 (딱 한 번만)
 
 ```bash
 git clone <repo-url> rostaurant
 cd rostaurant
 ```
 
-### 2. 서버 의존성 설치
+---
+
+### 1단계 — 서버 의존성 설치 (딱 한 번만)
 
 ```bash
 cd server
@@ -54,61 +49,144 @@ pip install -r control/requirements.txt
 pip install -r web/requirements.txt
 ```
 
-### 3. 최초 실행 — Admin API 키 발급
+---
 
-DB가 없는 상태(첫 실행)에서 서버를 시작하면 Admin 계정이 자동 생성됩니다.  
-`MRTA_ADMIN_KEY_OUT`에 경로를 지정하면 키를 파일로 저장합니다.
+### 2단계 — Admin API 키 발급 (딱 한 번만)
+
+처음 실행하면 자동으로 관리자 계정이 만들어지고 키가 발급됩니다.
 
 ```bash
 cd server
-rm control/rostaurant.db*
+rm -f control/rostaurant.db
 MRTA_ADMIN_KEY_OUT=~/admin_key.txt ./start.sh
 ```
 
-서버 로그에 아래처럼 출력되면 정상입니다:
+서버 로그에 아래 메시지가 나오면 성공입니다:
 
 ```
-INFO  main  INITIAL ADMIN user_id=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx — api_key written to /root/admin_key.txt (mode 0600)
-INFO  main  ★  FIRST-RUN: Admin user created. Use the api_key above for ADMIN_API_KEY.
+INFO  main  INITIAL ADMIN user_id=xxxxxxxx-... — api_key written to /root/admin_key.txt
+INFO  main  FIRST-RUN: Admin user created. Use the api_key above for ADMIN_API_KEY.
 ```
 
-파일에서 키를 확인합니다:
+**Ctrl+C** 로 서버를 멈추고, 키를 확인합니다:
 
 ```bash
 cat ~/admin_key.txt
-# user_id=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-# api_key=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# api_key=xxxxxxxxxxxxxxxxxxxx...  ← 이 값을 복사해 두세요!
 ```
 
-> **중요:** `api_key` 값을 복사해 두세요. 이후 모든 실행에서 `ADMIN_API_KEY`로 사용합니다.  
-> DB(`server/control/rostaurant.db`)가 이미 존재하면 최초 실행 로그가 출력되지 않습니다.  
-> DB를 초기화하려면 `rm server/control/rostaurant.db` 후 재실행하세요.
+> 키를 잃어버렸으면 `rm server/control/rostaurant.db` 후 이 단계를 다시 하면 됩니다.
 
-### 4. 서버 실행
+---
 
-키 발급 이후부터는 아래 명령으로 실행합니다:
+### 3단계 — 로봇 Python 의존성 설치 (딱 한 번만)
+
+> protobuf 버전이 맞지 않으면 아래 오류 중 하나가 납니다:
+> - `ImportError: cannot import name 'runtime_version'` (protobuf 3.x)
+> - `RuntimeVersionError: ... supports runtime versions 6.x.x` (protobuf 4.x/5.x)
+>
+> `robotcafe_pb2.py`가 **protobuf 6.31.1**로 생성되었으므로 반드시 6.31.1 이상이어야 합니다.
+
+```bash
+pip install -r device/rostaurant/requirements.txt --break-system-packages
+```
+
+확인:
+
+```bash
+python3 -c "import google.protobuf; print(google.protobuf.__version__)"
+# 6.31.1 이상이면 OK
+```
+
+---
+
+### 4단계 — 로봇 패키지 빌드 (딱 한 번만)
+
+> **중요:** 반드시 **새 터미널**을 열어서 순서대로 실행하세요.  
+> 중간에 터미널을 닫거나 새로 열면 2번(`source /opt/ros/jazzy/setup.bash`)부터 다시 시작해야 합니다.
+
+```bash
+# (1) ROS2 환경 불러오기
+source /opt/ros/jazzy/setup.bash
+
+# (2) pinky_interfaces 빌드
+cd /path/to/rostaurant/device/pinky_pro
+colcon build --packages-select pinky_interfaces
+
+# (3) pinky_interfaces 적용
+source install/setup.bash
+
+# (4) rostaurant 패키지 빌드  ← (3) 과 같은 터미널에서 계속!
+cd ../rostaurant
+colcon build --packages-select rostaurant_state_machine rostaurant_networking task_executor
+
+# (5) rostaurant 적용
+source install/setup.bash
+```
+
+빌드가 끝나면 아래처럼 출력됩니다:
+
+```
+Summary: 2 packages finished [...]
+```
+
+---
+
+## 매일 실행하는 방법
+
+빌드는 이미 끝났으니, 아래 순서로 터미널 3개를 엽니다.
+
+### 터미널 1 — 서버 실행
 
 ```bash
 cd server
-ADMIN_API_KEY=<위에서_복사한_키> ./start.sh
+ADMIN_API_KEY=<2단계에서_복사한_키> ./start.sh
 ```
-
-예시 (이 프로젝트의 실제 키):
-```bash
-ADMIN_API_KEY=616a5210d97b780f902b2dec8d93b640c4fe997336f1e7fdb8122c132f92c1ae ./start.sh
-```
-
-> **키를 잃어버린 경우:** DB를 삭제(`rm server/control/rostaurant.db`)하고 3단계부터 다시 진행하세요.
 
 | 서비스 | 주소 |
 |--------|------|
-| 관제 서버 REST API | http://localhost:8000/docs |
+| 관제 서버 API | http://localhost:8000/docs |
 | 웹 서버 | http://localhost:3000 |
 | 헬스체크 | http://localhost:8000/health |
 
 ---
 
-## 웹 UI
+### 터미널 2 — Gazebo 시뮬레이션
+
+```bash
+source /opt/ros/jazzy/setup.bash
+ros2 launch pinky_gz_sim launch_sim.launch.xml
+```
+
+---
+
+### 터미널 3 — 로봇 브리지 노드 (새 터미널에서!)
+
+```bash
+# (1) ROS2 환경 불러오기
+source /opt/ros/jazzy/setup.bash
+
+# (2) pinky_interfaces 적용
+cd /path/to/rostaurant/device/pinky_pro
+source install/setup.bash
+
+# (3) rostaurant 적용  ← (2) 와 같은 터미널에서 계속!
+cd ../rostaurant
+source install/setup.bash
+
+# (4) 실행
+ros2 launch rostaurant_networking robot.launch.py
+```
+
+서버 로그에 아래가 출력되면 연결 성공입니다:
+
+```
+INFO  connection_manager  Registered TCP session for PNK01
+```
+
+---
+
+## 웹 UI 주소
 
 | 화면 | 주소 |
 |------|------|
@@ -121,45 +199,9 @@ ADMIN_API_KEY=616a5210d97b780f902b2dec8d93b640c4fe997336f1e7fdb8122c132f92c1ae .
 
 ---
 
-## 로봇 연결
+## 실물 로봇 연결
 
-### 시뮬레이션 (Gazebo)
-
-```bash
-# 터미널 1 — 서버
-cd server && ADMIN_API_KEY=<키> ./start.sh
-
-# 터미널 2 — Gazebo 시뮬레이션
-source /opt/ros/jazzy/setup.bash
-ros2 launch pinky_gz_sim launch_sim.launch.xml
-
-# 터미널 3 — 로봇 브리지 노드 (새 터미널에서 실행)
-# 1단계: pinky_interfaces 빌드 (처음 한 번만)
-source /opt/ros/jazzy/setup.bash
-cd device/pinky_pro
-colcon build --packages-select pinky_interfaces
-source install/setup.bash
-
-# 2단계: rostaurant 패키지 빌드 (처음 한 번만, 위 source 이후 같은 터미널에서)
-cd ../rostaurant
-colcon build --packages-select rostaurant_networking task_executor
-source install/setup.bash
-
-# 3단계: 실행
-ros2 launch rostaurant_networking robot.launch.py
-```
-
-> **주의:** `source install/setup.bash`는 반드시 **새 터미널**에서 실행하세요.  
-> 이전에 다른 워크스페이스를 source한 터미널을 재사용하면 `AMENT_PREFIX_PATH`가 오염되어 오류가 발생합니다.
-
-연결 성공 시 서버 로그에 출력됩니다:
-```
-INFO  connection_manager  Registered TCP session for PNK01
-```
-
-### 실물 로봇
-
-#### 사전 준비 (최초 1회)
+### 사전 준비 (최초 1회)
 
 ```bash
 # 로봇에서 — hostname을 robot_id로 사용
@@ -173,24 +215,22 @@ sudo ufw allow 9000/tcp  # 로봇 TCP
 sudo ufw allow 9001/udp  # 로봇 UDP 텔레메트리
 ```
 
-#### 로봇 빌드 (최초 1회)
+### 로봇 빌드 (최초 1회)
 
 ```bash
-# 로봇에서 SSH 접속 후
+# 로봇에 SSH 접속
 ssh pinky@<로봇IP>
 
 # 워크스페이스 디렉토리 생성
 mkdir -p ~/pinky_pro/src ~/rostaurant/src
-cd ~/pinky_pro/src
 
-# 소스 복사 (서버 PC → 로봇, 또는 git clone)
-# 복사할 소스:
-#   device/pinky_pro/src/pinky_interfaces       →  ~/pinky_pro/src/pinky_interfaces
-#   device/rostaurant/src/rostaurant_networking  →  ~/rostaurant/src/rostaurant_networking
-#   device/rostaurant/src/task_executor          →  ~/rostaurant/src/task_executor
-#   device/rostaurant/requirements.txt           →  ~/rostaurant/requirements.txt
+# 소스를 아래 경로에 복사 (git clone 또는 scp)
+# device/pinky_pro/src/pinky_interfaces       →  ~/pinky_pro/src/pinky_interfaces
+# device/rostaurant/src/rostaurant_networking  →  ~/rostaurant/src/rostaurant_networking
+# device/rostaurant/src/task_executor          →  ~/rostaurant/src/task_executor
+# device/rostaurant/requirements.txt           →  ~/rostaurant/requirements.txt
 
-# 0단계: Python 의존성 설치 (최초 1회)
+# 0단계: Python 의존성 설치
 pip install -r ~/rostaurant/requirements.txt --break-system-packages
 
 # 1단계: pinky_interfaces 빌드 (새 터미널)
@@ -199,13 +239,13 @@ cd ~/pinky_pro
 colcon build --packages-select pinky_interfaces
 source install/setup.bash
 
-# 2단계: rostaurant 패키지 빌드 (같은 터미널, 위 source 이후)
+# 2단계: rostaurant 패키지 빌드 (같은 터미널)
 cd ~/rostaurant
-colcon build --packages-select rostaurant_networking task_executor
+colcon build --packages-select rostaurant_state_machine rostaurant_networking task_executor
 source install/setup.bash
 ```
 
-#### 실행 순서
+### 실물 로봇 실행
 
 ```bash
 # 서버 PC
@@ -223,13 +263,32 @@ source ~/rostaurant/install/setup.bash
 ros2 launch rostaurant_networking robot.launch.py server_host:=<서버PC_IP>
 ```
 
-서버 PC IP 확인: `hostname -I` (예: `192.168.1.10`)
+서버 PC IP 확인: `hostname -I`
 
 ---
 
-## 환경변수
+## 오류가 났을 때
 
-### 서버 (server/start.sh 또는 직접 실행 시)
+| 오류 메시지 | 해결 방법 |
+|------------|----------|
+| `{"detail":"Not authenticated"}` | `ADMIN_API_KEY` 환경변수 미설정. `cat ~/admin_key.txt` 로 키 확인 후 재실행 |
+| `TransientParseError: not enough data to read` | empy 버전 문제. `pip install empy==3.3.4` 후 재빌드 |
+| `ImportError: cannot import name 'runtime_version' from 'google.protobuf'` | protobuf 버전 낮음. `pip install "protobuf>=6.31.1" --break-system-packages` |
+| `RuntimeVersionError: ... supports runtime versions 6.x.x ...` | protobuf가 4.x/5.x로 설치됨. `pip install "protobuf>=6.31.1" --break-system-packages` |
+| `ModuleNotFoundError: No module named 'pinky_interfaces.msg'` | `pinky_interfaces` 빌드 후 `source install/setup.bash` 필요 |
+| `ignoring unknown package 'pinky_interfaces'` | `pinky_interfaces`는 `device/pinky_pro/`에서만 빌드 가능. 별도 워크스페이스 빌드 필요 |
+| `no such file or directory: .../local_setup.sh` | 빌드 캐시 오염. `rm -rf build install log` 후 **새 터미널**에서 재빌드 |
+| `{"detail":"dest_id '...' is not a valid active place"}` | 아래 place_id 표에 없는 ID 사용. `GET /places`로 등록된 목록 확인 |
+| 로봇이 서버에 연결 안 됨 | 서버 PC와 로봇이 같은 네트워크인지 확인. `ping <서버IP>` 및 포트 9000/9001 방화벽 확인 |
+| PyQt 대시보드가 안 뜸 | `sudo apt install python3-pyqt5 python3-requests` 또는 `NO_DASHBOARD=1 ./start.sh` |
+| `503 robot not connected` | 로봇 브리지 노드가 실행 중이지 않거나 TCP 연결이 끊어진 상태 |
+| 배터리가 항상 0% 표시 | 시뮬레이션 환경에서는 정상. 실물 로봇의 `/battery` 토픽 확인 |
+
+---
+
+## 환경변수 목록
+
+### 서버 (start.sh)
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
@@ -255,17 +314,13 @@ ros2 launch rostaurant_networking robot.launch.py server_host:=<서버PC_IP>
 `robot_id`는 `hostnamectl set-hostname pnk01` 설정 시 자동으로 `PNK01`로 결정됩니다.  
 강제 지정: `ROBOT_ID=PNK02 ros2 launch rostaurant_networking robot.launch.py`
 
-> **주의:** `pinky_interfaces`는 `device/pinky_pro/` 워크스페이스에, `rostaurant_networking`·`task_executor`는 `device/rostaurant/` 워크스페이스에 속합니다. 두 워크스페이스를 반드시 **별도로** 빌드해야 합니다.
-
 ---
 
 ## 장소 ID (place_id) 목록
 
-관제 서버 DB에 초기 등록된 장소입니다. 좌표는 `GET /places` 또는 `PATCH /places/{id}`로 수정합니다.
-
 | place_id | 용도 |
 |----------|------|
-| `WAIT_A`, `WAIT_B` | 로봇 대기 위치 (자동 충전 귀환 시 사용) |
+| `WAIT_A`, `WAIT_B` | 로봇 대기 위치 |
 | `KIOSK_1` | 키오스크 위치 |
 | `TBL_01` ~ `TBL_05` | 고객 테이블 1~5 |
 | `TOILET` | 화장실 안내 목적지 |
@@ -273,7 +328,8 @@ ros2 launch rostaurant_networking robot.launch.py server_host:=<서버PC_IP>
 | `KITCHEN` | 주방 |
 | `DISP_01` ~ `DISP_06` | 메뉴 진열장 1~6 |
 
-좌표 설정 예시:
+좌표 수정:
+
 ```bash
 curl -X PATCH http://localhost:8000/places/TBL_01 \
   -H "Authorization: Bearer <ADMIN_API_KEY>" \
@@ -283,7 +339,7 @@ curl -X PATCH http://localhost:8000/places/TBL_01 \
 
 ---
 
-## 통신 프로토콜 요약
+## 통신 프로토콜
 
 | 구간 | 프로토콜 | 포트 | 설명 |
 |------|---------|------|------|
@@ -330,7 +386,7 @@ rostaurant/
 │   └── start.sh          # 전체 서비스 동시 실행 스크립트
 ├── device/
 │   ├── pinky_pro/
-│   │   └── src/          # Pinky Pro 로봇 ROS2 패키지 소스
+│   │   └── src/
 │   │       ├── pinky_interfaces/   # 커스텀 메시지 (RobotCommand, RobotTaskStatus)
 │   │       ├── pinky_bringup/      # 하드웨어 초기화
 │   │       ├── pinky_navigation/   # Nav2 설정
@@ -342,63 +398,3 @@ rostaurant/
 └── ui/
     └── desktop/admin_ui/ # PyQt5 관제 대시보드
 ```
-
----
-
-## 환경 설정
-
-### 서버 PC 환경 요건
-
-| 항목 | 요건 |
-|------|------|
-| OS | Ubuntu 22.04 / 24.04 |
-| Python | 3.10 이상 |
-| pip 패키지 | `server/control/requirements.txt`, `server/web/requirements.txt` |
-| PyQt5 (대시보드) | `sudo apt install python3-pyqt5 python3-requests` |
-
-```bash
-# 서버 의존성 설치
-cd server
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r control/requirements.txt
-pip install -r web/requirements.txt
-```
-
-### 로봇 환경 요건
-
-| 항목 | 요건 |
-|------|------|
-| OS | Ubuntu 24.04 |
-| ROS2 | Jazzy |
-| Python | 3.12 (ROS2 Jazzy 기본) |
-| empy | **반드시 3.3.4** (`pip install empy==3.3.4`) |
-
-```bash
-# 로봇에서: empy 버전 확인 및 고정 (pinky_interfaces 빌드 전 필수)
-pip show empy | grep Version
-# Version: 4.x.x 이면 다운그레이드 필요
-
-pip install empy==3.3.4
-```
-
-> **empy 버전 주의:** ROS2 Jazzy의 `rosidl_generator_rs`는 empy 3.x API를 사용합니다.  
-> empy 4.x가 설치된 환경에서 `pinky_interfaces` 빌드 시 `TransientParseError: not enough data to read` 오류가 발생합니다.
-
----
-
-## 자주 발생하는 문제
-
-| 증상 | 해결 방법 |
-|------|----------|
-| `{"detail":"Not authenticated"}` | `ADMIN_API_KEY` 환경변수 미설정. `cat ~/admin_key.txt` 로 키 확인 후 재실행 |
-| `ModuleNotFoundError: No module named 'pinky_interfaces.msg'` | `pinky_interfaces` 빌드 및 source 필요. `device/pinky_pro`에서 빌드 후 `source install/setup.bash` |
-| `ignoring unknown package 'pinky_interfaces'` | `pinky_interfaces`는 `device/pinky_pro/` 워크스페이스에 있음. `device/rostaurant/`에서 함께 빌드 불가. 별도 빌드 필요 |
-| `TransientParseError: not enough data to read` | empy 버전 문제. `pip install empy==3.3.4` 후 재빌드 |
-| `ImportError: cannot import name 'runtime_version' from 'google.protobuf'` | 시스템 protobuf가 너무 낮음. `pip install "protobuf>=4.25" --break-system-packages` |
-| `no such file or directory: .../local_setup.sh` | 이전 경로의 빌드 캐시 오염. `rm -rf build install log` 후 **새 터미널**에서 재빌드 |
-| `{"detail":"dest_id '...' is not a valid active place"}` | 위 place_id 표에 없는 ID 사용. 표를 참고하거나 `GET /places`로 등록된 목록 확인 |
-| 로봇이 서버에 연결 안 됨 | 서버 PC와 로봇이 같은 네트워크인지 확인. `ping <서버IP>` 및 포트 9000/9001 방화벽 확인 |
-| PyQt 대시보드가 안 뜸 | `sudo apt install python3-pyqt5 python3-requests` 또는 `NO_DASHBOARD=1` 으로 대시보드 없이 실행 |
-| `503 robot not connected` | 로봇 브리지 노드가 실행 중이지 않거나 TCP 연결이 끊어진 상태 |
-| 배터리가 항상 0% 표시 | 시뮬레이션 환경에서는 정상. 실물 로봇의 `/battery` 토픽 확인 |

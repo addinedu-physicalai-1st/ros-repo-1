@@ -1,5 +1,5 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 aiosqlite>=0.19
-protobuf>=4.25
+protobuf>=6.31.1
 grpcio-tools>=1.60

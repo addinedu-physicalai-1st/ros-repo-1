@@ -3,6 +3,7 @@
 #   pip install -r device/rostaurant/requirements.txt --break-system-packages
 #
 # 주의: python3-protobuf (apt) 는 버전이 낮아 runtime_version 오류 발생.
+#       robotcafe_pb2.py 가 protobuf 6.31.1 로 생성되었으므로 반드시 6.31.1 이상 필요.
 #       pip 버전을 사용해야 합니다.
 
-protobuf>=4.25
+protobuf>=6.31.1
