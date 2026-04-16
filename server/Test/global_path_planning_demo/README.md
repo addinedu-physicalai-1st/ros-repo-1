@@ -1,10 +1,10 @@
 # Waypoint-based A* Global Path Planner Demo
 
-뷔페 환경에서 동작하는 pinky pro 로봇용 **웨이포인트 기반 Global Path Planning** 방식의 구현 검증을 위한 독립 기술 데모 프로그램입니다. 본 프로그램은 메인 ROS 프로젝트와 분리된 순수 Python 데모이며, 알고리즘 동작과 시각적 결과 확인만을 목적으로 합니다.
+뷔페 환경에서 동작하는 pinky-pro 로봇용 **웨이포인트 기반 Global Path Planning** 데모입니다. Gazebo 시뮬레이션(`--sim`) 또는 실물 핑키(`--real`)에 연결하여, monitor 화면에서 클릭 주행과 웨이포인트/로봇 포즈 편집을 수행합니다.
 
 실제 운용 스케일은 **약 2.0 m × 1.6 m**, pinky-pro는 **12 × 12 cm 정사각 footprint**(`pinky_navigation/params/nav2_params.yaml` 기준) 입니다. 즉 맵 가로세로가 로봇 폭의 약 13~16배에 불과한 매우 좁은 환경입니다. 본 데모의 두 샘플 맵 모두 이 스케일을 그대로 반영합니다:
 
-- [maps/buffet_sim.yaml](maps/buffet_sim.yaml) + [maps/map4.pgm](maps/map4.pgm) — 실제 SLAM 스캔(`device/pinky_pro_robot/map4.pgm`의 사본). 여러 뷔페 스테이션이 있는 복잡한 구조. **기본 맵** (`python3 main.py` 인자 없이 실행 시 로드).
+- [maps/buffet_sim.yaml](maps/buffet_sim.yaml) + [maps/map4.pgm](maps/map4.pgm) — 실제 SLAM 스캔(`device/pinky_pro_robot/map4.pgm`의 사본). 여러 뷔페 스테이션이 있는 복잡한 구조. **기본 맵**.
 - [maps/buffet_realistic.yaml](maps/buffet_realistic.yaml) + [maps/buffet_realistic.pgm](maps/buffet_realistic.pgm) — 같은 스케일의 합성 맵. 서빙 스테이션 1개만 있는 ring 구조로, 알고리즘 자체 검증이 용이한 대조군.
 
 ## 배경
@@ -35,47 +35,87 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## 파일 구조
+
+```
+global_path_planning_demo/
+├── start.sh              # 데모 스택 시작 (--sim / --real)
+├── kill.sh               # 데모 스택 종료
+├── start_pinky.sh        # 핑키 로봇에서 driver + Nav2 기동
+├── kill_pinky.sh         # 핑키 프로세스 종료
+├── monitor.py            # 시각화 + 클릭 네비게이션 + 편집 모드 (ROS2 노드)
+├── nav2_bridge.py        # CLI 목표 전달 (A* 경로 → FollowPath)
+├── astar_planner.py      # A* 경로 계획 알고리즘
+├── map_data.py           # 맵 로딩 / 편집 / 저장 (YAML ↔ BuffetMap)
+├── test_drive.sh         # 자동 연속 주행 테스트
+├── requirements.txt      # Python 의존성
+└── maps/
+    ├── buffet_sim.yaml   # 기본 맵 (실제 SLAM 스캔)
+    ├── map4.pgm
+    ├── buffet_realistic.yaml  # 합성 ring 구조 맵 (대조군)
+    └── buffet_realistic.pgm
+```
+
 ## 실행
+
+### 시뮬레이션 모드 (Gazebo)
 
 ```bash
 cd server/Test/global_path_planning_demo
-
-# 기본: 실제 SLAM 맵 (buffet_sim, map4.pgm)으로 인터랙티브
-python3 main.py
-
-# 헤드리스로 SLAM 맵 검증
-python3 main.py --headless
-
-# 합성 realistic 맵 (ring 구조, 대조군)
-python3 main.py --map maps/buffet_realistic.yaml
-python3 main.py --map maps/buffet_realistic.yaml --headless
-
-# ROS_WS는 이 저장소의 워크스페이스 루트 (install/ 상위). 예: export ROS_WS=$(git rev-parse --show-toplevel)
-# Launch Gazebo
-source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && ros2 launch pinky_gz_sim launch_sim.launch.xml 2>&1
-# Launch Nav2
-source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && for i in $(seq 1 30); do ros2 topic list 2>/dev/null | grep -q "/scan" && break; sleep 1; done && ros2 launch pinky_navigation gz_bringup_launch.xml map:="$ROS_WS/install/pinky_navigation/share/pinky_navigation/map/map4.yaml" 2>&1
-# Wait Nav2
-source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && for i in $(seq 1 60); do ros2 action list 2>/dev/null | grep -q "/follow_path" && echo "ready" && break; sleep 1; done
-# Start monitor
-source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && cd "$ROS_WS/server/Test/global_path_planning_demo" && python3 monitor.py 2>&1
+bash start.sh --sim
 ```
 
-`--map` 옵션을 생략하면 [maps/buffet_sim.yaml](maps/buffet_sim.yaml)(실제 SLAM 맵)을 로드합니다. 헤드리스 시나리오의 라벨이 사용자 정의 맵에 없으면 `[scenario] X -> Y: skipped (...)` 메시지로 우아하게 건너뜁니다.
+`start.sh --sim`이 아래를 순서대로 실행합니다:
+1. Gazebo (`pinky_gz_sim`) 기동 → `/scan` 토픽 대기
+2. Nav2 (`gz_bringup_launch.xml`, `use_sim_time=true`) 기동 → `/follow_path` 액션 대기
+3. `monitor.py` 기동 → matplotlib 시각화 창 표시
 
-### 인터랙티브 조작
+종료:
+```bash
+bash kill.sh
+```
+
+### Monitor 조작
+
+#### 일반 모드
 
 | 입력 | 동작 |
 |---|---|
-| **좌클릭 1회** | START 자유 좌표 선택 — 클릭 위치를 그대로 시작점으로 사용. 웨이포인트로 스냅하지 않음. 장애물 내부거나 맵 밖이면 거부 메시지 후 다시 클릭 대기 |
-| **좌클릭 2회** | GOAL 웨이포인트 선택 (가장 가까운 웨이포인트로 스냅), A* 즉시 실행 후 경로 표시 |
-| **좌클릭 3회** | 새로운 쿼리 시작 (이전 선택 초기화) |
-| **우클릭** | 동적 장애물(다른 로봇 등) 추가 — 클릭 위치에 반경 0.6 m 원형 장애물을 떨어뜨림. start/goal이 이미 설정되어 있으면 즉시 재계획. 정적 장애물 내부 / 맵 밖 / 현재 시작점 위에는 거부 |
-| `r` | 현재 start/goal 선택 리셋 (동적 장애물은 유지) |
-| `c` | 모든 동적 장애물 삭제 (start/goal 유지). start/goal이 설정되어 있으면 재계획 |
-| `q` | 종료 |
+| **좌클릭** | 가장 가까운 웨이포인트로 스냅 → A* 경로 계획 → `FollowPath` 전송 |
+| `e` | 편집 모드 진입 |
 
-> 시작점만 자유롭고 목적지는 웨이포인트로 스냅합니다. 뷔페 운용에서 목적지는 입구·주방·퇴식구·테이블 앞 등 미리 정의된 서비스 위치로 한정되는 것이 자연스러운 반면, 시작점은 로봇의 임의 현재 자세이기 때문입니다.
+CLI로도 목표를 보낼 수 있습니다:
+```bash
+cd server/Test/global_path_planning_demo
+ROS_DOMAIN_ID=41 DEMO_USE_SIM_TIME=true python3 nav2_bridge.py --goal Kitchen
+```
+
+#### 편집 모드 (`e`로 진입/퇴장)
+
+편집 모드에 진입하면 "EDIT MODE" 배너가 표시되고, 모든 웨이포인트에 오렌지 드래그 핸들이 나타납니다.
+
+| 입력 | 동작 |
+|---|---|
+| **드래그** | 웨이포인트 위치 이동 (기존 간선 토폴로지 유지) |
+| `p` | 로봇 시작 포즈 추가 (클릭 → 위치 설정, 드래그 → yaw 방향 설정) |
+| `d` | 마지막 로봇 포즈 삭제 |
+| `s` | 변경사항을 맵 YAML 파일에 저장 |
+| `e` | 편집 모드 종료 (간선 자동 재건) |
+| `Escape` | 포즈 편집 취소 |
+
+편집 종료 시 간선은 **RNG(Relative Neighborhood Graph)** 방식으로 자동 재건됩니다:
+- 두 웨이포인트 사이에 장애물이 없고, 더 가까운 중간 웨이포인트가 없으면 연결
+- 그래프가 분리되면 컴포넌트 간 최단 가시선으로 자동 브리지
+
+#### 자동 주행 테스트
+
+```bash
+# 기본 시퀀스 (Kitchen → Charging → Return → Entrance → ...)
+bash test_drive.sh
+
+# 커스텀 시퀀스, 3회 반복
+bash test_drive.sh --loops 3 Kitchen Charging Return
+```
 
 ## 실물 핑키(real 모드)에서 실행
 
@@ -88,11 +128,17 @@ source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && cd "$
 | **핑키** (SSH) | driver (LiDAR·모터·odom·TF) + Nav2 | `start_pinky.sh` / `kill_pinky.sh` |
 | **노트북** | monitor(시각화 + 클릭 네비) + `nav2_bridge.py` | `start.sh --real` / `kill.sh` |
 
+### 로봇 목록
+
+로봇별 hostname, AP SSID, IP 주소, SSH 비밀번호는 팀 내부 문서를 참조하세요.
+
 ### 전제 조건
 
 - 핑키에 `pinky_bringup`, `pinky_navigation`, `sllidar_ros2` 패키지가 ROS overlay로 빌드돼 있어야 합니다. 기본 오버레이 경로는 `~/pinky_pro/install/setup.bash`이며, 다르면 `PINKY_OVERLAY=/path/to/install/setup.bash`로 덮어쓸 수 있습니다.
-- 노트북 WiFi가 pinky AP(예: `pinky_xxxx`)에 접속되어 있고, ssh로 `pinky@<핑키 IP>` 접근이 가능해야 합니다. 기본 IP는 `192.168.4.1`.
-- 두 쪽 모두 `ROS_DOMAIN_ID=41`로 맞춥니다. `start.sh --real`과 `start_pinky.sh` 둘 다 기본값이 41이며, 환경변수로 오버라이드 가능합니다.
+- SSH 접속: 핑키 AP 직접 또는 교실 WiFi 경유. IP/비밀번호는 팀 내부 문서 참조.
+- `ROS_DOMAIN_ID`는 로봇별로 다르게 설정 (멀티로봇 시 도메인 분리):
+  - 단일 로봇: 기본 41
+  - 멀티 로봇: 핑키1=41, 핑키2=42 등
 - 두 기계가 같은 서브넷에 있고 UDP multicast가 막히지 않아야 합니다(ROS 2 Fast DDS 기본 동작).
 
 ### 최초 1회: 핑키로 파일 전송
@@ -486,11 +532,11 @@ plan.goal_yaw         # radians or None
 
 #### 시각화
 
-`PathPlanningVisualizer`는 자동으로:
+monitor 시각화는 자동으로:
 
 - **yaw를 가진 웨이포인트**: 웨이포인트에서 해당 방향으로 작은 파란 화살표
-- **goal waypoint의 yaw**: 빨간 X 마커에서 해당 방향으로 큰 빨간 화살표 (도착 시 로봇이 어디를 봐야 하는지 명확히 표시)
-- 화살표 길이는 맵 크기에 비례해 자동 조정 (2 m 맵: 0.1 m, 20 m 맵: 1 m)
+- **goal waypoint의 yaw**: 도착 시 로봇이 어디를 봐야 하는지 명확히 표시
+- 화살표 길이는 맵 크기에 비례해 자동 조정
 
 #### 헤드리스 출력
 
@@ -564,11 +610,10 @@ m.components_after_removing(wp_id) -> List[Set[int]]
 
 #### 시각화
 
-`PathPlanningVisualizer`는 자동으로:
+monitor 시각화에서 자동으로:
 
 - Cut vertex 웨이포인트 주변에 **빨간 hollow ring** 표시
 - Bridge 간선을 **빨간 점선**으로 표시
-- 타이틀에 `bottlenecks: N cut-vertex(s), M bridge(s) (red)` 요약 표시
 
 #### 헤드리스 로드 출력 예시
 
@@ -748,59 +793,26 @@ plan = plan_path_from_point(
 
 이 결과는 **area lockout 정책**(한 번에 한 로봇만 특정 구역 진입)이 이 공간에서 유일하게 안전한 멀티 로봇 전략이라는 것을 정량적으로 뒷받침합니다. `reserved_paths`는 area lockout보다 세밀한 제어가 필요할 때(예: 더 큰 공간, 더 많은 대체 경로가 있는 맵)를 위한 API입니다.
 
-## 파일 구조
-
-```
-global_path_planning_demo/
-├── main.py            # 진입점 (인터랙티브 / --headless / --map)
-├── map_data.py        # 데이터 클래스 + StaticEnv 추상화 + YAML/PGM 로더
-├── astar_planner.py   # 웨이포인트 그래프 위의 A* 구현
-├── visualizer.py      # matplotlib 인터랙티브 시각화
-├── maps/
-│   ├── buffet_sim.yaml        # 기본 맵. Nav2 형식, 실제 SLAM 스캔
-│   ├── map4.pgm               # 위 YAML이 참조, device/pinky_pro_robot에서 복사
-│   ├── buffet_realistic.yaml  # 대조군. Nav2 형식, 2.0 x 1.6 m 합성 ring 맵
-│   └── buffet_realistic.pgm   # 위 YAML이 가리키는 PGM (40x32 px)
-├── requirements.txt
-└── README.md
-```
+## 코드 구조
 
 각 모듈의 역할:
 
-- `map_data.py`
-  - `Waypoint`(실수 좌표), `Obstacle`, `WaypointGraph`, `BuffetMap`, `DynamicObstacle`, `MapDefaults` 데이터 클래스. `BuffetMap`은 `static_env`, `graph`, `origin_x/y`, `width_m`, `height_m`, `name`, `defaults` 필드와 `is_in_bounds(x, y)` 메서드.
-  - `MapDefaults`: `dynamic_radius`, `inflation_radius` — per-map 디폴트. YAML `defaults:` 블록에서 읽음, 누락 필드는 전역 디폴트로 폴백.
-  - `StaticEnv` (ABC) + 두 구현:
-    - `RectangleEnv` — `Obstacle` 사각형 리스트. `contains_xy`는 점→사각형 거리가 `inflation_radius` 이하인지로 판정, `is_segment_clear`는 0.1 m 간격 샘플링. `draw_on`은 원본 사각형 + `inflation_radius` 확장된 반투명 빨간색 밴드.
-    - `OccupancyGridEnv` — Nav2 점유 격자. 로드 시점에 `ceil(inflation_radius / resolution)` 픽셀 반경으로 점유 마스크를 disc dilation (`_dilate_mask_disc`, numpy only). `contains_xy`는 월드→픽셀 변환 후 단일 셀 lookup, `is_segment_clear`는 셀 절반 크기 간격 샘플링. `draw_on`은 원본 PGM을 배경으로 깔고 팽창 영역을 반투명 빨간색 오버레이.
-  - `load_buffet_map(path)`: YAML을 보고 `image:` 키 → Nav2 로더, `obstacles:` 키 → rect 로더로 자동 분기.
-  - `_read_pgm_p5(path)`: 외부 의존 없이 P5 binary PGM을 numpy 배열로 파싱(헤더 토큰 + 주석 + 8/16비트 픽셀).
-  - `_pgm_to_occupancy(...)`: Nav2의 negate / occupied_thresh / free_thresh 규칙대로 점유 마스크로 변환. 안전상 unknown 셀도 점유로 간주.
-  - `build_buffet_map()`: `load_buffet_map(DEFAULT_MAP_PATH)`의 얇은 래퍼 (기본 맵 로딩용).
-  - 그래프 빌드 헬퍼 `_connect_neighbors`: 같은 행/열의 인접 쌍을 `static_env.is_segment_clear`로 검사해서 자동 연결 (rect/occgrid 동일 코드 경로).
-  - 동적 장애물 기하 헬퍼: `circle_contains_point`, `circle_intersects_segment` (segment의 디스크 중심 최근접점을 [0,1] 클램프 + 거리 비교).
-- `astar_planner.py`
-  - `plan_path(buffet_map, start, goal, *, dynamic_obstacles=None, reserved_paths=None) -> (path, cost)`: 웨이포인트 ID → 웨이포인트 ID 단일 소스 A*. 경로가 없으면 `(None, inf)`.
-  - `plan_path_from_point(buffet_map, start_xy, goal, *, dynamic_obstacles=None, reserved_paths=None, goal_yaw=None, entry_penalty_factor=1.2) -> FreeStartPlan | None`: 자유 좌표에서 출발하는 multi-source A*. 모든 line-of-sight reachable 웨이포인트를 진입 후보로 시드하되, 초기 g-score에 `entry_penalty_factor`를 곱해 **긴 대각선 진입에 soft penalty**를 부여 (기본 1.2 = "entry 1 m는 corridor 1.2 m 비용"). 반환되는 `entry_distance` / `waypoint_cost`는 페널티를 제외한 실제 거리.
-  - 두 함수 모두 `BuffetMap`을 통째로 받음 → 내부에서 `buffet_map.graph` / `buffet_map.static_env`에 접근. 정적 장애물 표현(rect 또는 occgrid)에 대한 의존이 시그니처에서 사라져 호출 측이 깔끔.
-  - `dynamic_obstacles` 키워드 인자: 호출 시점의 차단된 웨이포인트/간선 집합을 미리 계산(`_compute_blockage`)해서 A* expansion에서 스킵.
-  - `reserved_paths` 키워드 인자: 다른 로봇이 이미 예약한 경로(웨이포인트 ID 시퀀스 리스트). 예약된 웨이포인트 + 간선은 `_compute_blockage`에서 blockage에 추가되어 A*가 회피.
-  - 내부적으로 둘 다 `_astar_multi_source(graph, seeds_dict, goal, blockage)`를 호출하므로 단일/다중 소스 + 정적/동적 장애물 모두 동일 코드 경로.
-- `visualizer.py`
-  - `PathPlanningVisualizer`: 정적 요소(맵 배경, 벽 외곽선, 웨이포인트, 간선, cut-vertex/bridge 빨간 표시)와 동적 요소(start 자유 좌표 마커, goal 웨이포인트 마커 + yaw 화살표, 동적 장애물 빨간 원, 계산된 경로)를 그리고 마우스/키 이벤트를 처리.
-  - **맵 배경은 `buffet_map.static_env.draw_on(ax)`에 위임** → rect 형식이면 회색 사각형 + 라벨, Nav2 형식이면 PGM 이미지를 `imshow`로 그림. visualizer 본체는 어느 형식인지 알 필요 없음.
-  - 그림 비율은 `buffet_map.width_m` / `height_m` 비율에 맞춰 자동 조정.
-  - 좌클릭: 자유 좌표 start → goal 웨이포인트 (맵 밖/장애물 내부면 거부, goal만 스냅).
-  - 우클릭: 클릭 위치에 동적 장애물(`DynamicObstacle`) 추가, start/goal이 이미 있으면 즉시 재계획.
-  - `c` 키: 모든 동적 장애물 삭제 + 재계획. `r` 키: start/goal 선택만 리셋(동적 장애물 유지).
-  - `m` 키: 2-robot 모드 토글. 4번 좌클릭으로 R1 start/goal, R2 start/goal 지정. R1 계획 후 R2는 R1 경로를 `reserved_paths`로 회피. 두 경로 동시 표시(주황/녹색) + 공유 웨이포인트 빨간 하이라이트.
-- `main.py`
-  - CLI 파싱 (`--map PATH`, `--headless`) → 맵 로딩 → 인터랙티브 또는 헤드리스 실행 분기. 맵 로딩 실패 시 `stderr`에 명확한 에러 메시지를 출력하고 `exit 1`. 헤드리스 시나리오에서 사용자 정의 맵에 없는 라벨은 우아하게 스킵. 헤드리스 모드는 다음 5개 섹션을 출력:
-    1. `Waypoint -> Waypoint` 기본 시나리오
-    2. `Free start point -> Waypoint` 시나리오
-    3. `Dynamic obstacles (waypoint -> waypoint)` — baseline 비용/경로와 차단 후 경로를 나란히 비교
-    4. `Dynamic obstacles (free start)` — 동적 장애물이 자유 시작점의 진입 웨이포인트를 막을 때 multi-source A*가 다른 진입점으로 우회하는지 검증
-    5. `Two-robot scenarios (reserved paths)` — R1 우선 계획 → R2가 R1 경로를 예약(차단)하고 계획. 비충돌/경로변경/���돌 케이스 비교
+- `map_data.py` — 맵 로딩 / 편집 / 저장
+  - `Waypoint`, `Obstacle`, `WaypointGraph`, `BuffetMap`, `DynamicObstacle`, `RobotStartPose`, `MapDefaults` 데이터 클래스.
+  - `StaticEnv` (ABC) + 두 구현: `RectangleEnv` (축 정렬 사각형), `OccupancyGridEnv` (Nav2 점유 격자 + disc inflation).
+  - `load_buffet_map(path)`: YAML 내용 기반 형식 자동 감지 (`image:` → Nav2, `obstacles:` → rect).
+  - `BuffetMap.move_waypoint()`: 편집 중 위치만 이동 (간선 유지). `BuffetMap._rebuild_edges()`: RNG 기반 간선 재건. `BuffetMap.save_to_yaml()`: 웨이포인트 + 로봇 포즈를 YAML에 저장.
+  - 간선 빌드: 초기 로딩은 축 정렬 매칭(`_connect_neighbors`), 편집 후 재건은 RNG(`_connect_visible`) + 컴포넌트 브리지.
+  - 동적 장애물 기하 헬퍼: `circle_contains_point`, `circle_intersects_segment`.
+- `astar_planner.py` — A* 경로 계획
+  - `plan_path(buffet_map, start, goal, ...)`: 웨이포인트 → 웨이포인트 단일 소스 A*.
+  - `plan_path_from_point(buffet_map, start_xy, goal, ...)`: 자유 좌표 출발 multi-source A* (`entry_penalty_factor=1.2`).
+  - `dynamic_obstacles`: 호출 시점의 동적 장애물로 웨이포인트/간선 차단. `reserved_paths`: 다른 로봇이 예약한 경로 회피.
+- `monitor.py` — 시각화 + 클릭 네비게이션 + 편집 모드 (ROS2 노드)
+  - TF(`map → base_footprint`)로 로봇 위치 추적, 클릭 시 A* 경로 → `FollowPath` 전송.
+  - 편집 모드(`e`): 웨이포인트 드래그 이동, 로봇 포즈 배치(`p`), YAML 저장(`s`).
+- `nav2_bridge.py` — CLI 목표 전달
+  - `--goal <라벨>` 인자로 A* 경로 계산 → Nav2 `FollowPath` 액션 전송 → 근접 preempt → Spin(yaw 정렬).
 
 ## 헤드리스 검증 결과
 

@@ -599,6 +599,15 @@ class OccupancyGridEnv(StaticEnv):
 
 
 @dataclass
+class RobotStartPose:
+    """Configurable initial pose for a robot (world-frame)."""
+
+    x: float = 0.0
+    y: float = 0.0
+    yaw: float = 0.0  # radians
+
+
+@dataclass
 class BuffetMap:
     """Bundle of static environment + waypoint graph + world extent."""
 
@@ -621,6 +630,10 @@ class BuffetMap:
     #                disconnects the graph
     cut_vertices: Set[int] = field(default_factory=set)
     bridges: Set[FrozenSet[int]] = field(default_factory=set)
+    # Path to the YAML file this map was loaded from (for save-back).
+    yaml_path: Optional[Path] = None
+    # Configurable robot start poses (populated from YAML or editor).
+    robot_start_poses: List[RobotStartPose] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Compute bottleneck information once per map load. Cheap on
@@ -650,6 +663,96 @@ class BuffetMap:
         regions become unreachable if a robot parks on ``wp_id``.
         """
         return components_after_removing(self.graph, wp_id)
+
+    def update_waypoint(self, wp_id: int, x: float, y: float) -> None:
+        """Move a waypoint to a new position and rebuild edges."""
+        self.move_waypoint(wp_id, x, y)
+        self._rebuild_edges()
+
+    def move_waypoint(self, wp_id: int, x: float, y: float) -> None:
+        """Move a waypoint without rebuilding edges.
+
+        Use this during interactive drag operations where the topology
+        should be preserved until the user explicitly saves or exits
+        edit mode.
+        """
+        old = self.graph.waypoints[wp_id]
+        self.graph.waypoints[wp_id] = Waypoint(
+            wp_id=wp_id, x=x, y=y, label=old.label, yaw=old.yaw,
+        )
+
+    def update_waypoint_yaw(
+        self, wp_id: int, yaw: Optional[float]
+    ) -> None:
+        """Change the arrival yaw of a waypoint."""
+        old = self.graph.waypoints[wp_id]
+        self.graph.waypoints[wp_id] = Waypoint(
+            wp_id=wp_id, x=old.x, y=old.y, label=old.label, yaw=yaw,
+        )
+
+    def _rebuild_edges(self) -> None:
+        """Clear and reconstruct all edges from scratch.
+
+        Uses a visibility-graph approach: any two waypoints whose
+        connecting segment is free of static obstacles are joined.
+        This is robust against free-form waypoint editing — no
+        axis-alignment assumption.  For the demo's 12-waypoint graphs
+        this is 66 pair-checks, trivially fast.
+        """
+        for wp_id in self.graph.adjacency:
+            self.graph.adjacency[wp_id] = []
+        _connect_visible(self.graph, self.static_env)
+        cv, br = find_cut_vertices_and_bridges(self.graph)
+        self.cut_vertices = cv
+        self.bridges = br
+
+    def save_to_yaml(self) -> None:
+        """Write waypoints and robot start poses back to the YAML file.
+
+        Preserves the original file structure - only the ``waypoints:``
+        and ``robot_start_poses:`` sections are rewritten.
+        """
+        if self.yaml_path is None:
+            raise RuntimeError("No YAML path set - cannot save")
+        path = self.yaml_path
+        with path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+
+        new_lines = _replace_yaml_section(
+            lines, "waypoints:", self._waypoints_yaml()
+        )
+        new_lines = _replace_yaml_section(
+            new_lines, "robot_start_poses:", self._robot_poses_yaml()
+        )
+
+        with path.open("w", encoding="utf-8") as fh:
+            fh.writelines(new_lines)
+
+    def _waypoints_yaml(self) -> List[str]:
+        """Serialize current waypoints to YAML lines."""
+        result = []
+        for wp in sorted(
+            self.graph.waypoints.values(), key=lambda w: w.wp_id
+        ):
+            parts = [f"x: {wp.x:.3f}", f"y: {wp.y:.3f}"]
+            if wp.label:
+                parts.append(f'label: "{wp.label}"')
+            if wp.yaw is not None:
+                parts.append(f"yaw: {math.degrees(wp.yaw):.0f}")
+            result.append("  - {" + ", ".join(parts) + "}\n")
+        return result
+
+    def _robot_poses_yaml(self) -> List[str]:
+        """Serialize robot start poses to YAML lines."""
+        if not self.robot_start_poses:
+            return []
+        result = []
+        for pose in self.robot_start_poses:
+            result.append(
+                f"  - {{x: {pose.x:.3f}, y: {pose.y:.3f}, "
+                f"yaw: {math.degrees(pose.yaw):.0f}}}\n"
+            )
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -695,24 +798,122 @@ def circle_intersects_segment(
 
 
 # ---------------------------------------------------------------------------
-# Edge auto-building
+# Edge auto-building (visibility graph — used after editing)
+# ---------------------------------------------------------------------------
+
+
+def _connect_visible(
+    graph: WaypointGraph, static_env: StaticEnv
+) -> None:
+    """Build edges using a visibility-filtered Relative Neighborhood Graph.
+
+    An edge A-B is added only if:
+
+    1. The segment A-B is free of static obstacles, AND
+    2. No third waypoint C exists such that C is closer to both A and
+       B than they are to each other AND both A-C and C-B are clear.
+
+    Condition 2 (the RNG criterion) prunes long diagonals that skip
+    intermediate waypoints, keeping the graph sparse and corridor-like.
+
+    A final connectivity pass ensures the graph is fully connected: if
+    multiple components remain after the RNG pass, the shortest clear
+    segment between components is added.
+    """
+    wps = list(graph.waypoints.values())
+
+    # --- RNG pass ---
+    for i, a in enumerate(wps):
+        for b in wps[i + 1 :]:
+            if not static_env.is_segment_clear(a.x, a.y, b.x, b.y):
+                continue
+            d_ab = math.hypot(a.x - b.x, a.y - b.y)
+            dominated = False
+            for c in wps:
+                if c.wp_id == a.wp_id or c.wp_id == b.wp_id:
+                    continue
+                d_ac = math.hypot(a.x - c.x, a.y - c.y)
+                d_bc = math.hypot(b.x - c.x, b.y - c.y)
+                if d_ac < d_ab and d_bc < d_ab:
+                    if (
+                        static_env.is_segment_clear(
+                            a.x, a.y, c.x, c.y
+                        )
+                        and static_env.is_segment_clear(
+                            c.x, c.y, b.x, b.y
+                        )
+                    ):
+                        dominated = True
+                        break
+            if not dominated:
+                graph.connect(a.wp_id, b.wp_id)
+
+    # --- Connectivity guarantee ---
+    components = _find_components(graph)
+    while len(components) > 1:
+        best_edge: Optional[Tuple[int, int]] = None
+        best_dist = math.inf
+        for ci, comp_a in enumerate(components):
+            for comp_b in components[ci + 1 :]:
+                for a_id in comp_a:
+                    a = graph.waypoints[a_id]
+                    for b_id in comp_b:
+                        b = graph.waypoints[b_id]
+                        d = math.hypot(a.x - b.x, a.y - b.y)
+                        if d < best_dist and static_env.is_segment_clear(
+                            a.x, a.y, b.x, b.y
+                        ):
+                            best_dist = d
+                            best_edge = (a_id, b_id)
+        if best_edge is None:
+            break
+        graph.connect(*best_edge)
+        components = _find_components(graph)
+
+
+# ---------------------------------------------------------------------------
+# Edge auto-building (axis-aligned — used for initial map loading)
 # ---------------------------------------------------------------------------
 
 
 def _connect_neighbors(
-    graph: WaypointGraph, static_env: StaticEnv
+    graph: WaypointGraph,
+    static_env: StaticEnv,
+    tolerance: float = 0.0,
 ) -> None:
-    """Connect each waypoint to its nearest free neighbour on the same axis.
+    """Connect waypoints and ensure the graph is fully connected.
 
+    **Pass 1 — axis-aligned edges** (original behaviour):
     For every pair of consecutive waypoints sharing a row (same y) or a
-    column (same x), the connecting axis-aligned segment is checked
-    against the static environment; if clear, an edge is added.
+    column (same x), the connecting segment is checked against the
+    static environment; if clear, an edge is added.  When
+    ``tolerance > 0``, coordinates within *tolerance* are treated as
+    the same row / column.
+
+    **Pass 2 — isolate rescue**:
+    Any waypoint with zero edges is connected to its nearest visible
+    neighbour.
+
+    **Pass 3 — component bridge**:
+    If the graph is still split into multiple connected components, the
+    shortest clear segment between any two components is added as an
+    edge.  Repeats until the graph is connected (or no clear segment
+    exists).
     """
-    by_row: Dict[float, List[Waypoint]] = defaultdict(list)
-    by_col: Dict[float, List[Waypoint]] = defaultdict(list)
-    for wp in graph.waypoints.values():
-        by_row[wp.y].append(wp)
-        by_col[wp.x].append(wp)
+    # --- Pass 1: axis-aligned ---
+    if tolerance <= 0.0:
+        by_row: Dict[float, List[Waypoint]] = defaultdict(list)
+        by_col: Dict[float, List[Waypoint]] = defaultdict(list)
+        for wp in graph.waypoints.values():
+            by_row[wp.y].append(wp)
+            by_col[wp.x].append(wp)
+    else:
+        by_row = _group_by_axis(
+            graph.waypoints.values(), key=lambda w: w.y, tol=tolerance,
+        )
+        by_col = _group_by_axis(
+            graph.waypoints.values(), key=lambda w: w.x, tol=tolerance,
+        )
 
     for row in by_row.values():
         row.sort(key=lambda w: w.x)
@@ -725,6 +926,91 @@ def _connect_neighbors(
         for a, b in zip(col, col[1:]):
             if static_env.is_segment_clear(a.x, a.y, b.x, b.y):
                 graph.connect(a.wp_id, b.wp_id)
+
+    # --- Pass 2: rescue isolated waypoints ---
+    for wp in graph.waypoints.values():
+        if graph.neighbors(wp.wp_id):
+            continue
+        best_id: Optional[int] = None
+        best_dist = math.inf
+        for other in graph.waypoints.values():
+            if other.wp_id == wp.wp_id:
+                continue
+            d = math.hypot(other.x - wp.x, other.y - wp.y)
+            if d < best_dist and static_env.is_segment_clear(
+                wp.x, wp.y, other.x, other.y
+            ):
+                best_dist = d
+                best_id = other.wp_id
+        if best_id is not None:
+            graph.connect(wp.wp_id, best_id)
+
+    # --- Pass 3: bridge disconnected components ---
+    components = _find_components(graph)
+    while len(components) > 1:
+        best_edge: Optional[Tuple[int, int]] = None
+        best_dist = math.inf
+        for i, comp_a in enumerate(components):
+            for comp_b in components[i + 1 :]:
+                for a_id in comp_a:
+                    a = graph.waypoints[a_id]
+                    for b_id in comp_b:
+                        b = graph.waypoints[b_id]
+                        d = math.hypot(a.x - b.x, a.y - b.y)
+                        if d < best_dist and static_env.is_segment_clear(
+                            a.x, a.y, b.x, b.y
+                        ):
+                            best_dist = d
+                            best_edge = (a_id, b_id)
+        if best_edge is None:
+            break
+        graph.connect(*best_edge)
+        components = _find_components(graph)
+
+
+def _find_components(graph: WaypointGraph) -> List[Set[int]]:
+    """Return connected components of the graph."""
+    visited: Set[int] = set()
+    components: List[Set[int]] = []
+    for wp_id in graph.waypoints:
+        if wp_id in visited:
+            continue
+        comp: Set[int] = set()
+        stack = [wp_id]
+        while stack:
+            u = stack.pop()
+            if u in visited:
+                continue
+            visited.add(u)
+            comp.add(u)
+            for v in graph.neighbors(u):
+                if v not in visited:
+                    stack.append(v)
+        components.append(comp)
+    return components
+
+
+def _group_by_axis(
+    waypoints: Iterable[Waypoint],
+    key,
+    tol: float,
+) -> Dict[float, List[Waypoint]]:
+    """Group waypoints by one axis coordinate within *tol*."""
+    sorted_wps = sorted(waypoints, key=key)
+    groups: Dict[float, List[Waypoint]] = {}
+    if not sorted_wps:
+        return groups
+    rep = key(sorted_wps[0])
+    current: List[Waypoint] = [sorted_wps[0]]
+    for wp in sorted_wps[1:]:
+        if abs(key(wp) - key(current[-1])) <= tol:
+            current.append(wp)
+        else:
+            groups[rep] = current
+            rep = key(wp)
+            current = [wp]
+    groups[rep] = current
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -934,6 +1220,8 @@ def _load_rect_map(raw: Mapping[str, Any], yaml_path: Path) -> BuffetMap:
         graph.add_waypoint(wp)
     _connect_neighbors(graph, static_env)
 
+    robot_poses = _parse_robot_start_poses(raw.get("robot_start_poses"))
+
     return BuffetMap(
         static_env=static_env,
         graph=graph,
@@ -944,6 +1232,8 @@ def _load_rect_map(raw: Mapping[str, Any], yaml_path: Path) -> BuffetMap:
         name=name_value,
         defaults=defaults,
         rect_obstacles=obstacles,
+        yaml_path=yaml_path,
+        robot_start_poses=robot_poses,
     )
 
 
@@ -1123,6 +1413,8 @@ def _load_nav2_map(raw: Mapping[str, Any], yaml_path: Path) -> BuffetMap:
         graph.add_waypoint(wp)
     _connect_neighbors(graph, static_env)
 
+    robot_poses = _parse_robot_start_poses(raw.get("robot_start_poses"))
+
     return BuffetMap(
         static_env=static_env,
         graph=graph,
@@ -1133,12 +1425,72 @@ def _load_nav2_map(raw: Mapping[str, Any], yaml_path: Path) -> BuffetMap:
         name=name_value,
         defaults=defaults,
         rect_obstacles=None,
+        yaml_path=yaml_path,
+        robot_start_poses=robot_poses,
     )
 
 
 # ---------------------------------------------------------------------------
 # Public load entry point + format auto-detection
 # ---------------------------------------------------------------------------
+
+
+def _replace_yaml_section(
+    lines: List[str], header: str, new_body: List[str]
+) -> List[str]:
+    """Replace a top-level YAML section in ``lines`` with ``new_body``.
+
+    ``header`` is e.g. ``"waypoints:"``. Everything from the header line
+    through all indented continuation lines is replaced. If the header
+    does not exist and ``new_body`` is non-empty, append the section.
+    """
+    start_idx: Optional[int] = None
+    end_idx: Optional[int] = None
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(header):
+            start_idx = i
+            # Find end: next non-blank, non-comment line at indent 0.
+            for j in range(i + 1, len(lines)):
+                sj = lines[j].lstrip()
+                if not sj or sj.startswith("#"):
+                    continue
+                if lines[j][0] not in (" ", "\t", "-"):
+                    end_idx = j
+                    break
+            if end_idx is None:
+                end_idx = len(lines)
+            break
+
+    if start_idx is not None:
+        return (
+            lines[:start_idx]
+            + [header + "\n"]
+            + new_body
+            + lines[end_idx:]
+        )
+    elif new_body:
+        return lines + ["\n", header + "\n"] + new_body
+    return lines
+
+
+def _parse_robot_start_poses(raw: Any) -> List["RobotStartPose"]:
+    """Parse the optional ``robot_start_poses:`` section."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("map: 'robot_start_poses' must be a list")
+    poses = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"map: robot_start_poses[{i}] must be a mapping")
+        x = _require_number(f"robot_start_poses[{i}]", "x", entry.get("x", 0.0))
+        y = _require_number(f"robot_start_poses[{i}]", "y", entry.get("y", 0.0))
+        yaw_deg = _require_number(
+            f"robot_start_poses[{i}]", "yaw", entry.get("yaw", 0.0)
+        )
+        poses.append(RobotStartPose(x=x, y=y, yaw=math.radians(yaw_deg)))
+    return poses
 
 
 def load_buffet_map(path: Union[str, Path]) -> BuffetMap:

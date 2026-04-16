@@ -48,12 +48,13 @@ DEMO_DIR = _Path(__file__).parent
 sys.path.insert(0, str(DEMO_DIR))
 
 from map_data import (  # noqa: E402
-    DEFAULT_MAP_PATH, BuffetMap, load_buffet_map,
+    DEFAULT_MAP_PATH, BuffetMap, RobotStartPose, load_buffet_map,
 )
 from nav2_bridge import plan_to_path  # noqa: E402
 
 
 REFRESH_HZ = 10.0
+_POSE_COLORS = ["#e377c2", "#17becf", "#bcbd22", "#9467bd"]
 
 
 class Monitor(Node):
@@ -108,6 +109,13 @@ class Monitor(Node):
         self._near_since: Optional[float] = None
         self._preempted = False
 
+        # --- Edit mode state ---
+        self.edit_mode: bool = False
+        self._dragging_wp: Optional[int] = None
+        self._hover_wp: Optional[int] = None
+        self._pose_edit_step: int = 0   # 0=idle, 1=placing, 2=yaw drag
+        self._pose_edit_idx: int = -1
+
         self._build_figure()
 
         # Refresh timer.
@@ -136,10 +144,16 @@ class Monitor(Node):
             return
         if event.xdata is None or event.ydata is None:
             return
+        x, y = float(event.xdata), float(event.ydata)
+
+        # --- Edit mode clicks ---
+        if self.edit_mode:
+            self._on_click_edit(x, y, event.button)
+            return
+
         if self.nav_busy:
             self.status = "busy — wait for current task to finish"
             return
-        x, y = float(event.xdata), float(event.ydata)
         # Snap to nearest waypoint.
         best_id, best_d = None, math.inf
         for wp in self.graph.waypoints.values():
@@ -156,6 +170,42 @@ class Monitor(Node):
             f"(click dist {best_d:.2f} m)"
         )
         self._start_navigation(best_id, label)
+
+    def _on_click_edit(self, x: float, y: float, button: int) -> None:
+        # Pose placement step 1: set position
+        if self._pose_edit_step == 1:
+            if not self.bm.is_in_bounds(x, y):
+                self.get_logger().info(f"({x:.2f}, {y:.2f}) out of bounds")
+                return
+            if self.bm.static_env.contains_xy(x, y):
+                self.get_logger().info(f"({x:.2f}, {y:.2f}) inside obstacle")
+                return
+            idx = self._pose_edit_idx
+            if idx < len(self.bm.robot_start_poses):
+                old = self.bm.robot_start_poses[idx]
+                self.bm.robot_start_poses[idx] = RobotStartPose(
+                    x=x, y=y, yaw=old.yaw)
+            else:
+                self.bm.robot_start_poses.append(
+                    RobotStartPose(x=x, y=y, yaw=0.0))
+            self._pose_edit_step = 2
+            self.get_logger().info(
+                f"Robot{idx+1} at ({x:.3f}, {y:.3f}). "
+                "Drag to set yaw, release.")
+            self._redraw_full()
+            return
+
+        # Left click: grab a waypoint for dragging
+        if button == 1:
+            nearest = self._nearest_wp(x, y)
+            if nearest is not None:
+                wp = self.graph.waypoints[nearest]
+                dist = math.hypot(wp.x - x, wp.y - y)
+                grab_r = max(0.06, self.bm.width_m * 0.03)
+                if dist <= grab_r:
+                    self._dragging_wp = nearest
+                    lbl = wp.label or f"#{nearest}"
+                    self.get_logger().info(f"Grabbed {lbl} — drag to move")
 
     def _start_navigation(self, goal_id: int, label: str) -> None:
         if self.robot_xy is None:
@@ -338,8 +388,36 @@ class Monitor(Node):
         fig_h = max(5.0, min(fig_h + 1.5, 12.0))
         self.fig, self.ax = plt.subplots(figsize=(fig_w, fig_h))
         self.fig.canvas.mpl_connect("button_press_event", self._on_click)
+        self.fig.canvas.mpl_connect("button_release_event", self._on_release)
+        self.fig.canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self.fig.canvas.mpl_connect("key_press_event", self._on_key)
 
+        self._draw_static()
+
+        # Dynamic artists.
         ax = self.ax
+        self._robot_dot, = ax.plot([], [], "s", ms=14, color="#2ca02c",
+                                   mec="black", mew=2, zorder=10)
+        self._robot_label = ax.text(
+            0, 0, "", ha="center", va="bottom", fontsize=8,
+            fontweight="bold", color="#2ca02c", zorder=11,
+        )
+        self._robot_arrow = None
+        self._trail_line, = ax.plot([], [], color="#2ca02c", lw=2,
+                                    alpha=0.3, zorder=2)
+        self._path_line, = ax.plot([], [], color="#ff7f0e", lw=3,
+                                   alpha=0.6, zorder=2)
+        self._title = ax.set_title("", fontsize=10)
+
+        self.fig.canvas.draw()
+        plt.pause(0.01)
+
+    def _draw_static(self) -> None:
+        """Draw (or redraw) the static map elements: env, walls, edges,
+        waypoints, and robot start poses."""
+        bm = self.bm
+        ax = self.ax
+        ax.clear()
         ax.set_xlim(bm.origin_x, bm.origin_x + bm.width_m)
         ax.set_ylim(bm.origin_y, bm.origin_y + bm.height_m)
         ax.set_aspect("equal")
@@ -374,22 +452,204 @@ class Monitor(Node):
                 ax.text(wp.x + lbl_off, wp.y + lbl_off, wp.label,
                         fontsize=6, color="#555", zorder=4)
 
-        # Dynamic artists.
+        # Robot start poses.
+        arrow_len = max(0.08, min(0.8, bm.width_m * 0.05))
+        for i, pose in enumerate(bm.robot_start_poses):
+            c = _POSE_COLORS[i % len(_POSE_COLORS)]
+            ax.plot(pose.x, pose.y, marker="D", ms=12,
+                    color=c, mec="black", mew=1.5, zorder=6)
+            dx = math.cos(pose.yaw) * arrow_len
+            dy = math.sin(pose.yaw) * arrow_len
+            ax.annotate("", xy=(pose.x + dx, pose.y + dy),
+                        xytext=(pose.x, pose.y),
+                        arrowprops=dict(arrowstyle="->", color=c, lw=2),
+                        zorder=6.1)
+            ax.text(pose.x, pose.y - 0.04, f"Robot{i+1}",
+                    ha="center", va="top", fontsize=6,
+                    fontweight="bold", color=c, zorder=6.2)
+
+        # Edit mode overlay.
+        if self.edit_mode:
+            self._draw_edit_overlay()
+
+    # ----- edit mode -----
+
+    def _draw_edit_overlay(self) -> None:
+        ax = self.ax
+        # Banner
+        ax.text(
+            0.5, 0.97, "EDIT MODE",
+            transform=ax.transAxes,
+            ha="center", va="top", fontsize=16, fontweight="bold",
+            color="#ff7f0e", alpha=0.8, zorder=100,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#fff3e0",
+                      edgecolor="#ff7f0e", alpha=0.85, linewidth=2),
+        )
+        # Orange rings on all waypoints to indicate draggable
+        for wp in self.graph.waypoints.values():
+            is_hov = wp.wp_id == self._hover_wp
+            ax.plot(wp.x, wp.y, "o",
+                    ms=16 if is_hov else 12,
+                    mfc="none",
+                    mec="#ff7f0e",
+                    mew=3.0 if is_hov else 1.5,
+                    alpha=1.0 if is_hov else 0.5,
+                    zorder=4.5)
+        # Dashed rings on robot poses
+        for i, pose in enumerate(self.bm.robot_start_poses):
+            c = _POSE_COLORS[i % len(_POSE_COLORS)]
+            ax.plot(pose.x, pose.y, "D", ms=18,
+                    mfc="none", mec=c, mew=1.5, alpha=0.5, zorder=5.9)
+
+    def _redraw_full(self) -> None:
+        """Full redraw: static map + edit overlay + recreate dynamic
+        artists so the robot/trail/path keep rendering."""
+        self._draw_static()
+        ax = self.ax
         self._robot_dot, = ax.plot([], [], "s", ms=14, color="#2ca02c",
                                    mec="black", mew=2, zorder=10)
         self._robot_label = ax.text(
             0, 0, "", ha="center", va="bottom", fontsize=8,
-            fontweight="bold", color="#2ca02c", zorder=11,
-        )
+            fontweight="bold", color="#2ca02c", zorder=11)
         self._robot_arrow = None
         self._trail_line, = ax.plot([], [], color="#2ca02c", lw=2,
                                     alpha=0.3, zorder=2)
         self._path_line, = ax.plot([], [], color="#ff7f0e", lw=3,
                                    alpha=0.6, zorder=2)
         self._title = ax.set_title("", fontsize=10)
+        self.fig.canvas.draw_idle()
 
-        self.fig.canvas.draw()
-        plt.pause(0.01)
+    def _toggle_edit_mode(self) -> None:
+        self.edit_mode = not self.edit_mode
+        if self.edit_mode:
+            self._dragging_wp = None
+            self._hover_wp = None
+            self._pose_edit_step = 0
+            self.get_logger().info(
+                "EDIT MODE ON — drag waypoints, 'p' add/edit pose, "
+                "'d' delete pose, 's' save, 'e' exit edit"
+            )
+        else:
+            self._dragging_wp = None
+            self._hover_wp = None
+            self._pose_edit_step = 0
+            self.bm._rebuild_edges()
+            self.get_logger().info("EDIT MODE OFF")
+        self._redraw_full()
+
+    def _on_key(self, event) -> None:
+        if event.key == "e":
+            self._toggle_edit_mode()
+            return
+        if not self.edit_mode:
+            return
+        if event.key == "s":
+            self._save_map()
+        elif event.key == "p":
+            self._start_pose_edit()
+        elif event.key == "d":
+            self._delete_last_pose()
+        elif event.key == "escape":
+            if self._pose_edit_step > 0:
+                self._pose_edit_step = 0
+                self.get_logger().info("Pose edit cancelled")
+                self._redraw_full()
+
+    def _on_release(self, event) -> None:
+        if not self.edit_mode:
+            return
+        if self._dragging_wp is not None:
+            wp_id = self._dragging_wp
+            self._dragging_wp = None
+            if event.inaxes is self.ax and event.xdata is not None:
+                x, y = float(event.xdata), float(event.ydata)
+                if (self.bm.is_in_bounds(x, y)
+                        and not self.bm.static_env.contains_xy(x, y)):
+                    # move_waypoint: position only, no edge rebuild.
+                    # Edges are rebuilt on save ('s') or exit edit ('e').
+                    self.bm.move_waypoint(wp_id, x, y)
+                    wp = self.graph.waypoints[wp_id]
+                    lbl = wp.label or f"#{wp_id}"
+                    self.get_logger().info(
+                        f"Moved {lbl} to ({x:.3f}, {y:.3f})")
+            self._redraw_full()
+        if self._pose_edit_step == 2:
+            if event.inaxes is self.ax and event.xdata is not None:
+                x, y = float(event.xdata), float(event.ydata)
+                pose = self.bm.robot_start_poses[self._pose_edit_idx]
+                yaw = math.atan2(y - pose.y, x - pose.x)
+                self.bm.robot_start_poses[self._pose_edit_idx] = (
+                    RobotStartPose(x=pose.x, y=pose.y, yaw=yaw))
+                self.get_logger().info(
+                    f"Robot{self._pose_edit_idx+1} yaw="
+                    f"{math.degrees(yaw):.0f}°")
+            self._pose_edit_step = 0
+            self._redraw_full()
+
+    def _on_motion(self, event) -> None:
+        if not self.edit_mode:
+            return
+        if event.inaxes is not self.ax:
+            return
+        if event.xdata is None:
+            return
+        x, y = float(event.xdata), float(event.ydata)
+        if self._dragging_wp is not None:
+            old = self.graph.waypoints[self._dragging_wp]
+            from map_data import Waypoint
+            self.graph.waypoints[self._dragging_wp] = Waypoint(
+                wp_id=old.wp_id, x=x, y=y, label=old.label, yaw=old.yaw)
+            self._redraw_full()
+            return
+        # Hover detection
+        nearest = self._nearest_wp(x, y)
+        if nearest is not None:
+            wp = self.graph.waypoints[nearest]
+            dist = math.hypot(wp.x - x, wp.y - y)
+            grab_r = max(0.06, self.bm.width_m * 0.03)
+            if dist <= grab_r:
+                if self._hover_wp != nearest:
+                    self._hover_wp = nearest
+                    self._redraw_full()
+                return
+        if self._hover_wp is not None:
+            self._hover_wp = None
+            self._redraw_full()
+
+    def _nearest_wp(self, x: float, y: float) -> Optional[int]:
+        best_id, best_d = None, math.inf
+        for wp in self.graph.waypoints.values():
+            d = math.hypot(wp.x - x, wp.y - y)
+            if d < best_d:
+                best_d = d
+                best_id = wp.wp_id
+        return best_id
+
+    def _start_pose_edit(self) -> None:
+        n = len(self.bm.robot_start_poses)
+        self._pose_edit_idx = n
+        self._pose_edit_step = 1
+        self.get_logger().info(
+            f"Click to place Robot{n+1} position (Escape to cancel)")
+        self._redraw_full()
+
+    def _delete_last_pose(self) -> None:
+        if not self.bm.robot_start_poses:
+            self.get_logger().info("No robot poses to delete")
+            return
+        removed = self.bm.robot_start_poses.pop()
+        n = len(self.bm.robot_start_poses)
+        self.get_logger().info(
+            f"Deleted Robot{n+1} pose ({removed.x:.3f}, {removed.y:.3f})")
+        self._redraw_full()
+
+    def _save_map(self) -> None:
+        self.bm._rebuild_edges()
+        try:
+            self.bm.save_to_yaml()
+            self.get_logger().info(f"Saved to {self.bm.yaml_path}")
+        except RuntimeError as exc:
+            self.get_logger().error(f"Save failed: {exc}")
 
     def _update_artists(self) -> None:
         # Robot.
@@ -422,9 +682,36 @@ class Monitor(Node):
         else:
             self._path_line.set_data([], [])
         # Title.
-        self._title.set_text(
-            f"Nav2 Bridge Monitor \u2014 {self.bm.name}\n{self.status}"
-        )
+        if self.edit_mode:
+            if self._pose_edit_step == 1:
+                edit_status = (
+                    f"EDIT: Click to place Robot{self._pose_edit_idx+1} "
+                    "position")
+            elif self._pose_edit_step == 2:
+                edit_status = (
+                    f"EDIT: Drag to set Robot{self._pose_edit_idx+1} "
+                    "yaw, release")
+            elif self._dragging_wp is not None:
+                wp = self.graph.waypoints[self._dragging_wp]
+                lbl = wp.label or f"#{self._dragging_wp}"
+                edit_status = f"EDIT: Dragging {lbl}"
+            else:
+                n_wp = len(self.graph.waypoints)
+                n_pose = len(self.bm.robot_start_poses)
+                edit_status = (
+                    f"EDIT MODE | {n_wp} waypoints | "
+                    f"{n_pose} robot pose(s)")
+            self._title.set_text(
+                f"Nav2 Bridge Monitor \u2014 {self.bm.name}\n"
+                f"{edit_status}\n"
+                "[drag] move wp  [p] add pose  [d] del pose  "
+                "[s] save  [e] exit edit")
+        else:
+            self._title.set_text(
+                f"Nav2 Bridge Monitor \u2014 {self.bm.name}\n"
+                f"{self.status}\n"
+                "[click] navigate  [e] edit mode"
+            )
 
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
