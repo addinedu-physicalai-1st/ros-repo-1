@@ -39,6 +39,11 @@ install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
 )
 
+# 통합 설정 파일 설치 (src/config/config.yaml → share/.../config/config.yaml)
+install(FILES ../config/config.yaml
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
 # 리소스 파일 설치
 install(DIRECTORY resource/
   DESTINATION share/ament_index/resource_index/packages

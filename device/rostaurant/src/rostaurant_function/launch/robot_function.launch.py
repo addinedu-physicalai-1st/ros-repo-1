@@ -2,6 +2,7 @@
 robot_function.launch.py
 
 모든 function_node를 동시에 기동하는 런치 파일.
+파라미터는 src/config/config.yaml (통합 설정) 에서 로드한다.
 
 실행 노드:
   - top_function_node      : 충전/대기/이동 기능, 배터리 모니터링
@@ -10,59 +11,37 @@ robot_function.launch.py
   - collect_function_node  : 수거 기능
   - guide_function_node    : 안내 기능
 
-기본 실행 (config/robot_function.yaml 로드):
+기본 실행:
   ros2 launch rostaurant_function robot_function.launch.py
-
-Gazebo 시뮬레이션 실행 (Nav2 연동):
-  ros2 launch rostaurant_function robot_function.launch.py sim:=true use_sim_time:=true
 
 커스텀 yaml 지정:
   ros2 launch rostaurant_function robot_function.launch.py config:=/path/to/custom.yaml
-
-rostaurant_state_machine과 함께 사용:
-  ros2 launch rostaurant_function robot_function.launch.py sim:=true use_sim_time:=true
-  ros2 launch rostaurant_state_machine state_machine.launch.py use_sim_time:=true
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    # ------------------------------------------------------------------ #
-    # yaml 설정 파일 경로 아규먼트                                            #
-    # ------------------------------------------------------------------ #
-    sim_arg = DeclareLaunchArgument(
-        'sim',
-        default_value='false',
-        description='true: Gazebo용 robot_function_gz.yaml 사용 (use_nav2=true), false: robot_function.yaml 사용'
-    )
     config_arg = DeclareLaunchArgument(
         'config',
         default_value=PathJoinSubstitution([
-            FindPackageShare('rostaurant_function'), 'config',
-            PythonExpression([
-                '"robot_function_gz.yaml" if "', LaunchConfiguration('sim'), '" == "true" else "robot_function.yaml"'
-            ])
+            FindPackageShare('rostaurant_state_machine'), 'config', 'config.yaml'
         ]),
-        description='파라미터 yaml 파일 경로. sim:=true 시 robot_function_gz.yaml 자동 선택'
+        description='파라미터 yaml 파일 경로. 기본값: src/config/config.yaml',
     )
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
-        description='Gazebo 시뮬레이션 시간 사용 여부'
+        description='Gazebo 시뮬레이션 시간 사용 여부',
     )
 
     config = LaunchConfiguration('config')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
-    # ------------------------------------------------------------------ #
-    # 노드 정의 — parameters 에 yaml 파일 경로를 전달                         #
-    # ------------------------------------------------------------------ #
     top_node = Node(
         package='rostaurant_function',
         executable='top_function_node',
@@ -109,7 +88,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        sim_arg,
         config_arg,
         use_sim_time_arg,
         top_node,
