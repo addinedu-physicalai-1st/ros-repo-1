@@ -1,0 +1,9 @@
+tracker_type: bytetrack
+track_high_thresh: 0.5
+track_low_thresh: 0.1
+new_track_thresh: 0.6
+track_buffer: 9000      # 우리가 늘려준 핵심 대기 시간! (약 5초)
+match_thresh: 0.8
+# --- 아래 두 줄이 에러를 고쳐줄 필수 옵션! ---
+gmc_method: sparseOptFlow
+fuse_score: True
