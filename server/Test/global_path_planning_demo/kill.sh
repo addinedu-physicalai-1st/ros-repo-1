@@ -47,20 +47,22 @@ MODE="$(cat "${MODE_FILE}" 2>/dev/null || echo unknown)"
 echo "[kill] mode=${MODE}"
 
 stop_group monitor
-stop_group nav2
 if [[ "${MODE}" != "real" ]]; then
+    # In real mode Nav2 runs on the pinky, not on this machine.
+    stop_group nav2
     stop_group gazebo
 fi
 
 # Sweep stragglers that ros2 launch likes to leave behind.
+# In real mode we only clean up laptop-local processes.
 SWEEP_PATTERNS=(
     "monitor.py"
     "nav2_bridge.py"
-    "ros2 launch pinky_navigation"
-    "nav2_"
 )
 if [[ "${MODE}" != "real" ]]; then
     SWEEP_PATTERNS+=(
+        "ros2 launch pinky_navigation"
+        "nav2_"
         "ros2 launch pinky_gz_sim"
         "gz sim"
         "gz-sim-server"

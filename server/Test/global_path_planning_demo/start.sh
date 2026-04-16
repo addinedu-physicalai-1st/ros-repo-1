@@ -2,9 +2,10 @@
 # Launch the waypoint-planner demo stack in either sim or real mode.
 #
 #   sim  (default): Gazebo + gz_bringup_launch (use_sim_time=true) + monitor
-#   --real        : real-robot bringup_launch (use_sim_time=false) + monitor.
-#                   Assumes the robot is already powered on and publishing
-#                   /scan, odom, and tf for base_link/base_footprint.
+#                   — everything on this machine.
+#   --real        : monitor only. The pinky robot must be running
+#                   driver + Nav2 already (see start_pinky.sh), and
+#                   both machines must share ROS_DOMAIN_ID (default 41).
 #
 # nav2_bridge.py is per-goal and must be invoked manually, e.g.:
 #   python3 nav2_bridge.py --goal Kitchen
@@ -37,15 +38,19 @@ while [[ $# -gt 0 ]]; do
             cat <<EOF
 usage: $(basename "$0") [--sim | --real]
 
-  --sim   (default) Launch Gazebo + Nav2 with use_sim_time=true
-  --real            Launch Nav2 only with use_sim_time=false.
-                    /scan, /odom and base TF must already be published
-                    by the real robot.
+  --sim   (default) Launch Gazebo + Nav2 + monitor on this machine
+                    (use_sim_time=true).
+  --real            Launch monitor only. Pinky must already be running
+                    driver + Nav2 (see start_pinky.sh) and both
+                    machines must share ROS_DOMAIN_ID (default 41).
 EOF
             exit 0 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
 done
+
+# ROS 2 peer discovery — both machines must agree.
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-41}"
 
 # Record the mode so kill.sh and the Python processes know which
 # clock domain they are in.
@@ -84,34 +89,40 @@ wait_for() {
     return 1
 }
 
-echo "[start] mode=${MODE} (DEMO_USE_SIM_TIME=${DEMO_USE_SIM_TIME})"
+echo "[start] mode=${MODE} (DEMO_USE_SIM_TIME=${DEMO_USE_SIM_TIME}, ROS_DOMAIN_ID=${ROS_DOMAIN_ID})"
 
 if [[ "${MODE}" == "sim" ]]; then
     # 1) Gazebo
     start_bg gazebo ros2 launch pinky_gz_sim launch_sim.launch.xml
     wait_for "/scan topic" 30 bash -c 'ros2 topic list 2>/dev/null | grep -q "^/scan$"'
 
-    # 2) Nav2 (sim bringup, use_sim_time=true by default in launch)
+    # 2) Nav2 (sim bringup, use_sim_time=true)
     start_bg nav2 ros2 launch pinky_navigation gz_bringup_launch.xml \
         "map:=${MAP_YAML}" "use_sim_time:=true"
+
+    wait_for "/follow_path action" 60 bash -c 'ros2 action list 2>/dev/null | grep -q "/follow_path"'
 else
-    # Real robot: the robot stack (driver, LiDAR, odom publisher, TF)
-    # must already be running — we only bring up Nav2 and the monitor.
-    if ! ros2 topic list 2>/dev/null | grep -q "^/scan$"; then
-        echo "[start] ERROR: /scan not found. Start the robot driver first." >&2
+    # Real mode: Pinky is expected to be running driver + Nav2 already.
+    # Verify discovery by waiting for /follow_path over the network.
+    echo "[start] waiting for remote Nav2 on pinky..."
+    if ! wait_for "/follow_path action (via pinky)" 60 bash -c 'ros2 action list 2>/dev/null | grep -q "/follow_path"'; then
+        cat >&2 <<EOF
+[start] ERROR: /follow_path not found on ROS_DOMAIN_ID=${ROS_DOMAIN_ID}.
+  Is start_pinky.sh running on the pinky?
+  Is ROS_DOMAIN_ID matching on both sides?
+  Are both machines on the same network (multicast allowed)?
+EOF
         rm -f "${MODE_FILE}"
         exit 1
     fi
-    start_bg nav2 ros2 launch pinky_navigation bringup_launch.xml \
-        "map:=${MAP_YAML}" "use_sim_time:=false"
 fi
 
-wait_for "/follow_path action" 60 bash -c 'ros2 action list 2>/dev/null | grep -q "/follow_path"'
-
-# 3) Monitor (picks up DEMO_USE_SIM_TIME from the exported env).
+# Monitor (picks up DEMO_USE_SIM_TIME + ROS_DOMAIN_ID from the exported env).
 start_bg monitor python3 "${DEMO_DIR}/monitor.py"
 
 echo
 echo "[start] stack up (mode=${MODE}). Logs: ${RUN_DIR}"
 echo "[start] send a goal with:"
-echo "        cd ${DEMO_DIR} && DEMO_USE_SIM_TIME=${DEMO_USE_SIM_TIME} python3 nav2_bridge.py --goal Kitchen"
+echo "        cd ${DEMO_DIR} && \\"
+echo "          ROS_DOMAIN_ID=${ROS_DOMAIN_ID} DEMO_USE_SIM_TIME=${DEMO_USE_SIM_TIME} \\"
+echo "          python3 nav2_bridge.py --goal Kitchen"

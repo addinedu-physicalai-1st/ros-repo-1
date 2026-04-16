@@ -77,6 +77,133 @@ source /opt/ros/jazzy/setup.bash && source "$ROS_WS/install/setup.bash" && cd "$
 
 > 시작점만 자유롭고 목적지는 웨이포인트로 스냅합니다. 뷔페 운용에서 목적지는 입구·주방·퇴식구·테이블 앞 등 미리 정의된 서비스 위치로 한정되는 것이 자연스러운 반면, 시작점은 로봇의 임의 현재 자세이기 때문입니다.
 
+## 실물 핑키(real 모드)에서 실행
+
+실제 pinky-pro 로봇에 연결해 동일한 monitor/클릭 주행을 사용하는 절차입니다. Gazebo는 쓰지 않으며, **Nav2와 로봇 driver는 핑키의 Raspberry Pi 위에서 직접 돌리고, global path planner(monitor.py)만 노트북에서** 실행합니다. 두 기계는 같은 `ROS_DOMAIN_ID`(기본 **41**)를 공유해서 ROS 2 discovery로 연결됩니다.
+
+### 구성
+
+| 위치 | 역할 | 스크립트 |
+|---|---|---|
+| **핑키** (SSH) | driver (LiDAR·모터·odom·TF) + Nav2 | `start_pinky.sh` / `kill_pinky.sh` |
+| **노트북** | monitor(시각화 + 클릭 네비) + `nav2_bridge.py` | `start.sh --real` / `kill.sh` |
+
+### 전제 조건
+
+- 핑키에 `pinky_bringup`, `pinky_navigation`, `sllidar_ros2` 패키지가 ROS overlay로 빌드돼 있어야 합니다. 기본 오버레이 경로는 `~/pinky_pro/install/setup.bash`이며, 다르면 `PINKY_OVERLAY=/path/to/install/setup.bash`로 덮어쓸 수 있습니다.
+- 노트북 WiFi가 pinky AP(예: `pinky_xxxx`)에 접속되어 있고, ssh로 `pinky@<핑키 IP>` 접근이 가능해야 합니다. 기본 IP는 `192.168.4.1`.
+- 두 쪽 모두 `ROS_DOMAIN_ID=41`로 맞춥니다. `start.sh --real`과 `start_pinky.sh` 둘 다 기본값이 41이며, 환경변수로 오버라이드 가능합니다.
+- 두 기계가 같은 서브넷에 있고 UDP multicast가 막히지 않아야 합니다(ROS 2 Fast DDS 기본 동작).
+
+### 최초 1회: 핑키로 파일 전송
+
+노트북에서 (레포 루트 기준):
+
+```bash
+# 1) 스크립트 두 개
+scp server/Test/global_path_planning_demo/start_pinky.sh \
+    server/Test/global_path_planning_demo/kill_pinky.sh \
+    pinky@192.168.4.1:~/
+
+# 2) 맵 파일 (Nav2 map_server가 핑키에서 로드)
+scp install/pinky_navigation/share/pinky_navigation/map/map4.yaml \
+    install/pinky_navigation/share/pinky_navigation/map/map4.pgm \
+    pinky@192.168.4.1:~/
+
+# 3) 튜닝된 Nav2 파라미터 (inflation, RPP cost scaling 등 반영된 버전)
+scp device/pinky_pro_robot/src/pinky_navigation/params/nav2_params.yaml \
+    pinky@192.168.4.1:~/
+
+# 4) 실행 권한
+ssh pinky@192.168.4.1 'chmod +x ~/start_pinky.sh ~/kill_pinky.sh'
+```
+
+스크립트나 파라미터를 수정했다면 해당 파일만 다시 `scp`로 덮어쓰면 됩니다.
+
+### 매번 실행하는 절차
+
+**① 핑키에서 driver + Nav2 기동 (SSH 세션)**
+
+```bash
+ssh pinky@192.168.4.1
+# 핑키 쉘에서:
+bash ~/start_pinky.sh
+# → ROS_DOMAIN_ID=41, 오버레이 자동 감지
+# → pinky_bringup 실행 → /scan 10 Hz 확인
+# → pinky_navigation Nav2 실행 → /follow_path 확인
+# → "ready" 메시지가 뜨면 완료
+```
+
+옵션:
+- `--map ~/다른맵.yaml`: 기본 `~/map4.yaml` 대신 다른 맵 사용
+- `--params ~/다른params.yaml`: 기본 `~/nav2_params.yaml`이 없거나 다른 파일을 쓰고 싶을 때
+- `--no-driver`: driver는 이미 돌고 있고 Nav2만 재기동할 때
+
+로그는 `~/.pinky_demo/{driver,nav2}.log`, PID는 같은 경로에 저장됩니다. SSH를 끊어도 `setsid`로 세션 분리해서 프로세스는 계속 동작합니다.
+
+**② 노트북에서 monitor 기동**
+
+```bash
+cd server/Test/global_path_planning_demo
+bash start.sh --real
+```
+
+`start.sh --real`은:
+- `ROS_DOMAIN_ID=41`, `DEMO_USE_SIM_TIME=false` 환경변수 export
+- `.run/mode=real` 기록 (kill.sh가 읽어서 원격 Nav2를 건드리지 않도록)
+- 60 초 내에 `/follow_path` 액션이 discovery로 잡히는지 확인. 안 잡히면 **도메인/네트워크 문제 안내 메시지**와 함께 실패
+- 성공 시 `monitor.py`만 로컬에서 기동 (Gazebo·Nav2 생략)
+
+**③ 초기 pose 정렬 (중요)**
+
+`nav2_params.yaml`의 `set_initial_pose: true`, `initial_pose: [0, 0, 0]`에 따라 AMCL은 기동 직후 **map 원점 근처(≈ Charging 웨이포인트)** 로 자신을 가정합니다. 실제 로봇이 그 위치에 있지 않다면 localization이 어긋난 채 주행이 시작돼 벽 충돌로 이어집니다.
+
+세 가지 방식 중 하나로 맞추세요:
+- 로봇을 물리적으로 Charging 지점(`maps/buffet_sim.yaml`의 `x=0.05, y=+0.05, yaw=180°`)에 두고 기동
+- 핑키에 연결된 화면/원격 RViz에서 "2D Pose Estimate" 버튼으로 설정
+- 노트북에서 터미널로 직접 publish:
+  ```bash
+  ROS_DOMAIN_ID=41 ros2 topic pub -1 /initialpose \
+    geometry_msgs/msg/PoseWithCovarianceStamped \
+    "{header: {frame_id: 'map'}, pose: {pose: {position: {x: 0.05, y: 0.05}, orientation: {z: 1.0, w: 0.0}}}}"
+  ```
+
+monitor 창에서 로봇 아이콘이 실제 로봇과 같은 위치에 찍혔는지 눈으로 확인한 뒤 클릭 주행을 시도하세요.
+
+**④ 주행**
+
+monitor 창의 웨이포인트를 클릭 → 가장 가까운 웨이포인트로 스냅 → 경로 계획 → `FollowPath` 전송 → 근접 preempt 후 Arrived. 여러 번 클릭해서 연속 주행이 정상인지 확인합니다.
+
+CLI로도 goal을 보낼 수 있습니다:
+```bash
+cd server/Test/global_path_planning_demo
+ROS_DOMAIN_ID=41 DEMO_USE_SIM_TIME=false python3 nav2_bridge.py --goal Kitchen
+```
+
+### 종료 순서
+
+**반드시 노트북 → 핑키 순서**로 정리합니다(원격 Nav2가 먼저 죽으면 monitor 쪽 콜백이 꼬일 수 있음).
+
+```bash
+# 1) 노트북
+bash kill.sh
+# → .run/mode=real을 읽어 monitor만 정리, 핑키의 Nav2는 건드리지 않음
+
+# 2) 핑키
+ssh pinky@192.168.4.1 'bash ~/kill_pinky.sh'
+# → Nav2 + driver 모두 정리
+```
+
+### 트러블슈팅
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `start.sh --real`에서 `/follow_path action` 60 초 타임아웃 | 도메인 ID 불일치 또는 네트워크 분리 | 양쪽 터미널에서 `ROS_DOMAIN_ID=41`인지 확인, 노트북이 pinky AP에 붙어 있는지 확인 |
+| monitor의 로봇 아이콘이 움직이지 않음 | AMCL이 publish 안 하거나 TF 끊김 | 핑키에서 `ros2 topic hz /amcl_pose`, `ros2 run tf2_ros tf2_echo map base_footprint` 확인 |
+| `start_pinky.sh`에서 `/scan`이 30 초 안에 안 잡힘 | LiDAR 연결/권한 문제 | `~/.pinky_demo/driver.log` 확인, `/dev/ttyAMA0` 권한, LiDAR 전원 |
+| 주행 중 벽 박음 → map vs Gazebo 위치 어긋남 | 휠 slip으로 odom drift → AMCL 분산 | Nav2 재기동 + 초기 pose 재설정 (`③` 참조). 재현되면 `buffet_sim.yaml`의 `inflation_radius` 또는 `nav2_params.yaml`의 costmap `inflation_radius` 상향 |
+| `Permission denied (publickey,password)` | SSH 키 미설정 | `ssh-copy-id pinky@192.168.4.1`로 키 등록(한 번만), 또는 매번 암호 입력 |
+
 ## 맵 파일 (YAML)
 
 맵은 외부 YAML 파일에서 로드합니다. **두 가지 형식**을 모두 지원하며 `load_buffet_map()`이 YAML 내용을 보고 자동 감지합니다.
