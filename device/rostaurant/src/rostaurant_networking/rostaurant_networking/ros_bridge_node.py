@@ -22,11 +22,7 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32
 
 from pinky_interfaces.msg import RobotCommand, RobotTaskStatus
-from rostaurant_networking.ack_logic import (
-    _BATTERY_INIT,
-    _decide_ack,
-    _decide_task_event,
-)
+from rostaurant_networking.ack_logic import _BATTERY_INIT, _decide_ack
 from rostaurant_networking.robotcafe.db.v1 import robotcafe_pb2 as pb
 
 from rostaurant_networking.tcp_client import TcpClient
@@ -88,7 +84,7 @@ class RostaurantCommNode(Node):
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("battery_topic", "/battery")
         self.declare_parameter("task_status_topic", "/task_status")
-        self.declare_parameter("robot_command_topic", "/robot_command")
+        self.declare_parameter("robot_command_topic", "/hq/command")
         self.declare_parameter("connection_token", "")
 
         self._robot_id = self.get_parameter("robot_id").get_parameter_value().string_value
@@ -260,6 +256,8 @@ class RostaurantCommNode(Node):
         self._pending_task_action = 0
         self._send_accepted_ack(cmd.cmd_id)
 
+        # cmd.target_id に string command 이름을 담아서 전달
+        # (예: "MoveToKitchen", "FollowRequest", "CollectRequest", "MoveToRequester")
         ros_cmd = RobotCommand(
             cmd_id=cmd.cmd_id,
             task_id=cmd.task_id,
@@ -269,136 +267,7 @@ class RostaurantCommNode(Node):
             target_x=cmd.target_x,
             target_y=cmd.target_y,
             target_theta=cmd.target_theta,
-            task_action=0,
-            step_index=0,
         )
-        self._enqueue_ros_cmd(ros_cmd)
-
-    def enqueue_follow_command(self, cmd: pb.FollowCommand) -> None:
-        """동행 커맨드 처리."""
-        self._pending_cmd_id = cmd.cmd_id
-        self._pending_cmd_type = int(pb.CommandType.FOLLOW_CMD)
-        self._pending_task_action = int(cmd.action)
-        self._send_accepted_ack(cmd.cmd_id)
-
-        ros_cmd = RobotCommand(
-            cmd_id=cmd.cmd_id,
-            task_id=cmd.task_id,
-            robot_id=cmd.robot_id,
-            command=int(pb.CommandType.FOLLOW_CMD),
-            target_id=cmd.target_id,
-            target_x=cmd.target_x,
-            target_y=cmd.target_y,
-            target_theta=cmd.target_theta,
-            task_action=int(cmd.action),
-            step_index=0,
-        )
-        self._enqueue_ros_cmd(ros_cmd)
-        logger.info(
-            "FollowCommand enqueued action=%s cmd_id=%s",
-            pb.FollowAction.Name(cmd.action),
-            cmd.cmd_id,
-        )
-
-    def enqueue_collect_command(self, cmd: pb.CollectionCommand) -> None:
-        """수거 커맨드 처리."""
-        self._pending_cmd_id = cmd.cmd_id
-        self._pending_cmd_type = int(pb.CommandType.COLLECT_CMD)
-        self._pending_task_action = int(cmd.action)
-        self._send_accepted_ack(cmd.cmd_id)
-
-        ros_cmd = RobotCommand(
-            cmd_id=cmd.cmd_id,
-            task_id=cmd.task_id,
-            robot_id=cmd.robot_id,
-            command=int(pb.CommandType.COLLECT_CMD),
-            target_id=cmd.target_id,
-            target_x=cmd.target_x,
-            target_y=cmd.target_y,
-            target_theta=cmd.target_theta,
-            task_action=int(cmd.action),
-            step_index=0,
-        )
-        self._enqueue_ros_cmd(ros_cmd)
-        logger.info(
-            "CollectionCommand enqueued action=%s cmd_id=%s",
-            pb.CollectionAction.Name(cmd.action),
-            cmd.cmd_id,
-        )
-
-    def enqueue_delivery_command(self, cmd: pb.DeliveryCommand) -> None:
-        """운반 커맨드 처리."""
-        self._pending_cmd_id = cmd.cmd_id
-        self._pending_cmd_type = int(pb.CommandType.DELIVERY_CMD)
-        self._pending_task_action = int(cmd.action)
-        self._send_accepted_ack(cmd.cmd_id)
-
-        ros_cmd = RobotCommand(
-            cmd_id=cmd.cmd_id,
-            task_id=cmd.task_id,
-            robot_id=cmd.robot_id,
-            command=int(pb.CommandType.DELIVERY_CMD),
-            target_id=cmd.target_id,
-            target_x=cmd.target_x,
-            target_y=cmd.target_y,
-            target_theta=cmd.target_theta,
-            task_action=int(cmd.action),
-            step_index=cmd.step_index,
-        )
-        self._enqueue_ros_cmd(ros_cmd)
-        logger.info(
-            "DeliveryCommand enqueued action=%s step=%d cmd_id=%s",
-            pb.DeliveryAction.Name(cmd.action),
-            cmd.step_index,
-            cmd.cmd_id,
-        )
-
-    def enqueue_guidance_command(self, cmd: pb.GuidanceCommand) -> None:
-        """안내 커맨드 처리."""
-        self._pending_cmd_id = cmd.cmd_id
-        self._pending_cmd_type = int(pb.CommandType.GUIDE_CMD)
-        self._pending_task_action = int(cmd.action)
-        self._send_accepted_ack(cmd.cmd_id)
-
-        ros_cmd = RobotCommand(
-            cmd_id=cmd.cmd_id,
-            task_id=cmd.task_id,
-            robot_id=cmd.robot_id,
-            command=int(pb.CommandType.GUIDE_CMD),
-            target_id=cmd.target_id,
-            target_x=cmd.target_x,
-            target_y=cmd.target_y,
-            target_theta=cmd.target_theta,
-            task_action=int(cmd.action),
-            step_index=cmd.step_index,
-        )
-        self._enqueue_ros_cmd(ros_cmd)
-        logger.info(
-            "GuidanceCommand enqueued action=%s step=%d cmd_id=%s",
-            pb.GuidanceAction.Name(cmd.action),
-            cmd.step_index,
-            cmd.cmd_id,
-        )
-
-    # ── 내부 헬퍼 ────────────────────────────────────────────────────
-
-    def _send_accepted_ack(self, cmd_id: str) -> None:
-        """커맨드 수신 직후 ACCEPTED ACK 비동기 전송."""
-        async def _send() -> None:
-            ack = pb.CommandAck(
-                cmd_id=cmd_id,
-                robot_id=self._robot_id,
-                status=pb.AckStatus.ACCEPTED,
-            )
-            ack.acked_at.FromMilliseconds(int(time.time() * 1000))
-            self._tcp_seq += 1
-            pkt = pb.TcpPacket(robot_id=self._robot_id, seq=self._tcp_seq, ack_payload=ack)
-            await self._tcp.send_packet(pkt)
-            logger.info("CommandAck ACCEPTED cmd_id=%s", cmd_id)
-
-        self._schedule(_send())
-
-    def _enqueue_ros_cmd(self, ros_cmd: RobotCommand) -> None:
         try:
             self._cmd_queue.put_nowait(ros_cmd)
         except queue.Full:

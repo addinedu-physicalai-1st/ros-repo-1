@@ -1,0 +1,113 @@
+<?xml version='1.0' ?>
+
+<!--
+  safety_layer.launch.xml
+  ───────────────────────
+  Full safety pipeline (Camera-LiDAR Fusion 3-Zone System):
+
+      rostaurant_camera node
+               │  /image (CompressedImage)
+               ▼
+   child_detection_node (YOLO + LiDAR fusion)
+               │  child_safety_zone (String: NORMAL/MONITOR/CAUTION/STOP)
+               ├───────────────────────┬──────────────────────────────┐
+               ▼                       ▼                              ▼
+      safety_layer_node          event_recorder_node            buzzer_node
+      cmd_vel_raw →                STOP → 60s 버퍼             (CAUTION/STOP
+      CAUTION: 50% 감속              → mp4/csv 저장               경고음)
+      STOP: 속도 0
+      → /cmd_vel
+-->
+
+<launch>
+    <arg name="use_sim_time" default="False"/>
+
+    <!-- YOLO 가중치 파일 경로 (기본값은 config/safety_layer.yaml 에서 관리) -->
+    <arg name="yolo_model" default="best.pt"/>
+
+    <!-- YOLO 신뢰도 임계값 (기본값은 config/safety_layer.yaml 에서 관리) -->
+    <arg name="confidence" default="0.5"/>
+
+    <!--
+      그 외 모든 파라미터(zone_stop, zone_caution, zone_monitor, angle_window_deg,
+      camera_fx, camera_cx, caution_speed_scale, buffer_seconds, buzzer_pin 등)는
+      config/safety_layer.yaml 에서 수정하세요.
+    -->
+
+    <!-- ── Camera publisher ──────────────────────────────────────────────── -->
+    <node pkg="rostaurant_camera" exec="camera_node" name="camera_node"
+          output="screen">
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <!-- config/safety_layer.yaml 의 camera_node 섹션에서 camera_index 등 로드 -->
+        <param from="$(find-pkg-share rostaurant_safety_layer)/config/safety_layer.yaml"/>
+    </node>
+
+    <!-- ── Child detection (Camera-LiDAR 3-zone) ────────────────────────── -->
+    <!--
+      /image + /scan을 구독해 YOLO 추론 및 LiDAR 거리 측정으로
+      NORMAL/MONITOR/CAUTION/STOP 구역을 결정합니다.
+      child_safety_zone (String) → safety_layer_node, event_recorder_node, buzzer_node
+    -->
+    <node pkg="rostaurant_safety_layer" exec="child_detection_node" name="child_detection_node"
+          output="screen">
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <!-- config/safety_layer.yaml 에서 기본값 로드 -->
+        <param from="$(find-pkg-share rostaurant_safety_layer)/config/safety_layer.yaml"/>
+        <!-- launch 인수로 자주 바꾸는 항목만 덮어쓰기 -->
+        <param name="yolo_model"  value="$(var yolo_model)"/>
+        <param name="confidence"  value="$(var confidence)"/>
+    </node>
+
+    <!-- ── Safety layer ──────────────────────────────────────────────────── -->
+    <!--
+      child_safety_zone (String) 구독:
+        STOP    → cmd_vel 속도 0 발행
+        CAUTION → cmd_vel_raw 를 caution_speed_scale 배율로 감속해 cmd_vel 발행
+        NORMAL/MONITOR → cmd_vel_raw 그대로 cmd_vel 발행
+    -->
+    <node pkg="rostaurant_safety_layer" exec="safety_layer_node" name="safety_layer_node"
+          output="screen">
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <param from="$(find-pkg-share rostaurant_safety_layer)/config/safety_layer.yaml"/>
+    </node>
+
+    <!-- ── Buzzer node ───────────────────────────────────────────────────── -->
+    <!--
+      child_safety_zone (String) 구독:
+        CAUTION → beep_half_period_s ON/OFF 반복 (삐-삐-삐-)
+        STOP    → 계속 ON (삐 ───)
+        others  → OFF
+    -->
+    <node pkg="rostaurant_safety_layer" exec="buzzer_node" name="buzzer_node"
+          output="screen">
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <param from="$(find-pkg-share rostaurant_safety_layer)/config/safety_layer.yaml"/>
+    </node>
+
+    <!-- ── Event recorder ───────────────────────────────────────────────── -->
+    <!--
+      child_safety_zone=STOP 시 직전 buffer_seconds 분량의 영상+라이다를 저장합니다.
+    -->
+    <node pkg="rostaurant_safety_layer" exec="event_recorder_node" name="event_recorder_node"
+          output="screen">
+        <param name="use_sim_time" value="$(var use_sim_time)"/>
+        <param from="$(find-pkg-share rostaurant_safety_layer)/config/safety_layer.yaml"/>
+    </node>
+
+    <!-- ── Navigation / teleop (examples) ───────────────────────────────── -->
+    <!--
+      모든 속도 명령은 /cmd_vel_raw 로 발행해야 safety_layer를 통과합니다.
+
+      Teleop 예:
+        <node pkg="teleop_twist_keyboard" exec="teleop_twist_keyboard"
+              name="teleop" output="screen">
+            <remap from="cmd_vel" to="cmd_vel_raw"/>
+        </node>
+
+      Nav2 예 — nav2_params.yaml:
+          controller_server:
+            ros__parameters:
+              cmd_vel_topic: cmd_vel_raw
+    -->
+
+</launch>

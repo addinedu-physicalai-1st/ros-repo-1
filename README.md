@@ -61,6 +61,7 @@ DB가 없는 상태(첫 실행)에서 서버를 시작하면 Admin 계정이 자
 
 ```bash
 cd server
+rm control/rostaurant.db*
 MRTA_ADMIN_KEY_OUT=~/admin_key.txt ./start.sh
 ```
 

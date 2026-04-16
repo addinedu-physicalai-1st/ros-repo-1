@@ -12,6 +12,7 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>pinky_interfaces</exec_depend>
+  <exec_depend>rostaurant_state_machine</exec_depend>
   <exec_depend>python3-protobuf</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
