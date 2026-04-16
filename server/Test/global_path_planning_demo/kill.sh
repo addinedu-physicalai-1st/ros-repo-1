@@ -58,6 +58,7 @@ fi
 SWEEP_PATTERNS=(
     "monitor.py"
     "nav2_bridge.py"
+    "multi_robot_controller.py"
 )
 if [[ "${MODE}" != "real" ]]; then
     SWEEP_PATTERNS+=(

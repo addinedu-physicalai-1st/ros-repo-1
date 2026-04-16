@@ -43,11 +43,13 @@ global_path_planning_demo/
 ├── kill.sh               # 데모 스택 종료
 ├── start_pinky.sh        # 핑키 로봇에서 driver + Nav2 기동
 ├── kill_pinky.sh         # 핑키 프로세스 종료
-├── monitor.py            # 시각화 + 클릭 네비게이션 + 편집 모드 (ROS2 노드)
-├── nav2_bridge.py        # CLI 목표 전달 (A* 경로 → FollowPath)
+├── monitor.py            # 시각화 + 클릭 네비게이션 + 편집 모드 (ROS2 노드, 멀티 로봇 지원)
+├── nav2_bridge.py        # CLI 목표 전달 (A* 경로 → FollowPath, 단일 로봇)
+├── multi_robot_controller.py  # CLI 멀티 로봇 제어 (중앙 경로 계획 + 스레드 디스패치)
 ├── astar_planner.py      # A* 경로 계획 알고리즘
 ├── map_data.py           # 맵 로딩 / 편집 / 저장 (YAML ↔ BuffetMap)
 ├── test_drive.sh         # 자동 연속 주행 테스트
+├── start_multi.sh        # 멀티 로봇 CLI 실행 스크립트
 ├── requirements.txt      # Python 의존성
 └── maps/
     ├── buffet_sim.yaml   # 기본 맵 (실제 SLAM 스캔)
@@ -149,19 +151,19 @@ bash test_drive.sh --loops 3 Kitchen Charging Return
 # 1) 스크립트 두 개
 scp server/Test/global_path_planning_demo/start_pinky.sh \
     server/Test/global_path_planning_demo/kill_pinky.sh \
-    pinky@192.168.4.1:~/
+    pinky@<PINKY_IP>:~/
 
 # 2) 맵 파일 (Nav2 map_server가 핑키에서 로드)
 scp install/pinky_navigation/share/pinky_navigation/map/map4.yaml \
     install/pinky_navigation/share/pinky_navigation/map/map4.pgm \
-    pinky@192.168.4.1:~/
+    pinky@<PINKY_IP>:~/
 
 # 3) 튜닝된 Nav2 파라미터 (inflation, RPP cost scaling 등 반영된 버전)
 scp device/pinky_pro_robot/src/pinky_navigation/params/nav2_params.yaml \
-    pinky@192.168.4.1:~/
+    pinky@<PINKY_IP>:~/
 
 # 4) 실행 권한
-ssh pinky@192.168.4.1 'chmod +x ~/start_pinky.sh ~/kill_pinky.sh'
+ssh pinky@<PINKY_IP> 'chmod +x ~/start_pinky.sh ~/kill_pinky.sh'
 ```
 
 스크립트나 파라미터를 수정했다면 해당 파일만 다시 `scp`로 덮어쓰면 됩니다.
@@ -171,7 +173,7 @@ ssh pinky@192.168.4.1 'chmod +x ~/start_pinky.sh ~/kill_pinky.sh'
 **① 핑키에서 driver + Nav2 기동 (SSH 세션)**
 
 ```bash
-ssh pinky@192.168.4.1
+ssh pinky@<PINKY_IP>
 # 핑키 쉘에서:
 bash ~/start_pinky.sh
 # → ROS_DOMAIN_ID=41, 오버레이 자동 감지
@@ -202,16 +204,28 @@ bash start.sh --real
 
 **③ 초기 pose 정렬 (중요)**
 
-`nav2_params.yaml`의 `set_initial_pose: true`, `initial_pose: [0, 0, 0]`에 따라 AMCL은 기동 직후 **map 원점 근처(≈ Charging 웨이포인트)** 로 자신을 가정합니다. 실제 로봇이 그 위치에 있지 않다면 localization이 어긋난 채 주행이 시작돼 벽 충돌로 이어집니다.
+`nav2_params.yaml`의 `set_initial_pose: true`와 `initial_pose` 블록에 따라 AMCL은 기동 직후 해당 위치로 자신을 가정합니다. 실제 로봇이 그 위치에 있지 않다면 localization이 어긋난 채 주행이 시작돼 벽 충돌로 이어집니다.
+
+**`initial_pose` 포맷 주의**: AMCL은 리스트(`[0, 0, 0]`)가 아니라 **개별 파라미터**를 기대합니다:
+```yaml
+# 올바른 포맷
+set_initial_pose: true
+initial_pose:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+  yaw: 0.0
+```
 
 세 가지 방식 중 하나로 맞추세요:
-- 로봇을 물리적으로 Charging 지점(`maps/buffet_sim.yaml`의 `x=0.05, y=+0.05, yaw=180°`)에 두고 기동
+- 로봇을 물리적으로 `initial_pose`에 설정된 위치에 두고 기동
 - 핑키에 연결된 화면/원격 RViz에서 "2D Pose Estimate" 버튼으로 설정
 - 노트북에서 터미널로 직접 publish:
   ```bash
-  ROS_DOMAIN_ID=41 ros2 topic pub -1 /initialpose \
+  ssh pinky@<IP> "source /opt/ros/jazzy/setup.bash && \
+    ROS_DOMAIN_ID=41 ros2 topic pub /initialpose \
     geometry_msgs/msg/PoseWithCovarianceStamped \
-    "{header: {frame_id: 'map'}, pose: {pose: {position: {x: 0.05, y: 0.05}, orientation: {z: 1.0, w: 0.0}}}}"
+    \"{header: {frame_id: 'map'}, pose: {pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {z: 0.0, w: 1.0}}}}\" --once"
   ```
 
 monitor 창에서 로봇 아이콘이 실제 로봇과 같은 위치에 찍혔는지 눈으로 확인한 뒤 클릭 주행을 시도하세요.
@@ -236,9 +250,140 @@ bash kill.sh
 # → .run/mode=real을 읽어 monitor만 정리, 핑키의 Nav2는 건드리지 않음
 
 # 2) 핑키
-ssh pinky@192.168.4.1 'bash ~/kill_pinky.sh'
+ssh pinky@<PINKY_IP> 'bash ~/kill_pinky.sh'
 # → Nav2 + driver 모두 정리
 ```
+
+## 멀티 로봇 실행 (2대)
+
+2대의 핑키를 동시에 제어합니다. 각 로봇은 별도 `ROS_DOMAIN_ID`로 격리하고, 노트북의 monitor가 중앙에서 경로를 계획하여 디스패치합니다.
+
+### 구성
+
+| 위치 | 역할 | ROS_DOMAIN_ID |
+|---|---|---|
+| **핑키1** (<PINKY1_IP>) | driver + Nav2 | 41 |
+| **핑키2** (<PINKY2_IP>) | driver + Nav2 | 42 |
+| **노트북** | monitor (시각화 + 클릭 + 경로 계획 + 디스패치) | — |
+
+### 전제 조건
+
+- 노트북과 핑키 2대가 **같은 Wi-Fi 서브넷**에 연결되어 있어야 합니다.
+- 각 핑키에 SSH 키가 등록되어 있으면 편리합니다:
+  ```bash
+  ssh-copy-id pinky@<PINKY1_IP>    # 핑키1
+  ssh-copy-id pinky@<PINKY2_IP>   # 핑키2
+  ```
+- 각 핑키의 `~/nav2_params.yaml`에서 `set_initial_pose: true`와 `initial_pose`가 실제 위치에 맞게 설정되어 있어야 합니다.
+
+### 실행 절차
+
+**① 각 핑키에서 driver + Nav2 기동**
+
+```bash
+# 터미널 1 — 핑키1
+ssh pinky@<PINKY1_IP>
+ROS_DOMAIN_ID=41 bash ~/start_pinky.sh
+
+# 터미널 2 — 핑키2
+ssh pinky@<PINKY2_IP>
+ROS_DOMAIN_ID=42 bash ~/start_pinky.sh
+```
+
+두 핑키 모두 `ready` 메시지가 뜨면 완료.
+
+**② 노트북에서 monitor 실행 (시각화 + 클릭 주행)**
+
+```bash
+cd server/Test/global_path_planning_demo
+bash start.sh --real --domain-ids 41 42
+```
+
+`start.sh`가 각 도메인의 `/follow_path` 액션을 확인한 뒤, `monitor.py --domain-ids 41 42`를 자동 실행합니다. matplotlib 창이 뜨고 R0(초록), R1(빨강) 로봇 위치가 맵에 표시됩니다.
+
+수동 실행도 가능합니다:
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/Desktop/ros-repo-1/install/setup.bash
+DEMO_USE_SIM_TIME=false python3 monitor.py --domain-ids 41 42
+```
+
+**③ 초기 위치 보정 (필요시)**
+
+AMCL 초기 위치가 실제 로봇과 다르면 `/initialpose`를 발행합니다:
+
+```bash
+# 핑키1 (domain 41) — Charging 위치 예시
+ssh pinky@<PINKY1_IP> "source /opt/ros/jazzy/setup.bash && \
+  ROS_DOMAIN_ID=41 ros2 topic pub /initialpose \
+  geometry_msgs/msg/PoseWithCovarianceStamped \
+  \"{header: {frame_id: 'map'}, pose: {pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {z: 0.0, w: 1.0}}}}\" --once"
+
+# 핑키2 (domain 42) — Entrance 앞 웨이포인트 예시
+ssh pinky@<PINKY2_IP> "source /opt/ros/jazzy/setup.bash && \
+  ROS_DOMAIN_ID=42 ros2 topic pub /initialpose \
+  geometry_msgs/msg/PoseWithCovarianceStamped \
+  \"{header: {frame_id: 'map'}, pose: {pose: {position: {x: 0.05, y: -0.766, z: 0.0}, orientation: {z: 0.0, w: 1.0}}}}\" --once"
+```
+
+**④ 클릭 주행**
+
+| 입력 | 동작 |
+|---|---|
+| **좌클릭** | 다음 idle 로봇에 목적지 설정 → 즉시 경로 계획 + 출발 |
+| `m` | 대기 중인 로봇 취소 + 리셋 |
+| `e` | 편집 모드 |
+
+**동적 우선순위 기반 경로 계획**:
+- 먼저 클릭하여 이미 움직이고 있는 로봇의 경로가 우선권을 가짐
+- 나중에 클릭한 로봇은 이동 중인 로봇의 **남은 경로**(`remaining_path`)를 `reserved_paths`로 회피하여 경로 생성
+- 경로가 차단되면 **"waiting" 상태**로 전환 → **2초마다 자동 재계획**
+- 먼저 가는 로봇이 경로를 비우면 대기 중인 로봇이 자동으로 출발
+
+예시:
+1. R0 클릭 (Kitchen) → R0 즉시 출발
+2. R1 클릭 (Kitchen) → R0의 남은 경로가 Kitchen을 지나므로 R1 대기
+3. R0가 Kitchen 도착 → R0 경로 소멸 → R1 재계획 성공 → R1 자동 출발
+
+### CLI 방식 (monitor 없이)
+
+시각화 없이 CLI로 직접 멀티 로봇 주행:
+
+```bash
+# start_multi.sh 사용
+bash start_multi.sh --goals Kitchen Return --domain-ids 41 42
+
+# 또는 Python 직접 실행
+DEMO_USE_SIM_TIME=false python3 multi_robot_controller.py \
+  --goals Kitchen Return --domain-ids 41 42
+```
+
+### 종료
+
+**반드시 노트북 → 핑키 순서**로 정리합니다.
+
+```bash
+# 1) 노트북
+bash kill.sh
+
+# 2) 핑키1
+ssh pinky@<PINKY1_IP> "bash ~/kill_pinky.sh"
+
+# 3) 핑키2
+ssh pinky@<PINKY2_IP> "bash ~/kill_pinky.sh"
+```
+
+### 트러블슈팅 (멀티 로봇)
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| R0/R1이 같은 위치(0,0)에 겹침 | AMCL 초기 위치 미설정 | `③ 초기 위치 보정` 절차 수행 |
+| R1 위치가 드리프트 (실제와 맵 불일치) | AMCL 파티클 수렴 실패 | `/initialpose` 재발행 |
+| 클릭이 반응 없음 | 웨이포인트에서 너무 먼 곳 클릭 | 웨이포인트 근처를 정확히 클릭 |
+| "busy" 메시지 | 이전 주행이 아직 진행 중 | 로봇이 도착할 때까지 대기 |
+| satellite 스레드 에러 | domain_id로 핑키 미발견 | 핑키의 ROS_DOMAIN_ID 확인, 네트워크 연결 확인 |
+| AMCL 초기 위치가 적용 안 됨 | `initial_pose` 포맷 오류 | 리스트 `[x,y,yaw]`가 아닌 개별 파라미터 `x:`, `y:`, `z:`, `yaw:` 사용 |
+| "waiting" 상태에서 안 풀림 | 다른 로봇 경로가 목적지를 계속 점유 | `m` 키로 리셋 후 다른 목적지 선택, 또는 다른 로봇이 도착할 때까지 대기 |
 
 ### 트러블슈팅
 
@@ -248,7 +393,7 @@ ssh pinky@192.168.4.1 'bash ~/kill_pinky.sh'
 | monitor의 로봇 아이콘이 움직이지 않음 | AMCL이 publish 안 하거나 TF 끊김 | 핑키에서 `ros2 topic hz /amcl_pose`, `ros2 run tf2_ros tf2_echo map base_footprint` 확인 |
 | `start_pinky.sh`에서 `/scan`이 30 초 안에 안 잡힘 | LiDAR 연결/권한 문제 | `~/.pinky_demo/driver.log` 확인, `/dev/ttyAMA0` 권한, LiDAR 전원 |
 | 주행 중 벽 박음 → map vs Gazebo 위치 어긋남 | 휠 slip으로 odom drift → AMCL 분산 | Nav2 재기동 + 초기 pose 재설정 (`③` 참조). 재현되면 `buffet_sim.yaml`의 `inflation_radius` 또는 `nav2_params.yaml`의 costmap `inflation_radius` 상향 |
-| `Permission denied (publickey,password)` | SSH 키 미설정 | `ssh-copy-id pinky@192.168.4.1`로 키 등록(한 번만), 또는 매번 암호 입력 |
+| `Permission denied (publickey,password)` | SSH 키 미설정 | `ssh-copy-id pinky@<PINKY_IP>`로 키 등록(한 번만), 또는 매번 암호 입력 |
 
 ## 맵 파일 (YAML)
 
@@ -811,8 +956,11 @@ plan = plan_path_from_point(
 - `monitor.py` — 시각화 + 클릭 네비게이션 + 편집 모드 (ROS2 노드)
   - TF(`map → base_footprint`)로 로봇 위치 추적, 클릭 시 A* 경로 → `FollowPath` 전송.
   - 편집 모드(`e`): 웨이포인트 드래그 이동, 로봇 포즈 배치(`p`), YAML 저장(`s`).
-- `nav2_bridge.py` — CLI 목표 전달
+  - 멀티 로봇 모드(`--domain-ids 41 42`): 로봇별 `_RobotSatellite` 백그라운드 스레드(독립 `rclpy.Context` + `domain_id`)로 TF/Nav2 분리. 클릭 시퀀스로 각 로봇 목적지 설정 → `reserved_paths` 경로 계획 → 동시 디스패치.
+- `nav2_bridge.py` — CLI 목표 전달 (단일 로봇)
   - `--goal <라벨>` 인자로 A* 경로 계산 → Nav2 `FollowPath` 액션 전송 → 근접 preempt → Spin(yaw 정렬).
+- `multi_robot_controller.py` — CLI 멀티 로봇 제어
+  - 메인 스레드에서 순차 경로 계획(`reserved_paths` 적용) → 로봇별 `RobotThread`(독립 `rclpy.Context`)로 병렬 디스패치. `--goals Kitchen Return --domain-ids 41 42` 형태로 사용.
 
 ## 헤드리스 검증 결과
 
