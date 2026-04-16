@@ -18,7 +18,7 @@ HQ 역할을 시뮬레이션하는 테스트 노드.
 
 파라미터:
   scenario        : 실행할 시나리오
-                    follow | delivery | collect | guide | battery | collect_gz | all
+                    follow | delivery | collect | guide | battery | collect_gz | docking | all
                     기본값 = all
   step_delay      : 명령 사이 대기 시간 (초), 기본값 = 3.0
   collect_done_delay : collect_gz 시나리오에서 StartCollection 발행 후
@@ -54,6 +54,12 @@ class HQSimulatorNode(Node):
         self._event_sub = self.create_subscription(
             RobotEvent, '/robot/event', self._on_robot_event, 10
         )
+        self._docking_status_sub = self.create_subscription(
+            String, '/docking/status', self._on_docking_status, 10
+        )
+        self._docking_cmd_sub = self.create_subscription(
+            String, '/docking/cmd', self._on_docking_cmd, 10
+        )
 
         # 시나리오 실행 상태
         self._scenario_steps = []
@@ -76,6 +82,12 @@ class HQSimulatorNode(Node):
 
     def _on_robot_state(self, msg: String) -> None:
         self.get_logger().info(f'[ROBOT STATE] → {msg.data}')
+
+    def _on_docking_status(self, msg: String) -> None:
+        self.get_logger().info(f'[DOCKING STATUS] → {msg.data}')
+
+    def _on_docking_cmd(self, msg: String) -> None:
+        self.get_logger().info(f'[DOCKING CMD] → {msg.data}')
 
     def _on_robot_event(self, msg: RobotEvent) -> None:
         self.get_logger().info(
@@ -162,6 +174,8 @@ class HQSimulatorNode(Node):
             steps = self._scenario_standby_to_charge()
         elif scenario == 'collect_gz':
             steps = self._scenario_collect_gz()
+        elif scenario == 'docking':
+            steps = self._scenario_docking()
         else:
             # all: 순서대로 실행
             steps = (
@@ -399,6 +413,40 @@ class HQSimulatorNode(Node):
              lambda: self._send_command('FollowStart', 'retry-001')),
             ('[RETRY] FollowEnd 전송',
              lambda: self._send_command('FollowEnd', 'retry-001')),
+        ]
+
+    def _scenario_docking(self):
+        """
+        충전소 이동 → pinky_docking 연동 시나리오
+
+        흐름:
+          배터리 85% → STANDBY 진입 대기 (step_delay 동안 로봇이 standby_pos로 이동)
+          배터리 10% → MOVE_TO_CHARGING 진입 (충전소로 이동 시작)
+          nav_delay 초 후 → top_function_node._on_arrived_charging() 호출
+            - ArrivedAtCharging 이벤트 발행 → FSM: CHARGING 진입
+            - /docking/cmd → "start" 발행 → pinky_docking 도킹 시작
+          /docking/status 변화: IDLE → RUNNING → DOCKED
+
+        확인 포인트:
+          [ROBOT STATE]   → MOVE_TO_CHARGING
+          [ROBOT EVENT]   ArrivedAtCharging
+          [DOCKING CMD]   → start          ← top_function_node가 발행
+          [DOCKING STATUS]→ RUNNING        ← docking_node 상태
+          [DOCKING STATUS]→ DOCKED         ← 도킹 완료
+          [ROBOT STATE]   → CHARGING_NO_TASK (배터리 10% 이므로)
+
+        실행 예:
+          ros2 run rostaurant_state_machine test_state_machine.py \\
+            --ros-args -p scenario:=docking -p step_delay:=8.0
+        """
+        return [
+            ('배터리 85% 설정 → STANDBY 진입 대기',
+             lambda: self._set_battery(85.0)),
+            # step_delay 동안 로봇이 standby_pos로 이동하여 STANDBY 상태 진입
+            ('배터리 10%로 낮춤 → MOVE_TO_CHARGING 진입 → 충전소 이동 + 도킹 시작',
+             lambda: self._set_battery(10.0)),
+            # nav_delay 초 후 top_function_node가 /docking/cmd → "start" 발행
+            # docking_node: IDLE → RUNNING → DOCKED
         ]
 
 

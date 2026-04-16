@@ -64,6 +64,7 @@ class TopFunctionNode(Node):
         self._current_state: str = ''
         self._battery_level: float = 0.0   # /robot/battery 에서 수신한 값 (0.0~1.0)
         self._battery_voltage: float = 0.0
+        self._docking_active: bool = False  # pinky_docking 진행 중 여부
 
         # ---------------------------------------------------------------- #
         # 공통 모듈                                                          #
@@ -72,6 +73,11 @@ class TopFunctionNode(Node):
         sim_time = self.get_parameter('simulated_nav_time').value
         self._nav = NavigationClient(self, use_nav2=use_nav2, simulated_nav_time=sim_time)
         self._event_pub = EventPublisher(self)
+
+        # ---------------------------------------------------------------- #
+        # 퍼블리셔                                                           #
+        # ---------------------------------------------------------------- #
+        self._docking_pub = self.create_publisher(String, '/docking/cmd', 10)
 
         # ---------------------------------------------------------------- #
         # 서브스크라이버                                                      #
@@ -84,6 +90,9 @@ class TopFunctionNode(Node):
         )
         self._battery_sub = self.create_subscription(
             BatteryState, '/robot/battery', self._on_battery, 10
+        )
+        self._docking_status_sub = self.create_subscription(
+            String, '/docking/status', self._on_docking_status, 10
         )
 
         self.get_logger().info('top_function_node 시작.')
@@ -135,6 +144,19 @@ class TopFunctionNode(Node):
             )
 
     # ------------------------------------------------------------------ #
+    # /docking/status 콜백                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _on_docking_status(self, msg: String) -> None:
+        """pinky_docking 노드 상태 수신 (IDLE / RUNNING / DOCKED).
+        DOCKED 수신 시 ArrivedAtCharging 이벤트를 발행하여 FSM을 CHARGING으로 전이시킨다."""
+        self.get_logger().info(f'[TopFunc] 도킹 상태: {msg.data}')
+        if msg.data == 'DOCKED' and self._docking_active:
+            self._docking_active = False
+            self.get_logger().info('[TopFunc] 도킹 완료! ArrivedAtCharging 이벤트 발행')
+            self._event_pub.publish_event('ArrivedAtCharging', session_id='')
+
+    # ------------------------------------------------------------------ #
     # /hq/command 콜백 (Top 관련 명령 처리)                                  #
     # ------------------------------------------------------------------ #
 
@@ -159,9 +181,14 @@ class TopFunctionNode(Node):
         self._nav.send_goal(pose, on_arrived=self._on_arrived_charging)
 
     def _on_arrived_charging(self) -> None:
-        """충전소 도달 시 처리"""
-        self.get_logger().info('[TopFunc] 충전소 도착!')
-        self._event_pub.publish_event('ArrivedAtCharging', session_id='')
+        """Nav2 충전소 근처 도착 → pinky_docking 시작.
+        ArrivedAtCharging 이벤트는 도킹 완료(DOCKED) 후 발행한다."""
+        self.get_logger().info('[TopFunc] 충전소 근처 도착. 도킹 시작...')
+        self._docking_active = True
+        dock_msg = String()
+        dock_msg.data = 'start'
+        self._docking_pub.publish(dock_msg)
+        self.get_logger().info('[TopFunc] /docking/cmd → start')
 
     def _navigate_to_standby(self) -> None:
         """파라미터로 설정된 대기장소로 이동"""

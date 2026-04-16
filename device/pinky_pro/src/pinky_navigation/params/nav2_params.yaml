@@ -1,10 +1,10 @@
 amcl:
   ros__parameters:
-    alpha1: 0.05
-    alpha2: 0.05
-    alpha3: 0.05
-    alpha4: 0.05
-    alpha5: 0.01
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
     base_frame_id: "base_footprint"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -22,8 +22,8 @@ amcl:
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
-    recovery_alpha_fast: 0.1
-    recovery_alpha_slow: 0.001
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
     resample_interval: 1
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     save_pose_rate: 0.5
@@ -83,18 +83,21 @@ controller_server:
     use_realtime_priority: false
     enable_stamped_cmd_vel: false
 
-    # Progress checker
+    # Progress checker — PoseProgressChecker counts in-place rotation
+    # (yaw change) as progress, so final-rotation at goal does not
+    # falsely trigger "Failed to make progress".
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.02
+      required_movement_angle: 0.05
       movement_time_allowance: 10.0
 
     # Goal checker
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 6.28  # effectively unbounded; final yaw handled by Spin
 
     # ★ 여기부터: Regulated Pure Pursuit 컨트롤러 설정
     FollowPath:
@@ -107,13 +110,13 @@ controller_server:
       max_angular_vel: 1.0          # [rad/s]
 
       # 경로 추종 관련
-      lookahead_dist: 0.6
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.9
+      lookahead_dist: 0.3
+      min_lookahead_dist: 0.15
+      max_lookahead_dist: 0.5
       lookahead_time: 1.5
       transform_tolerance: 0.2
       use_velocity_scaled_lookahead_dist: true
-      use_collision_detection: true
+      use_collision_detection: false
       use_interpolation: true
 
       # ========= 회전 우선 관련 핵심 파라미터 =========
@@ -125,28 +128,33 @@ controller_server:
       rotate_to_heading_min_angle: 0.35
 
       # 3) 회전 속도 (in-place 회전일 때 angular vel)
-      rotate_to_heading_angular_vel: 1.0
+      rotate_to_heading_angular_vel: 0.5
 
       # 4) 회전할 때는 전진 속도 0에 가깝게 (거의 제자리 회전)
-      max_angular_accel: 3.2
+      max_angular_accel: 1.5
       allow_reversing: false
       use_rotate_to_heading_threshold: 0.15  # 헤딩 오차 이내면 전진으로 전환
 
       # ========= goal 근처에서 고개 맞추기 =========
       final_rotation_alpha: 1.0
-      allow_final_rotation: true
-      use_final_rotation: true
+      allow_final_rotation: false  # use separate Spin action instead
+      use_final_rotation: false
 
       # ========= 안전 관련 =========
       # 장애물과 너무 가까워지면 속도 줄이거나 정지하는 옵션들
       use_approach_velocity_scaling: true
       min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.15
       inflation_cost_scaling_factor: 3.0
       regulated_linear_scaling_min_radius: 0.5
       regulated_linear_scaling_min_speed: 0.05
-      use_cost_regulated_linear_velocity_scaling: true
-      cost_scaling_dist: 0.6
-      cost_scaling_gain: 1.5
+      # On a 2×1.6 m map every corridor cell sits inside the inflation
+      # gradient, so cost-regulated scaling would slow the robot
+      # everywhere.  Approach-velocity scaling (above) still handles the
+      # goal-proximity slowdown for precise stopping.
+      use_cost_regulated_linear_velocity_scaling: false
+      cost_scaling_dist: 0.15
+      cost_scaling_gain: 1.0
 
 
 local_costmap:
@@ -165,14 +173,14 @@ local_costmap:
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 1.0
-        inflation_radius: 0.05
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.07
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
         publish_voxel_map: True
         origin_z: 0.0
-        z_resolution: 0.15
+        z_resolution: 0.05
         z_voxels: 16
         max_obstacle_height: 2.0
         mark_threshold: 0
@@ -224,8 +232,8 @@ global_costmap:
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.15
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.09
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
