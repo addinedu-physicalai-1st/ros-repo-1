@@ -240,6 +240,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         manager=manager,
         policy=TaskAssignmentPolicy(),
         broker=broker,
+        map_path=os.environ.get("MRTA_MAP_PATH"),
     )
     manager.set_dispatcher(dispatcher)
 

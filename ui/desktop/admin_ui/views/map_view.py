@@ -1,10 +1,14 @@
+import math
+import sys
+from pathlib import Path
+
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGraphicsView, QGraphicsScene, QScrollArea, QFrame,
-                             QMessageBox)
-from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap
+                             QMessageBox, QGraphicsLineItem)
+from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap, QPen
 from PyQt5.QtCore import Qt, QTimer, QPointF
 
-from components.map_items import RobotMapItem
+from components.map_items import RobotMapItem, WaypointItem, PathLineItem
 from components.widgets import RobotCard
 from utils.config import (MAP_IMG_PATH, COLOR_MOVING, COLOR_WAITING,
                           COLOR_COLLECT, COLOR_CHARGING,
@@ -23,6 +27,46 @@ _STATUS_COLORS: dict[int, QColor] = {
     5: QColor("#F56C6C"),      # ERROR
     6: QColor("#909399"),      # OFFLINE
 }
+
+# Per-robot fixed colours (same as demo monitor.py)
+_ROBOT_COLORS = [
+    QColor("#2ca02c"),   # green
+    QColor("#d62728"),   # red
+    QColor("#9467bd"),   # purple
+    QColor("#17becf"),   # cyan
+]
+
+# ── Path planning library (optional) ─────────────────────────────────────────
+_LIB_DIR = str(Path(__file__).resolve().parents[4] / "server" / "lib")
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
+try:
+    from path_planning import load_buffet_map, BuffetMap
+    _HAS_PATH_PLANNING = True
+except ImportError:
+    _HAS_PATH_PLANNING = False
+
+import os
+_MAP_YAML = os.environ.get("MRTA_MAP_PATH", "")
+if not _MAP_YAML:
+    # Auto-detect
+    _candidates = [
+        str(Path(__file__).resolve().parents[4]
+            / "server" / "Test" / "global_path_planning_demo"
+            / "maps" / "buffet_sim.yaml"),
+    ]
+    for c in _candidates:
+        if os.path.isfile(c):
+            _MAP_YAML = c
+            break
+
+
+def _world_to_scene(x: float, y: float) -> QPointF:
+    """Convert world metres to scene pixels."""
+    return QPointF(
+        MAP_ORIGIN_X + x * MAP_POSE_SCALE_PX,
+        MAP_ORIGIN_Y - y * MAP_POSE_SCALE_PX,
+    )
 
 
 class MapWidget(QGraphicsView):
@@ -43,9 +87,66 @@ class MapWidget(QGraphicsView):
         self.scene.addPixmap(self.bg_pixmap)
         self.setSceneRect(0, 0, self.bg_pixmap.width(), self.bg_pixmap.height())
         self.robots: dict[str, RobotMapItem] = {}
+        self._robot_color_idx: dict[str, int] = {}
+        self._next_color_idx = 0
+
+        # Waypoint graph overlay
+        self._buffet_map: BuffetMap | None = None
+        self._wp_items: list = []
+        self._edge_items: list = []
+
+        self._load_waypoint_graph()
+
+    def _load_waypoint_graph(self) -> None:
+        """Load waypoint graph from YAML and draw on scene."""
+        if not _HAS_PATH_PLANNING or not _MAP_YAML:
+            return
+        try:
+            self._buffet_map = load_buffet_map(_MAP_YAML)
+        except Exception:
+            return
+
+        graph = self._buffet_map.graph
+
+        # Draw edges first (behind nodes)
+        seen = set()
+        for wp_id, neighbors in graph.adjacency.items():
+            for nb in neighbors:
+                key = (min(wp_id, nb), max(wp_id, nb))
+                if key in seen:
+                    continue
+                seen.add(key)
+                a = graph.waypoints[wp_id]
+                b = graph.waypoints[nb]
+                pa = _world_to_scene(a.x, a.y)
+                pb = _world_to_scene(b.x, b.y)
+                line = QGraphicsLineItem(pa.x(), pa.y(), pb.x(), pb.y())
+                line.setPen(QPen(QColor("#7aa6c2"), 2, Qt.SolidLine))
+                line.setOpacity(0.5)
+                line.setZValue(1)
+                self.scene.addItem(line)
+                self._edge_items.append(line)
+
+        # Draw waypoint nodes
+        for wp in graph.waypoints.values():
+            sp = _world_to_scene(wp.x, wp.y)
+            item = WaypointItem(wp.wp_id, sp.x(), sp.y(), label=wp.label or "")
+            item.setZValue(2)
+            self.scene.addItem(item)
+            self._wp_items.append(item)
+
+    def _get_robot_color(self, r_id: str) -> QColor:
+        """Assign a fixed color per robot (first seen order)."""
+        if r_id not in self._robot_color_idx:
+            self._robot_color_idx[r_id] = self._next_color_idx
+            self._next_color_idx += 1
+        idx = self._robot_color_idx[r_id]
+        return _ROBOT_COLORS[idx % len(_ROBOT_COLORS)]
 
     def add_robot(self, r_id: str, color: QColor, pos: QPointF) -> None:
-        robot = RobotMapItem(r_id, color, pos)
+        robot_color = self._get_robot_color(r_id)
+        robot = RobotMapItem(r_id, robot_color, pos)
+        robot.setZValue(10)
         self.scene.addItem(robot)
         self.robots[r_id] = robot
 
@@ -54,21 +155,13 @@ class MapWidget(QGraphicsView):
         if item is not None:
             self.scene.removeItem(item)
 
-    def update_robot_pos(self, r_id: str, x: float, y: float) -> None:
-        """Move a robot marker using ROS /odom pose coordinates (metres).
-
-        Coordinate mapping (derived from map4.yaml, 10x upscaled):
-            scene_x = MAP_ORIGIN_X + x * MAP_POSE_SCALE_PX
-            scene_y = MAP_ORIGIN_Y - y * MAP_POSE_SCALE_PX  (screen y inverted)
-
-        Override via env-vars MAP_ORIGIN_X, MAP_ORIGIN_Y, MAP_POSE_SCALE_PX
-        if the map or spawn position changes.
-        """
+    def update_robot_pos(self, r_id: str, x: float, y: float,
+                         yaw: float = 0.0) -> None:
         if r_id not in self.robots:
             return
-        cx = MAP_ORIGIN_X + x * MAP_POSE_SCALE_PX
-        cy = MAP_ORIGIN_Y - y * MAP_POSE_SCALE_PX
-        self.robots[r_id].setPos(QPointF(cx, cy))
+        sp = _world_to_scene(x, y)
+        self.robots[r_id].setPos(sp)
+        self.robots[r_id].set_yaw(yaw)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -83,8 +176,8 @@ class MapDashboard(QWidget):
         super().__init__()
         self._api = ApiClient()
         self._robot_cards: dict[str, RobotCard] = {}
-        self._robot_meta: dict[str, dict] = {}   # robot_id → latest robot dict
-        self._workers: list[ApiWorker] = []       # keep references alive
+        self._robot_meta: dict[str, dict] = {}
+        self._workers: list[ApiWorker] = []
 
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_all_poses)
@@ -168,13 +261,12 @@ class MapDashboard(QWidget):
 
     def _on_robots_loaded(self, data: dict):
         robots = data.get("robots", [])
-        # Start with 0 — only robots actively sending pose will be shown
         self.right_title.setText("로봇 목록 (0대)")
         self.right_title.setStyleSheet("")
 
-        # Clear map scene (re-add background), cards, and meta
-        self.map_view.scene.clear()
-        self.map_view.scene.addPixmap(self.map_view.bg_pixmap)
+        # Clear robot markers and cards (keep waypoint graph overlay)
+        for r_id, item in list(self.map_view.robots.items()):
+            self.map_view.scene.removeItem(item)
         self.map_view.robots.clear()
         self._robot_cards.clear()
         self._robot_meta.clear()
@@ -184,8 +276,6 @@ class MapDashboard(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        # Store metadata only — map markers and cards are added lazily when
-        # the first successful pose response is received for each robot.
         for idx, robot in enumerate(robots):
             r_id     = robot.get("robot_id", f"R{idx + 1}")
             status_i = robot.get("status", 0)
@@ -194,13 +284,11 @@ class MapDashboard(QWidget):
             self._robot_meta[r_id] = {**robot, "_color": color, "_s_label": s_label}
 
         QTimer.singleShot(100, self.map_view.fit_view)
-        # Start polling telemetry every 2 seconds
         self._poll_timer.start(2000)
 
     # ── periodic pose polling ─────────────────────────────────────────────────
 
     def _poll_all_poses(self):
-        # Poll pose for every known robot (DB records), not just visible ones
         for r_id in list(self._robot_meta.keys()):
             w = ApiWorker(self._api.get_telemetry_pose, r_id)
             w.result.connect(lambda data, rid=r_id: self._on_pose_updated(rid, data))
@@ -209,7 +297,6 @@ class MapDashboard(QWidget):
             self._workers.append(w)
             w.start()
 
-        # Poll battery only for robots already visible on the dashboard
         for r_id in list(self._robot_cards.keys()):
             wb = ApiWorker(self._api.get_telemetry_battery, r_id)
             wb.result.connect(lambda data, rid=r_id: self._on_battery_updated(rid, data))
@@ -221,6 +308,7 @@ class MapDashboard(QWidget):
         pose = data.get("latest_pose", {})
         x = float(pose.get("x", 0.0))
         y = float(pose.get("y", 0.0))
+        yaw = float(pose.get("theta", 0.0))
 
         # First successful pose → add robot to map and card list
         if r_id not in self.map_view.robots:
@@ -246,10 +334,9 @@ class MapDashboard(QWidget):
             if task_id:
                 self._fetch_task_label(r_id, task_id)
 
-        self.map_view.update_robot_pos(r_id, x, y)
+        self.map_view.update_robot_pos(r_id, x, y, yaw)
 
     def _on_pose_error(self, r_id: str):
-        # Pose request failed (404 or network error) → remove robot from view
         removed = False
         if r_id in self.map_view.robots:
             self.map_view.remove_robot(r_id)
@@ -267,7 +354,6 @@ class MapDashboard(QWidget):
             card.battery_ui.setLevel(int(data.get("battery_percent", 0)))
 
     def _fetch_task_label(self, r_id: str, task_id: str) -> None:
-        """태스크 ID로 서버에서 유형/목적지를 조회해 카드 레이블 업데이트."""
         w = ApiWorker(self._api.get_task, task_id)
         w.result.connect(lambda data, rid=r_id: self._on_task_label_loaded(rid, data))
         w.error.connect(lambda _, rid=r_id: self._set_card_dest(rid, f"태스크: {task_id[:8]}…"))

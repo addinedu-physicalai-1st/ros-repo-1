@@ -218,3 +218,5 @@ rostaurant.db*
 rostaurant.db
 
 safety_events/
+# Runtime PID/log files
+.run/
