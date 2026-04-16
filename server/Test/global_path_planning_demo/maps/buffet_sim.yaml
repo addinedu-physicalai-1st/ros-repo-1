@@ -1,0 +1,80 @@
+# Real SLAM map from the pinky-pro Gazebo simulation / physical scan.
+# The PGM is a copy of `device/pinky_pro_robot/map4.pgm` (the output
+# of slam_toolbox on the actual buffet environment). Waypoints are
+# hand-placed in the free cells of the pinky-pro inflated costmap.
+#
+# Map extent  : 40 x 32 px @ 0.05 m/px  =  2.00 x 1.60 m
+# Origin      : ( -0.285, -1.241 ) in world coords
+# World x     : [-0.285, +1.715]
+# World y     : [-1.241, +0.359]
+#
+# Topology (after 0.09 m inflation for pinky-pro):
+#
+#   Vertical corridors:
+#     - Left  (x ~ 0.00, col 5 ): continuous free r5 .. r26
+#     - Mid   (x ~ 0.84, col 22): continuous free r8 .. r25
+#     - Right (x ~ 1.50, col 35): continuous free r6 .. r26
+#
+#   Horizontal connectors:
+#     - Top row  y = +0.05 (r25): left<->mid<->right (full width clear)
+#     - Mid row  y = -0.566 (r13): mid<->right only (left is blocked by
+#                                   the inner wall of the buffet station)
+#     - Low row  y = -0.766 (r9): left<->mid only (right is blocked by
+#                                   obstacles at cols 26..32)
+#
+# This gives 12 waypoints and 13 edges. Every pair of opposite corners
+# has at least two topologically distinct paths (via the top corridor,
+# or via the mid/low bridges through the middle column), so blocking a
+# single waypoint or edge no longer disconnects the graph.
+
+name: "Buffet SLAM map (map4)"
+
+image: map4.pgm
+mode: trinary
+resolution: 0.05
+origin: [-0.285, -1.241, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+
+defaults:
+  dynamic_radius: 0.12     # m; another pinky-pro + small margin
+  inflation_radius: 0.05   # m; keeps planner paths ≥ robot half-width off walls
+
+# Yaw conventions (standard math / REP 103):
+#   0   = facing +x (east)
+#   90  = facing +y (north) - "up" on the rendered map
+#  -90  = facing -y (south) - "down"
+#  180  = facing -x (west)
+#
+# Yaw is optional. Only declare it where the physical task needs a
+# specific arrival orientation (facing a counter, facing a customer,
+# etc.). Junction waypoints leave yaw unset so the local planner is
+# free to arrive from any direction.
+
+waypoints:
+  # Waypoints placed at the centre of each corridor.
+  # Right column shifted from x=1.50 to x=1.45 because the Gazebo 3D
+  # mesh's east wall is slightly west of where map4.pgm's east wall
+  # ended up after SLAM, causing the robot to collide when hitting
+  # Kitchen/Return at x=1.50.
+  #
+  # ---- Left vertical corridor (x = 0.05) ----
+  # Shifted from x=0.00 to give the robot (12 cm wide) clearance
+  # from the west wall when facing west at Charging.
+  - {x: 0.05, y: -0.900, label: "Entrance", yaw: 90}   # faces into the room
+  - {x: 0.05, y: -0.766}                 # r9 bridge to middle column
+  - {x: 0.05, y: -0.500}
+  - {x: 0.05, y: -0.200}
+  - {x: 0.05, y: +0.050, label: "Charging", yaw: 180}  # faces west wall (docked)
+
+  # ---- Middle vertical corridor (x = 0.84) ----
+  - {x: 0.84, y: -0.766, label: "Table-S", yaw: -90}   # serves customer south
+  - {x: 0.84, y: -0.566, label: "Table-N", yaw: 90}    # serves customer north
+  - {x: 0.84, y: +0.050}                               # top corridor middle
+
+  # ---- Right vertical corridor (x = 1.45) ----
+  - {x: 1.45, y: -0.900, label: "Return", yaw: 0}       # drops dishes east
+  - {x: 1.45, y: -0.566}                  # r13 bridge to middle column
+  - {x: 1.45, y: -0.200}
+  - {x: 1.45, y: +0.050, label: "Kitchen", yaw: 90}     # pickup from counter
