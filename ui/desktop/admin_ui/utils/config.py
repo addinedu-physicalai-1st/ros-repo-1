@@ -32,10 +32,10 @@ CONTROL_BASE_URL: str = os.environ.get("CONTROL_BASE_URL", "http://localhost:800
 ADMIN_API_KEY:    str = os.environ.get("ADMIN_API_KEY", "")
 
 # ── Map coordinate calibration ────────────────────────────────────────────────
-# Derived from map4.yaml (nav2 occupancy grid, 0.05 m/px, 10x upscaled to PNG):
-#   MAP_POSE_SCALE_PX : pixels per meter  (= 1/resolution * upscale = 20 * 10)
-#   MAP_ORIGIN_X/Y    : pixel position of Gazebo world (0, 0) in the image
-#                       origin: [-0.285, -1.241] → spawn pixel (57, 72) at 200 px/m
+# Derived from map4.yaml (nav2 occupancy grid, 0.05 m/px, 10x upscaled to PNG).
+# The QGraphicsView applies a CCW 90° rotation so the physical space matches
+# the screen layout. Coordinate mapping accounts for this rotation.
 MAP_POSE_SCALE_PX: float = float(os.environ.get("MAP_POSE_SCALE_PX", "200"))
 MAP_ORIGIN_X:      float = float(os.environ.get("MAP_ORIGIN_X",      "57"))
 MAP_ORIGIN_Y:      float = float(os.environ.get("MAP_ORIGIN_Y",      "72"))
+MAP_ROTATED_CCW90: bool = os.environ.get("MAP_ROTATED_CCW90", "1") == "1"

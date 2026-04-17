@@ -55,20 +55,25 @@ from std_msgs.msg import String
 
 from tf2_ros import Buffer, TransformListener
 
-# Add the demo directory to the path so we can import the planner.
+# Library import — pure-Python path planning lives in server/lib/.
 DEMO_DIR = Path(__file__).parent
-sys.path.insert(0, str(DEMO_DIR))
+_LIB_DIR = str(DEMO_DIR.resolve().parents[1] / "lib")
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
 
-from astar_planner import (  # noqa: E402
+from path_planning.planner import (  # noqa: E402
     FreeStartPlan,
     plan_path as wp_plan_path,
     plan_path_from_point,
 )
-from map_data import (  # noqa: E402
-    DEFAULT_MAP_PATH,
+from path_planning.map_data import (  # noqa: E402
     BuffetMap,
     load_buffet_map,
 )
+from path_planning.densify import densify_path as _densify_path  # noqa: E402
+
+# Demo-local default map path.
+DEFAULT_MAP_PATH = DEMO_DIR / "maps" / "buffet_sim.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -83,26 +88,7 @@ def yaw_to_quaternion(yaw: float) -> Quaternion:
     return q
 
 
-def _densify_path(
-    graph,
-    wp_ids: List[int],
-    step: float = 0.05,
-) -> List[Tuple[float, float]]:
-    """Sample (x, y) points every ``step`` metres along the wp chain."""
-    if not wp_ids:
-        return []
-    pts: List[Tuple[float, float]] = []
-    first = graph.waypoints[wp_ids[0]]
-    pts.append((first.x, first.y))
-    for i in range(1, len(wp_ids)):
-        a = graph.waypoints[wp_ids[i - 1]]
-        b = graph.waypoints[wp_ids[i]]
-        seg_len = math.hypot(b.x - a.x, b.y - a.y)
-        n = max(1, int(math.ceil(seg_len / step)))
-        for k in range(1, n + 1):
-            t = k / n
-            pts.append((a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)))
-    return pts
+# _densify_path is now imported from path_planning.densify (see top).
 
 
 def plan_to_path(

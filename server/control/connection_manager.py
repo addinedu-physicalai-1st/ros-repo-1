@@ -200,6 +200,10 @@ class ConnectionManager:
                     "battery": sr.battery,
                     "timestamp_ms": now_ms,
                 })
+            # Path waypoint advancement is handled by ros2_bridge,
+            # not the server. The bridge manages the full A* path
+            # with reserved_paths for multi-robot conflict avoidance.
+
             # 로봇이 IDLE 상태가 되면 대기 작업 배정 시도
             if (
                 self._dispatcher is not None

@@ -8,14 +8,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 import uuid
-from typing import TYPE_CHECKING, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import aiosqlite
 
 from db import Database, _ts_now_ms
 from robotcafe.db.v1 import robotcafe_pb2 as pb
 from ws_broker import WSBroker
+
+# Path planning library (pure Python, no ROS).
+_LIB_DIR = str(Path(__file__).resolve().parents[1] / "lib")
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
+try:
+    from path_planning import (
+        BuffetMap, load_buffet_map, plan_path_from_point,
+    )
+    _PATH_PLANNING_AVAILABLE = True
+except ImportError:
+    _PATH_PLANNING_AVAILABLE = False
 
 if TYPE_CHECKING:
     from connection_manager import ConnectionManager
@@ -156,6 +171,7 @@ class TaskDispatcher:
         manager: "ConnectionManager",
         policy: TaskAssignmentPolicy,
         broker: Optional[WSBroker] = None,
+        map_path: Optional[str] = None,
     ) -> None:
         self._db = db
         self._get_conn = get_conn
@@ -163,6 +179,26 @@ class TaskDispatcher:
         self._manager = manager
         self._policy = policy
         self._broker = broker
+
+        # Path planning state.
+        self._buffet_map: Optional[BuffetMap] = None
+        # Per-robot waypoint queue: robot_id → [(x, y, θ), ...]
+        # The queue stores remaining intermediate waypoints.
+        # When the robot ARRIVEs, the next waypoint is popped and sent.
+        self._waypoint_queues: Dict[str, List[Tuple[float, float, float]]] = {}
+        # Per-robot planned waypoint IDs for reserved_paths.
+        self._active_wp_paths: Dict[str, List[int]] = {}
+
+        if _PATH_PLANNING_AVAILABLE and map_path:
+            try:
+                self._buffet_map = load_buffet_map(map_path)
+                logger.info(
+                    "Path planning enabled: %s (%d waypoints)",
+                    self._buffet_map.name,
+                    len(self._buffet_map.graph.waypoints),
+                )
+            except Exception as e:
+                logger.warning("Path planning disabled (map load failed): %s", e)
 
     # ── 외부 진입점 ────────────────────────────────────────────────
 
@@ -274,9 +310,15 @@ class TaskDispatcher:
             conn = await self._get_conn()
             place = await self._db.get_place(conn, task.dest_id)
 
-        target_x     = float(place["x"]     or 0.0) if place else 0.0
-        target_y     = float(place["y"]     or 0.0) if place else 0.0
-        target_theta = float(place["theta"] or 0.0) if place else 0.0
+        final_x     = float(place["x"]     or 0.0) if place else 0.0
+        final_y     = float(place["y"]     or 0.0) if place else 0.0
+        final_theta = float(place["theta"] or 0.0) if place else 0.0
+
+        # Path planning is handled by ros2_bridge (not the server).
+        # The server sends the FINAL destination coordinates directly;
+        # the bridge computes A* waypoint paths with reserved_paths
+        # and dynamic_obstacles for multi-robot conflict avoidance.
+        target_x, target_y, target_theta = final_x, final_y, final_theta
 
         cmd_id  = str(uuid.uuid4())
         now_ms  = _ts_now_ms()
@@ -414,6 +456,163 @@ class TaskDispatcher:
             cmd_pb.sent_at.FromMilliseconds(_ts_now_ms())
             pkt = pb.TcpPacket(robot_id=robot_id, cmd_payload=cmd_pb)
             return pkt, int(pb.CommandType.MOVE_TO)
+
+    # ── 경로 계획 헬퍼 ─────────────────────────────────────────────
+
+    def _plan_waypoint_route(
+        self,
+        robot_id: str,
+        dest_x: float,
+        dest_y: float,
+        dest_theta: float,
+    ) -> Tuple[float, float, float]:
+        """Plan a waypoint route and return the FIRST waypoint coords.
+
+        If planning succeeds, the full waypoint queue is stored in
+        ``self._waypoint_queues[robot_id]`` and the first intermediate
+        waypoint is returned. If planning fails (no path, no robot
+        pose), falls back to the raw destination coordinates.
+
+        Returns ``(target_x, target_y, target_theta)`` for the initial
+        command.
+        """
+        if self._buffet_map is None:
+            return dest_x, dest_y, dest_theta
+
+        bm = self._buffet_map
+        graph = bm.graph
+
+        # Find the goal waypoint nearest to the destination.
+        import math
+        best_wp, best_d = None, math.inf
+        for wp in graph.waypoints.values():
+            d = math.hypot(wp.x - dest_x, wp.y - dest_y)
+            if d < best_d:
+                best_d = d
+                best_wp = wp.wp_id
+        if best_wp is None:
+            return dest_x, dest_y, dest_theta
+
+        # Get robot's current position from telemetry.
+        # Note: telemetry.get_pose is async but we're in a sync method,
+        # so we use the cache directly.
+        pose = self._manager.telemetry._pose.get(robot_id)
+        if pose is None:
+            logger.debug("Path planning: no pose for %s, using direct", robot_id)
+            return dest_x, dest_y, dest_theta
+        robot_xy = (pose.x, pose.y)
+
+        # Gather reserved paths from other moving robots.
+        reserved = []
+        for rid, wp_path in self._active_wp_paths.items():
+            if rid != robot_id and wp_path:
+                reserved.append(wp_path)
+
+        # Plan.
+        plan = plan_path_from_point(
+            bm, robot_xy, best_wp,
+            reserved_paths=reserved if reserved else None,
+        )
+        # Fallback without reservation if blocked.
+        if plan is None and reserved:
+            plan = plan_path_from_point(bm, robot_xy, best_wp)
+
+        if plan is None:
+            logger.debug("Path planning: no route for %s, using direct", robot_id)
+            return dest_x, dest_y, dest_theta
+
+        # Store active waypoint path for reserved_paths.
+        self._active_wp_paths[robot_id] = list(plan.waypoints)
+
+        # Build the waypoint coordinate queue.
+        # Each waypoint becomes (x, y, θ). The last entry uses the
+        # original destination's theta (goal orientation).
+        queue: List[Tuple[float, float, float]] = []
+        for i, wp_id in enumerate(plan.waypoints):
+            wp = graph.waypoints[wp_id]
+            if i == len(plan.waypoints) - 1:
+                # Last waypoint → use final destination theta.
+                queue.append((wp.x, wp.y, dest_theta))
+            else:
+                # Intermediate → face toward next waypoint.
+                next_wp = graph.waypoints[plan.waypoints[i + 1]]
+                yaw = math.atan2(next_wp.y - wp.y, next_wp.x - wp.x)
+                queue.append((wp.x, wp.y, yaw))
+
+        if not queue:
+            return dest_x, dest_y, dest_theta
+
+        # Pop the first waypoint as the initial target.
+        first = queue.pop(0)
+        self._waypoint_queues[robot_id] = queue
+
+        wp_labels = []
+        for wp_id in plan.waypoints:
+            wp = graph.waypoints[wp_id]
+            wp_labels.append(wp.label or f"({wp.x:.2f},{wp.y:.2f})")
+        logger.info(
+            "Path planned for %s: %s (%d waypoints, %.2f m)",
+            robot_id, " → ".join(wp_labels),
+            len(plan.waypoints), plan.total_cost,
+        )
+
+        return first
+
+    async def advance_waypoint(self, robot_id: str) -> bool:
+        """Send the next queued waypoint to *robot_id*.
+
+        Called by ConnectionManager when the robot reports ARRIVED.
+        Returns True if a waypoint was sent (robot should NOT be
+        treated as idle yet). Returns False if the queue is empty
+        (robot has reached the final destination).
+        """
+        queue = self._waypoint_queues.get(robot_id)
+        if not queue:
+            # No more waypoints — clean up.
+            self._waypoint_queues.pop(robot_id, None)
+            self._active_wp_paths.pop(robot_id, None)
+            return False
+
+        tx, ty, tt = queue.pop(0)
+
+        # Update remaining active path (drop visited waypoints).
+        active = self._active_wp_paths.get(robot_id, [])
+        if active:
+            self._active_wp_paths[robot_id] = active[1:]
+
+        sess = await self._manager.get_session(robot_id)
+        if sess is None:
+            logger.warning("advance_waypoint: %s disconnected", robot_id)
+            return False
+
+        cmd_id = str(uuid.uuid4())
+        cmd_pb = pb.Command(
+            cmd_id=cmd_id,
+            task_id="",
+            robot_id=robot_id,
+            command=pb.CommandType.MOVE_TO,
+            target_id="",
+            target_x=tx,
+            target_y=ty,
+            target_theta=tt,
+            status=pb.CommandStatus.SENT,
+        )
+        cmd_pb.sent_at.FromMilliseconds(_ts_now_ms())
+        pkt = pb.TcpPacket(
+            robot_id=robot_id, seq=sess.next_seq(), cmd_payload=cmd_pb,
+        )
+
+        try:
+            await self._manager.send_command_packet(robot_id, pkt)
+            remaining = len(queue)
+            logger.info(
+                "Waypoint advance %s → (%.2f, %.2f, %.0f°), %d remaining",
+                robot_id, tx, ty, tt * 57.2958, remaining,
+            )
+        except Exception as e:
+            logger.warning("Waypoint advance send failed %s: %s", robot_id, e)
+
+        return True
 
     async def _get_idle_robot_ids(self) -> list[str]:
         """TCP 세션이 있고 robots.status == IDLE 인 로봇 목록 반환.
