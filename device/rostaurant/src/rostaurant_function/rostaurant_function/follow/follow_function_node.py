@@ -56,6 +56,13 @@ except ImportError:
     print('⚠️ ultralytics 로드 실패 — YOLO 추적 기능 비활성화')
 
 try:
+    from picamera2 import Picamera2
+    _PICAMERA2_AVAILABLE = True
+except ImportError:
+    _PICAMERA2_AVAILABLE = False
+    print('⚠️ picamera2 로드 실패 — OpenCV 폴백 사용')
+
+try:
     sys.path.append(os.path.expanduser('~') + '/catkin_ws/src/pinky_follower/src')
     from pinkylib import LED
     from pinky_lcd import LCD
@@ -289,9 +296,42 @@ class FollowFunctionNode(Node):
     # ------------------------------------------------------------------ #
 
     def _camera_loop(self) -> None:
-        cam_idx = self.get_parameter('camera_index').value
+        """카메라 캡처 루프. picamera2(RPi CSI) → OpenCV 순으로 시도."""
+        if _PICAMERA2_AVAILABLE:
+            self._camera_loop_picamera2()
+        else:
+            self._camera_loop_opencv()
 
-        # MJPG 포맷으로 먼저 시도 (V4L2 YUYV 파싱 문제 회피)
+    def _camera_loop_picamera2(self) -> None:
+        """picamera2를 사용한 RPi CSI 카메라 루프."""
+        try:
+            picam2 = Picamera2()
+            cfg = picam2.create_preview_configuration(
+                main={'size': (320, 240), 'format': 'RGB888'}
+            )
+            picam2.configure(cfg)
+            picam2.start()
+            self.get_logger().info('[FollowFunc] picamera2 시작 완료 (RPi CSI 카메라, 320x240)')
+
+            while not self._camera_stop_flag:
+                frame_rgb = picam2.capture_array()
+                # picamera2 RGB888 → OpenCV BGR
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                resized = cv2.resize(cv2.flip(frame_bgr, -1), (320, 240))
+                with self._frame_lock:
+                    self._latest_frame = resized
+
+            picam2.stop()
+            picam2.close()
+
+        except Exception as e:
+            self.get_logger().error(f'[FollowFunc] picamera2 오류: {e}')
+            # picamera2 실패 시 OpenCV 폴백
+            self._camera_loop_opencv()
+
+    def _camera_loop_opencv(self) -> None:
+        """OpenCV VideoCapture 폴백 (USB 카메라 등)."""
+        cam_idx = self.get_parameter('camera_index').value
         cap = cv2.VideoCapture(cam_idx)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -302,18 +342,7 @@ class FollowFunctionNode(Node):
             self.get_logger().error(f'[FollowFunc] 카메라 오픈 실패 (index={cam_idx})')
             return
 
-        # warm-up read: 처음 몇 프레임은 버퍼 비우기
-        for _ in range(5):
-            cap.read()
-
-        fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
-        fourcc_str = ''.join([chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)])
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.get_logger().info(
-            f'[FollowFunc] 카메라 오픈 성공 (index={cam_idx}, {w}x{h}, FOURCC={fourcc_str})'
-        )
-
+        self.get_logger().info(f'[FollowFunc] OpenCV 카메라 오픈 성공 (index={cam_idx})')
         fail_count = 0
         while not self._camera_stop_flag:
             ret, frame = cap.read()
