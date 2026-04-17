@@ -1,6 +1,7 @@
 export type KitchenScreen =
   | 'idle'
   | 'robot_coming'
+  | 'robot_arrived_confirm'
   | 'robot_at_kitchen'
   | 'robot_going_disp'
   | 'robot_returning'

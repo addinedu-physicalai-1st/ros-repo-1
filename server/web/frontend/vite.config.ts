@@ -18,6 +18,7 @@ export default defineConfig({
         kitchen:  resolve(__dirname, 'kitchen/index.html'),
         staff:    resolve(__dirname, 'staff/index.html'),
         kiosk:    resolve(__dirname, 'kiosk/index.html'),
+        dishwash: resolve(__dirname, 'dishwash/index.html'),
       },
     },
   },

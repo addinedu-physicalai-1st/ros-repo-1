@@ -17,6 +17,7 @@ import ActivityLog from './components/ActivityLog'
 import MenuModal from './components/MenuModal'
 import IdleScreen from './screens/IdleScreen'
 import RobotComingScreen from './screens/RobotComingScreen'
+import RobotArrivedConfirmScreen from './screens/RobotArrivedConfirmScreen'
 import RobotAtKitchenScreen from './screens/RobotAtKitchenScreen'
 import RobotGoingDispScreen from './screens/RobotGoingDispScreen'
 import RobotReturningScreen from './screens/RobotReturningScreen'
@@ -31,8 +32,8 @@ function getParam(key: string): string | null {
 function getInitialScreen(): KitchenScreen {
   const s = getParam('screen') as KitchenScreen | null
   const valid: KitchenScreen[] = [
-    'idle', 'robot_coming', 'robot_at_kitchen', 'robot_going_disp',
-    'robot_returning', 'robot_back', 'completed', 'failed',
+    'idle', 'robot_coming', 'robot_arrived_confirm', 'robot_at_kitchen',
+    'robot_going_disp', 'robot_returning', 'robot_back', 'completed', 'failed',
   ]
   return s && valid.includes(s) ? s : 'idle'
 }
@@ -139,8 +140,8 @@ export default function App() {
         if (robotStatus === 3) {
           setScreen(prev => {
             if (prev === 'robot_coming') {
-              addLog('로봇 주방 도착', 'green')
-              return 'robot_at_kitchen'
+              addLog('로봇 도착 보고 수신', 'blue')
+              return 'robot_arrived_confirm'
             }
             if (prev === 'robot_returning') {
               addLog('로봇 귀환 완료', 'green')
@@ -215,6 +216,28 @@ export default function App() {
     setScreen('idle')
   }
 
+  // ── Arrival confirmed (robot at kitchen) ────────────────────────────────
+  const handleArrivalConfirmed = () => {
+    addLog('로봇 주방 도착 확인', 'green')
+    setScreen('robot_at_kitchen')
+  }
+
+  // ── Arrival denied — cancel and return to idle ───────────────────────────
+  const handleArrivalDenied = async () => {
+    addLog('도착 안함 — 관제서버에 보고 중...', 'orange')
+    if (taskId) {
+      const res = await respondTask(taskId, { status: 'timeout' })
+      if (!res.ok) {
+        setToast({ id: Date.now(), text: '서버 보고 실패', type: 'error' })
+        addLog('서버 보고 실패', 'red')
+      } else {
+        addLog('도착 실패 보고 완료', 'orange')
+      }
+    }
+    clearTaskState()
+    setScreen('idle')
+  }
+
   // ── Load done (robot at kitchen) ─────────────────────────────────────────
   const handleLoadDone = async () => {
     if (!taskId) return
@@ -275,6 +298,15 @@ export default function App() {
 
       case 'robot_coming':
         return <RobotComingScreen menuName={menuName} onCancel={handleCancel} />
+
+      case 'robot_arrived_confirm':
+        return (
+          <RobotArrivedConfirmScreen
+            menuName={menuName}
+            onArrived={handleArrivalConfirmed}
+            onNotArrived={handleArrivalDenied}
+          />
+        )
 
       case 'robot_at_kitchen':
         return <RobotAtKitchenScreen menuName={menuName} onLoadDone={handleLoadDone} />
