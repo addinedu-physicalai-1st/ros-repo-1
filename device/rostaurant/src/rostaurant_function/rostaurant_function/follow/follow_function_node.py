@@ -288,21 +288,32 @@ class FollowFunctionNode(Node):
 
     def _camera_loop(self) -> None:
         cam_idx = self.get_parameter('camera_index').value
-        cap = cv2.VideoCapture(cam_idx)
+        # V4L2 백엔드 명시 시도 → 실패 시 기본 백엔드
+        cap = cv2.VideoCapture(cam_idx, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(cam_idx)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 
         if not cap.isOpened():
             self.get_logger().error(f'[FollowFunc] 카메라 오픈 실패 (index={cam_idx})')
             return
 
+        self.get_logger().info(f'[FollowFunc] 카메라 오픈 성공 (index={cam_idx})')
+        fail_count = 0
         while not self._camera_stop_flag:
-            cap.grab()
-            ret, frame = cap.retrieve()
+            ret, frame = cap.read()
             if ret:
                 resized = cv2.resize(cv2.flip(frame, -1), (320, 240))
                 with self._frame_lock:
                     self._latest_frame = resized
-            time.sleep(0.001)
+                fail_count = 0
+            else:
+                fail_count += 1
+                if fail_count % 100 == 1:
+                    self.get_logger().warn(f'[FollowFunc] 카메라 프레임 수신 실패 ({fail_count}회)')
+                time.sleep(0.01)
 
         cap.release()
 
@@ -317,7 +328,11 @@ class FollowFunctionNode(Node):
             frame = None if self._latest_frame is None else self._latest_frame.copy()
 
         if frame is None:
+            self._no_frame_count = getattr(self, '_no_frame_count', 0) + 1
+            if self._no_frame_count % 90 == 1:  # ~3초마다 로그
+                self.get_logger().warn(f'[FollowFunc] 카메라 프레임 없음 ({self._no_frame_count}회)')
             return
+        self._no_frame_count = 0
 
         # ── 항상 YOLO 실행 (LCD 박스 표시용) ──────────────────────────────── #
         results = self._yolo_model.track(
