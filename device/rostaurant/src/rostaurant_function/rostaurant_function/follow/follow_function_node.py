@@ -446,17 +446,21 @@ class FollowFunctionNode(Node):
             angular = (error * self._kp) + (error - self._prev_error) * self._kd
             self._prev_error = error
 
+            # angular은 항상 적용 (ARRIVED에서도 방향 보정 유지 — 원본 동일)
+            if self._is_following:
+                msg.angular.z = float(max(-3.0, min(3.0, angular)))
+
             if h < 210:
                 self._track_state = 'FOLLOWING'
                 status_text = f'FOLLOWING ID:{self._target_id}'
                 text_color = self.COLORS['WHITE']
                 if self._is_following:
                     msg.linear.x = self._max_speed if h < 160 else self._max_speed * 0.4
-                    msg.angular.z = float(max(-3.0, min(3.0, angular)))
             else:
                 self._track_state = 'ARRIVED'
                 status_text = 'ARRIVED!'
                 text_color = self.COLORS['GREEN']
+                # linear.x = 0 (Twist 기본값), angular.z는 위에서 이미 설정
 
             cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
 
