@@ -295,9 +295,13 @@ class FollowFunctionNode(Node):
     # ------------------------------------------------------------------ #
 
     def _on_lidar(self, data: LaserScan) -> None:
+        # 이동 중(_is_following=True)일 때만 긴급 정지 판정
+        if not self._is_following:
+            self._emergency_stop = False
+            return
         ranges = [r for r in (list(data.ranges[:40]) + list(data.ranges[-40:]))
                   if 0.05 < r < 10.0 and not math.isinf(r)]
-        self._emergency_stop = bool(ranges) and min(ranges) < 0.25
+        self._emergency_stop = bool(ranges) and min(ranges) < 0.30
 
     # ------------------------------------------------------------------ #
     # 카메라 스레드                                                           #
