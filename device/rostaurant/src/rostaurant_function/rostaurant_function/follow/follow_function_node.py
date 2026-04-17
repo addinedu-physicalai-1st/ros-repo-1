@@ -164,10 +164,15 @@ class FollowFunctionNode(Node):
                 self.get_logger().error(f'[FollowFunc] YOLO 모델 로드 실패: {e}')
                 self._enable_yolo = False
 
+        self.get_logger().info(
+            f'[FollowFunc] 하드웨어 라이브러리(LED/LCD): '
+            f'{"로드 성공" if _HW_AVAILABLE else "로드 실패 — LED/LCD 비활성화"}'
+        )
         if _HW_AVAILABLE:
             try:
                 self._leds = LED()
                 self._lcd = LCD()
+                self.get_logger().info('[FollowFunc] LED/LCD 초기화 완료')
             except Exception as e:
                 self.get_logger().warn(f'[FollowFunc] 하드웨어 초기화 실패: {e}')
                 self._leds = None
@@ -285,10 +290,10 @@ class FollowFunctionNode(Node):
 
     def _camera_loop(self) -> None:
         cam_idx = self.get_parameter('camera_index').value
-        # V4L2 백엔드 명시 시도 → 실패 시 기본 백엔드
-        cap = cv2.VideoCapture(cam_idx, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(cam_idx)
+
+        # MJPG 포맷으로 먼저 시도 (V4L2 YUYV 파싱 문제 회피)
+        cap = cv2.VideoCapture(cam_idx)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
@@ -297,11 +302,22 @@ class FollowFunctionNode(Node):
             self.get_logger().error(f'[FollowFunc] 카메라 오픈 실패 (index={cam_idx})')
             return
 
-        self.get_logger().info(f'[FollowFunc] 카메라 오픈 성공 (index={cam_idx})')
+        # warm-up read: 처음 몇 프레임은 버퍼 비우기
+        for _ in range(5):
+            cap.read()
+
+        fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+        fourcc_str = ''.join([chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)])
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.get_logger().info(
+            f'[FollowFunc] 카메라 오픈 성공 (index={cam_idx}, {w}x{h}, FOURCC={fourcc_str})'
+        )
+
         fail_count = 0
         while not self._camera_stop_flag:
             ret, frame = cap.read()
-            if ret:
+            if ret and frame is not None:
                 resized = cv2.resize(cv2.flip(frame, -1), (320, 240))
                 with self._frame_lock:
                     self._latest_frame = resized
@@ -309,7 +325,9 @@ class FollowFunctionNode(Node):
             else:
                 fail_count += 1
                 if fail_count % 100 == 1:
-                    self.get_logger().warn(f'[FollowFunc] 카메라 프레임 수신 실패 ({fail_count}회)')
+                    self.get_logger().warn(
+                        f'[FollowFunc] 카메라 프레임 수신 실패 ({fail_count}회)'
+                    )
                 time.sleep(0.01)
 
         cap.release()
