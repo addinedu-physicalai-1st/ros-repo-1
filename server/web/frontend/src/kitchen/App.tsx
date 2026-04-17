@@ -154,11 +154,14 @@ export default function App() {
     [taskId, addLog],
   )
 
-  useWebSocket(handleWsMessage)
+  useWebSocket(
+    handleWsMessage,
+    true,
+    useCallback(() => setWsConnected(true), []),
+    useCallback(() => setWsConnected(false), []),
+  )
 
-  // WS connected state: starts false, flips to true on first received message
   useEffect(() => {
-    setWsConnected(false)
     wsRef.current = false
   }, [])
 

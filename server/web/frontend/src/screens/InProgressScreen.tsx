@@ -36,7 +36,7 @@ export default function InProgressScreen({
   const retryLabel = flow === 'menu' ? '재이동 요청' : '재안내 요청'
 
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] px-5 pt-12 pb-8">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] px-5 pt-12 pb-8">
       <div className="flex-1 flex flex-col items-center justify-center gap-6">
         {/* Waypoint progress dots */}
         {isMulti && (

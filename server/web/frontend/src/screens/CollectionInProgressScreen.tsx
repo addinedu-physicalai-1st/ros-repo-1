@@ -4,7 +4,7 @@ interface Props {
 
 export default function CollectionInProgressScreen({ onCollectDone }: Props) {
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] px-5 pt-12 pb-8">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] px-5 pt-12 pb-8">
       <div className="flex-1 flex flex-col items-center justify-center gap-6">
         {/* Animated robot */}
         <div className="relative w-28 h-28">

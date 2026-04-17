@@ -6,9 +6,18 @@ type WsMessageHandler = (data: Record<string, unknown>) => void
  * Generic WebSocket hook — connects to /ws and calls onMessage for every parsed JSON event.
  * Auto-reconnects on close. active=false to disable.
  */
-export function useWebSocket(onMessage: WsMessageHandler, active = true): void {
+export function useWebSocket(
+  onMessage: WsMessageHandler,
+  active = true,
+  onConnect?: () => void,
+  onDisconnect?: () => void,
+): void {
   const onMessageRef = useRef(onMessage)
+  const onConnectRef = useRef(onConnect)
+  const onDisconnectRef = useRef(onDisconnect)
   useEffect(() => { onMessageRef.current = onMessage }, [onMessage])
+  useEffect(() => { onConnectRef.current = onConnect }, [onConnect])
+  useEffect(() => { onDisconnectRef.current = onDisconnect }, [onDisconnect])
 
   useEffect(() => {
     if (!active) return
@@ -22,6 +31,10 @@ export function useWebSocket(onMessage: WsMessageHandler, active = true): void {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
       ws = new WebSocket(`${proto}//${location.host}/ws`)
 
+      ws.onopen = () => {
+        onConnectRef.current?.()
+      }
+
       ws.onmessage = (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data as string)
@@ -30,6 +43,7 @@ export function useWebSocket(onMessage: WsMessageHandler, active = true): void {
       }
 
       ws.onclose = () => {
+        onDisconnectRef.current?.()
         if (!cancelled) retryTimer = setTimeout(connect, 3000)
       }
 

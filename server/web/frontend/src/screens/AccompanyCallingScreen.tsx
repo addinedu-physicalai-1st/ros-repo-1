@@ -1,6 +1,6 @@
 export default function AccompanyCallingScreen() {
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] items-center justify-center px-8 gap-6">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] items-center justify-center px-8 gap-6">
       {/* Spinner */}
       <div className="relative w-28 h-28">
         <div className="absolute inset-0 rounded-full border-4 border-gray-200" />

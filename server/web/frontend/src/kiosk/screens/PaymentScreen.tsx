@@ -39,7 +39,7 @@ export default function PaymentScreen({ people, onBack, onPay }: Props) {
         className="w-full max-w-lg rounded-3xl px-10 py-10"
         style={{ background: 'rgba(255,255,255,0.08)', backdropFilter: 'blur(16px)' }}
       >
-        <h2 className="text-3xl font-bold text-white text-center mb-8">
+        <h2 className="text-3xl font-bold text-gray-900 text-center mb-8">
           주문 확인
         </h2>
 
@@ -50,25 +50,25 @@ export default function PaymentScreen({ people, onBack, onPay }: Props) {
         >
           {PERSON_LABELS.filter(({ key }) => people[key] > 0).map(({ key, label }) => (
             <div key={key} className="flex justify-between items-center py-2">
-              <span className="text-purple-200 text-lg">
+              <span className="text-gray-700 text-lg">
                 {label} × {people[key]}
               </span>
-              <span className="text-white font-semibold">
+              <span className="text-gray-900 font-semibold">
                 {formatPrice(PRICES[key] * people[key])}
               </span>
             </div>
           ))}
           <div
             className="flex justify-between items-center pt-3 mt-2"
-            style={{ borderTop: '1px solid rgba(255,255,255,0.15)' }}
+            style={{ borderTop: '1px solid rgba(0,0,0,0.12)' }}
           >
-            <span className="text-white text-xl font-bold">총 결제금액</span>
-            <span className="text-purple-300 text-2xl font-bold">{formatPrice(total)}</span>
+            <span className="text-gray-900 text-xl font-bold">총 결제금액</span>
+            <span className="text-2xl font-bold" style={{ color: '#5b21b6' }}>{formatPrice(total)}</span>
           </div>
         </div>
 
         {/* Payment method */}
-        <p className="text-purple-200 text-sm mb-3">결제 수단 선택</p>
+        <p className="text-gray-700 text-sm mb-3">결제 수단 선택</p>
         <div className="grid grid-cols-3 gap-3 mb-8">
           {PAY_METHODS.map(({ key, label, icon }) => {
             const selected = payMethod === key
@@ -76,7 +76,7 @@ export default function PaymentScreen({ people, onBack, onPay }: Props) {
               <button
                 key={key}
                 onClick={() => setPayMethod(key)}
-                className="flex flex-col items-center justify-center gap-2 rounded-2xl py-5 font-semibold text-white transition-all"
+                className="flex flex-col items-center justify-center gap-2 rounded-2xl py-5 font-semibold transition-all"
                 style={{
                   background: selected
                     ? 'rgba(124,92,191,0.8)'
@@ -84,6 +84,7 @@ export default function PaymentScreen({ people, onBack, onPay }: Props) {
                   border: selected
                     ? '2px solid #a78bfa'
                     : '2px solid transparent',
+                  color: selected ? '#fff' : '#1f2937',
                 }}
               >
                 <span className="text-2xl">{icon}</span>
@@ -96,8 +97,8 @@ export default function PaymentScreen({ people, onBack, onPay }: Props) {
         {/* Action buttons */}
         <div className="flex gap-3">
           <button
-            className="flex-1 py-4 rounded-2xl text-purple-200 text-lg font-semibold transition-opacity"
-            style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)' }}
+            className="flex-1 py-4 rounded-2xl text-gray-700 text-lg font-semibold transition-opacity"
+            style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(0,0,0,0.15)' }}
             onClick={onBack}
             disabled={loading}
           >

@@ -20,7 +20,7 @@ export default function HomeScreen({ tableId, onGuide, onAccompany, onCollect, o
   }
 
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] px-5 pt-10 pb-8 gap-4">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] px-5 pt-10 pb-8 gap-4">
       {/* Header */}
       <div className="text-center mb-2">
         <div className="inline-block bg-white border border-gray-200 rounded-full px-4 py-1 text-xs text-gray-400 mb-3">

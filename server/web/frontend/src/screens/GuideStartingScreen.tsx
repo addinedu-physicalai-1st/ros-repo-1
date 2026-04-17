@@ -29,7 +29,7 @@ export default function GuideStartingScreen({
   const isMulti = totalWaypoints > 1
 
   return (
-    <div className="flex flex-col min-h-full bg-gray-900 items-center justify-center px-8 gap-6">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] items-center justify-center px-8 gap-6">
       {isMulti && (
         <div className="flex gap-2 mb-2">
           {Array.from({ length: totalWaypoints }).map((_, i) => (
@@ -37,17 +37,17 @@ export default function GuideStartingScreen({
               key={i}
               className={`h-2 rounded-full transition-all ${
                 i < waypointIndex
-                  ? 'w-6 bg-white/30'
+                  ? 'w-6 bg-gray-400'
                   : i === waypointIndex
-                  ? 'w-8 bg-white'
-                  : 'w-6 bg-white/15'
+                  ? 'w-8 bg-gray-900'
+                  : 'w-6 bg-gray-200'
               }`}
             />
           ))}
         </div>
       )}
 
-      <div className="w-24 h-24 bg-white/10 rounded-full flex items-center justify-center">
+      <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center shadow-md">
         <span className="text-5xl">
           {currentWaypoint ? currentWaypoint.emoji : '🤖'}
         </span>
@@ -55,19 +55,19 @@ export default function GuideStartingScreen({
 
       <div className="text-center">
         {isMulti && (
-          <p className="text-sm text-gray-400 mb-2">
+          <p className="text-sm text-gray-500 mb-2">
             {waypointIndex + 1} / {totalWaypoints} 번째 목적지
           </p>
         )}
-        <p className="text-3xl font-bold text-white">
+        <p className="text-3xl font-bold text-gray-900">
           안내를 시작합니다{dots}
         </p>
         {currentWaypoint && (
-          <p className="text-lg text-gray-300 mt-2 font-medium">
+          <p className="text-lg text-gray-700 mt-2 font-medium">
             {currentWaypoint.name}
           </p>
         )}
-        <p className="text-sm text-gray-400 mt-3">잠시 후 로봇을 따라오세요</p>
+        <p className="text-sm text-gray-500 mt-3">잠시 후 로봇을 따라오세요</p>
       </div>
     </div>
   )

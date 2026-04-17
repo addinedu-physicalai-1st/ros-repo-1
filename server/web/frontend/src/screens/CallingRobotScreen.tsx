@@ -22,7 +22,7 @@ export default function CallingRobotScreen({
     : '화장실 안내 로봇을 배차하고 있습니다'
 
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] items-center justify-center px-8 gap-6">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] items-center justify-center px-8 gap-6">
       {/* Waypoint progress badge */}
       {isMulti && (
         <div className="flex gap-2 mb-2">

@@ -19,7 +19,7 @@ export default function AccompanyCompleteScreen({ onHome }: Props) {
   }, [countdown, onHome])
 
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] items-center justify-center px-8 gap-6">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] items-center justify-center px-8 gap-6">
       {/* Icon */}
       <div className="w-32 h-32 bg-gray-900 rounded-full flex items-center justify-center shadow-lg">
         <span className="text-6xl">🙏</span>

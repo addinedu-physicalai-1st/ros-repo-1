@@ -51,6 +51,20 @@ pip install -r web/requirements.txt
 
 ---
 
+### 1-1단계 — 프론트엔드 빌드 (딱 한 번만, UI 수정 시마다)
+
+```bash
+cd server/web/frontend
+
+npm install
+npm run build
+```
+
+> `npm install`은 처음 한 번만 실행하면 됩니다.  
+> UI 코드를 수정했을 때는 `npm run build`만 다시 실행하면 됩니다.
+
+---
+
 ### 2단계 — Admin API 키 발급 (딱 한 번만)
 
 처음 실행하면 자동으로 관리자 계정이 만들어지고 키가 발급됩니다.
@@ -190,9 +204,10 @@ INFO  connection_manager  Registered TCP session for PNK01
 
 | 화면 | 주소 |
 |------|------|
-| 키오스크 (손님 주문) | http://localhost:3000/static/kiosk/kiosk.html |
-| 테이블 서비스 | http://localhost:3000/static/table_ui/index.html?table=1 |
-| 주방 패널 | http://localhost:3000/static/kitchen/kitchen.html |
+| 키오스크 (손님 주문) | http://localhost:3000/static/kiosk/ |
+| 테이블 서비스 | http://localhost:3000/static/table_ui/?table=1 |
+| 주방 패널 | http://localhost:3000/static/kitchen/ |
+| 스태프 패널 | http://localhost:3000/static/staff/ |
 | API 문서 (Swagger) | http://localhost:8000/docs |
 
 `table=1` 부분을 `table=2`, `table=3` 등으로 바꾸면 해당 테이블 UI가 열립니다.

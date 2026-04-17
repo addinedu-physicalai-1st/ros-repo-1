@@ -56,7 +56,7 @@ export default function SelectionScreen({ people, onChange, onNext, onIdleReset 
         className="w-full max-w-lg rounded-3xl px-10 py-10"
         style={{ background: 'rgba(255,255,255,0.08)', backdropFilter: 'blur(16px)' }}
       >
-        <h2 className="text-3xl font-bold text-white text-center mb-8">
+        <h2 className="text-3xl font-bold text-gray-900 text-center mb-8">
           인원 선택
         </h2>
 
@@ -68,8 +68,8 @@ export default function SelectionScreen({ people, onChange, onNext, onIdleReset 
               style={{ background: 'rgba(255,255,255,0.06)' }}
             >
               <div>
-                <span className="text-white text-xl font-semibold">{label}</span>
-                <span className="ml-3 text-purple-300 text-sm">{sub}</span>
+                <span className="text-gray-900 text-xl font-semibold">{label}</span>
+                <span className="ml-3 text-gray-600 text-sm">{sub}</span>
               </div>
               <div className="flex items-center gap-4">
                 <button
@@ -81,7 +81,7 @@ export default function SelectionScreen({ people, onChange, onNext, onIdleReset 
                 >
                   −
                 </button>
-                <span className="text-white text-2xl font-bold w-8 text-center">
+                <span className="text-gray-900 text-2xl font-bold w-8 text-center">
                   {people[key]}
                 </span>
                 <button
@@ -98,8 +98,8 @@ export default function SelectionScreen({ people, onChange, onNext, onIdleReset 
         </div>
 
         <div className="flex justify-between items-center mb-8 px-2">
-          <span className="text-purple-200 text-lg">합계</span>
-          <span className="text-white text-2xl font-bold">{formatPrice(total)}</span>
+          <span className="text-gray-800 text-lg font-semibold">합계</span>
+          <span className="text-gray-900 text-2xl font-bold">{formatPrice(total)}</span>
         </div>
 
         <button

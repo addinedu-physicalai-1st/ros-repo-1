@@ -11,7 +11,7 @@ export default function RestroomOptionsScreen({ onRobotGuide, onBack }: Props) {
   const [showMap, setShowMap] = useState(false)
 
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] px-5 pt-8 pb-8">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] px-5 pt-8 pb-8">
       <BackButton onClick={onBack} />
 
       <div className="flex-1 flex flex-col justify-center gap-5 mt-4">

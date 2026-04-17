@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useTaskEvents } from '../../hooks/useTaskEvents'
 
 interface Props {
   assignedTable: string
+  taskId?: string | null
   onDone: () => void
 }
 
@@ -17,26 +19,75 @@ const STEPS: Step[] = [
   { title: '식사 맛있게 하세요! 😊' },
 ]
 
+// Fallback timings used when there is no real task to track
 const STEP_TIMINGS = [0, 1500, 7000, 11000]
 const RESET_TIMING = 18000
 
-export default function TrackingScreen({ assignedTable, onDone }: Props) {
+// After user confirms arrival: advance to step 3, then step 4, then reset
+const POST_CONFIRM_STEP3_DELAY = 500
+const POST_CONFIRM_STEP4_DELAY = 3500
+const POST_CONFIRM_DONE_DELAY  = 8000
+
+export default function TrackingScreen({ assignedTable, taskId, onDone }: Props) {
   const [activeStep, setActiveStep] = useState(0)
+  const [robotArrived, setRobotArrived] = useState(false)
+  const [confirmed, setConfirmed] = useState(false)
 
+  // Stable ref to prevent stale closures in cleanup
+  const timerRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const clearAll = () => {
+    timerRef.current.forEach(t => clearTimeout(t))
+    timerRef.current = []
+  }
+
+  // Listen for real robot arrival via WebSocket (only when we have a taskId)
+  useTaskEvents(taskId ?? null, () => setRobotArrived(true))
+
+  // Fallback time-based flow (used when taskId is absent)
   useEffect(() => {
-    const timers: ReturnType<typeof setTimeout>[] = []
+    if (taskId) return // real tracking takes over
 
+    clearAll()
     STEP_TIMINGS.forEach((delay, i) => {
-      timers.push(setTimeout(() => setActiveStep(i), delay))
+      timerRef.current.push(setTimeout(() => setActiveStep(i), delay))
     })
+    timerRef.current.push(setTimeout(onDone, RESET_TIMING))
 
-    timers.push(setTimeout(onDone, RESET_TIMING))
-
-    return () => {
-      timers.forEach(t => clearTimeout(t))
-    }
+    return clearAll
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [taskId])
+
+  // Real flow: advance step 0→1 immediately, then wait for robotArrived
+  useEffect(() => {
+    if (!taskId) return
+
+    clearAll()
+    timerRef.current.push(setTimeout(() => setActiveStep(1), 1500))
+
+    return clearAll
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId])
+
+  // When robot actually arrives (WebSocket), advance to step 2 and wait for user
+  useEffect(() => {
+    if (!robotArrived) return
+    setActiveStep(2)
+  }, [robotArrived])
+
+  // After user confirms arrival
+  const handleConfirm = () => {
+    setConfirmed(true)
+    clearAll()
+    timerRef.current.push(
+      setTimeout(() => setActiveStep(3), POST_CONFIRM_STEP3_DELAY),
+    )
+    timerRef.current.push(
+      setTimeout(() => setActiveStep(4), POST_CONFIRM_STEP4_DELAY),
+    )
+    timerRef.current.push(setTimeout(onDone, POST_CONFIRM_DONE_DELAY))
+  }
+
+  const showArrivalButton = robotArrived && activeStep === 2 && !confirmed
 
   return (
     <div className="flex flex-col items-center justify-center w-full h-full">
@@ -45,12 +96,11 @@ export default function TrackingScreen({ assignedTable, onDone }: Props) {
         style={{ background: 'rgba(255,255,255,0.08)', backdropFilter: 'blur(16px)' }}
       >
         <div className="text-5xl mb-3">🤖</div>
-        <h2 className="text-3xl font-bold text-white mb-2">안내 로봇 호출</h2>
+        <h2 className="text-3xl font-bold text-gray-900 mb-2">안내 로봇 호출</h2>
 
-        {/* Assigned table */}
         <div
-          className="inline-block px-6 py-2 rounded-full mb-10 text-white font-bold text-xl"
-          style={{ background: 'rgba(124,92,191,0.6)', border: '1px solid rgba(167,139,250,0.5)' }}
+          className="inline-block px-6 py-2 rounded-full mb-10 text-gray-900 font-bold text-xl"
+          style={{ background: 'rgba(124,92,191,0.3)', border: '1px solid rgba(124,92,191,0.5)' }}
         >
           배정 테이블: {assignedTable}
         </div>
@@ -58,13 +108,12 @@ export default function TrackingScreen({ assignedTable, onDone }: Props) {
         {/* Progress steps */}
         <div className="flex flex-col gap-0">
           {STEPS.map((step, i) => {
-            const done = i < activeStep
+            const done   = i < activeStep
             const active = i === activeStep
             const isLast = i === STEPS.length - 1
 
             return (
               <div key={i} className="flex items-start gap-4">
-                {/* Left: circle + connector */}
                 <div className="flex flex-col items-center" style={{ minWidth: 40 }}>
                   <div
                     className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-base flex-shrink-0 transition-all duration-500"
@@ -95,24 +144,41 @@ export default function TrackingScreen({ assignedTable, onDone }: Props) {
                   )}
                 </div>
 
-                {/* Right: text */}
                 <div className="pb-6 pt-1.5 text-left">
                   <p
                     className="font-semibold text-base transition-all duration-500"
                     style={{
-                      color: active ? '#fff' : done ? 'rgba(167,139,250,0.9)' : 'rgba(255,255,255,0.35)',
+                      color: active
+                        ? '#1f2937'
+                        : done
+                        ? '#7c5cbf'
+                        : 'rgba(0,0,0,0.3)',
                     }}
                   >
                     {step.title}
                   </p>
                   {step.sub && active && (
-                    <p className="text-purple-300 text-sm mt-1">{step.sub}</p>
+                    <p className="text-sm mt-1" style={{ color: '#5b21b6' }}>{step.sub}</p>
                   )}
                 </div>
               </div>
             )
           })}
         </div>
+
+        {/* Arrival confirmation button — shown only when robot actually arrives */}
+        {showArrivalButton && (
+          <button
+            onClick={handleConfirm}
+            className="mt-6 w-full py-5 rounded-2xl text-white text-xl font-bold active:scale-95 transition-transform"
+            style={{
+              background: 'linear-gradient(135deg, #7c5cbf, #a78bfa)',
+              boxShadow: '0 0 24px rgba(167,139,250,0.5)',
+            }}
+          >
+            ✅ 로봇 도착 확인
+          </button>
+        )}
       </div>
     </div>
   )

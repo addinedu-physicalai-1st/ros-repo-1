@@ -37,13 +37,16 @@ export default function App() {
     setScreen('payment')
   }, [])
 
+  const [taskId, setTaskId] = useState<string | null>(null)
+
   const handlePay = useCallback(
     async (method: PayMethod) => {
       const table = randomTable()
       setAssignedTable(table)
+      setTaskId(null)
 
       try {
-        await fetch('/api/checkout', {
+        const res = await fetch('/api/checkout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -54,6 +57,8 @@ export default function App() {
             timestamp: new Date().toISOString(),
           }),
         })
+        const data = await res.json()
+        if (data.task_id) setTaskId(data.task_id)
       } catch {
         // proceed to tracking regardless of network errors
       }
@@ -85,7 +90,7 @@ export default function App() {
       )}
 
       {screen === 'tracking' && (
-        <TrackingScreen assignedTable={assignedTable} onDone={goWelcome} />
+        <TrackingScreen assignedTable={assignedTable} taskId={taskId} onDone={goWelcome} />
       )}
     </div>
   )

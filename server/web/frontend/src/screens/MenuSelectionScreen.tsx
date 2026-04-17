@@ -71,7 +71,7 @@ export default function MenuSelectionScreen({ onSelect, onBack }: Props) {
   }
 
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] px-5 pt-8 pb-4">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] px-5 pt-8 pb-4">
       <BackButton onClick={onBack} />
 
       <div className="mt-4">

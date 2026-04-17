@@ -5,7 +5,7 @@ interface Props {
 
 export default function AccompanyReturnedScreen({ onAccompanyAgain, onComplete }: Props) {
   return (
-    <div className="flex flex-col min-h-full bg-[#f7f5f2] px-5 pt-12 pb-8">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] px-5 pt-12 pb-8">
       <div className="flex-1 flex flex-col items-center justify-center gap-6">
         {/* Icon */}
         <div className="w-28 h-28 bg-blue-50 rounded-full flex items-center justify-center shadow-sm">

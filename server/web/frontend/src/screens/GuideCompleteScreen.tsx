@@ -26,18 +26,18 @@ export default function GuideCompleteScreen({ flow, onHome }: Props) {
     : '화장실 안내가 완료되었습니다. 감사합니다.'
 
   return (
-    <div className="flex flex-col min-h-full bg-gray-900 items-center justify-center px-8 gap-6">
-      <div className="w-24 h-24 bg-white/10 rounded-full flex items-center justify-center">
+    <div className="flex flex-col min-h-screen bg-[#f7f5f2] items-center justify-center px-8 gap-6">
+      <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center shadow-md">
         <span className="text-5xl">🎉</span>
       </div>
 
       <div className="text-center">
-        <h2 className="text-3xl font-bold text-white">{title}</h2>
-        <p className="text-sm text-gray-400 mt-3 leading-relaxed">{sub}</p>
+        <h2 className="text-3xl font-bold text-gray-900">{title}</h2>
+        <p className="text-sm text-gray-500 mt-3 leading-relaxed">{sub}</p>
       </div>
 
       <p className="text-sm text-gray-500">
-        <span className="text-white font-bold">{countdown}</span>초 후 홈으로 돌아갑니다
+        <span className="text-gray-900 font-bold">{countdown}</span>초 후 홈으로 돌아갑니다
       </p>
     </div>
   )
