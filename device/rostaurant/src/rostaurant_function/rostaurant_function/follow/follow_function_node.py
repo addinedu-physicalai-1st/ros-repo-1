@@ -306,16 +306,23 @@ class FollowFunctionNode(Node):
         """picamera2를 사용한 RPi CSI 카메라 루프."""
         try:
             picam2 = Picamera2()
-            # BGR888: OpenCV 네이티브 포맷 — 변환 불필요
+            # XRGB8888: picamera2에서 가장 안정적으로 컬러 출력되는 포맷
+            # 메모리 레이아웃: [B, G, R, X] per pixel (little-endian)
             cfg = picam2.create_preview_configuration(
-                main={'size': (320, 240), 'format': 'BGR888'}
+                main={'size': (320, 240), 'format': 'XRGB8888'}
             )
             picam2.configure(cfg)
             picam2.start()
-            self.get_logger().info('[FollowFunc] picamera2 시작 완료 (RPi CSI 카메라, 320x240 BGR)')
+
+            # 첫 프레임으로 실제 shape/채널 진단
+            test = picam2.capture_array()
+            self.get_logger().info(
+                f'[FollowFunc] picamera2 시작 완료 — shape={test.shape}, dtype={test.dtype}'
+            )
 
             while not self._camera_stop_flag:
-                frame = picam2.capture_array()  # BGR, shape=(240,320,3)
+                raw = picam2.capture_array()   # shape=(240,320,4): B,G,R,X
+                frame = raw[:, :, :3]          # B,G,R → OpenCV BGR
                 resized = cv2.resize(cv2.flip(frame, -1), (320, 240))
                 with self._frame_lock:
                     self._latest_frame = resized
