@@ -100,6 +100,7 @@ class FollowFunctionNode(Node):
         self.declare_parameter('follow_max_speed', 0.25)
         self.declare_parameter('follow_lost_threshold', 150)
         self.declare_parameter('follow_rate_hz', 30.0)
+        self.declare_parameter('test_follow_mode', False)
 
         # ---------------------------------------------------------------- #
         # 내부 상태 (FSM)                                                    #
@@ -194,6 +195,12 @@ class FollowFunctionNode(Node):
 
             rate_hz = self.get_parameter('follow_rate_hz').value
             self._track_timer = self.create_timer(1.0 / rate_hz, self._track_tick)
+
+        # 테스트 모드: FSM 없이 바로 following 시작
+        if self.get_parameter('test_follow_mode').value:
+            self._current_state = 'FOLLOW'
+            self._is_following = True
+            self.get_logger().info('[FollowFunc] ★ test_follow_mode ON — 즉시 following 시작')
 
         self.get_logger().info('follow_function_node 시작.')
 
@@ -403,7 +410,7 @@ class FollowFunctionNode(Node):
                 idx = int(box.id[0])
 
                 # 타겟 미등록 + 추적 중 → 화면 중앙 근처 사람 자동 등록
-                if self._target_id is None and self._is_following:
+                if self._target_id is None and (self._is_following or self._current_state == 'FOLLOW'):
                     x1, _, x2, _ = box.xyxy[0].cpu().numpy()
                     cx = (x1 + x2) / 2
                     if 100 < cx < 220:
