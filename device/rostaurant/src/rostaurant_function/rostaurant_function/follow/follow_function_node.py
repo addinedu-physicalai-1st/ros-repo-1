@@ -301,7 +301,7 @@ class FollowFunctionNode(Node):
             return
         ranges = [r for r in (list(data.ranges[:40]) + list(data.ranges[-40:]))
                   if 0.05 < r < 10.0 and not math.isinf(r)]
-        self._emergency_stop = bool(ranges) and min(ranges) < 0.30
+        self._emergency_stop = bool(ranges) and min(ranges) < 0.10
 
     # ------------------------------------------------------------------ #
     # 카메라 스레드                                                           #
