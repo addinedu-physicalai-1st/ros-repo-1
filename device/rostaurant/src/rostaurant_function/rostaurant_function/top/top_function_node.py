@@ -71,6 +71,7 @@ class TopFunctionNode(Node):
         # ---------------------------------------------------------------- #
         use_nav2 = self.get_parameter('use_nav2').value
         sim_time = self.get_parameter('simulated_nav_time').value
+        self._use_nav2 = use_nav2
         self._nav = NavigationClient(self, use_nav2=use_nav2, simulated_nav_time=sim_time)
         self._event_pub = EventPublisher(self)
 
@@ -181,9 +182,15 @@ class TopFunctionNode(Node):
         self._nav.send_goal(pose, on_arrived=self._on_arrived_charging)
 
     def _on_arrived_charging(self) -> None:
-        """Nav2 충전소 근처 도착 → pinky_docking 시작.
-        ArrivedAtCharging 이벤트는 도킹 완료(DOCKED) 후 발행한다."""
-        self.get_logger().info('[TopFunc] 충전소 근처 도착. 도킹 시작...')
+        """Nav2 충전소 근처 도착.
+        - 실제 로봇: pinky_docking 시작 → DOCKED 수신 후 ArrivedAtCharging 발행
+        - 시뮬(use_nav2=false): 즉시 ArrivedAtCharging 발행"""
+        self.get_logger().info('[TopFunc] 충전소 근처 도착.')
+        if not self._use_nav2:
+            self.get_logger().info('[TopFunc] 시뮬 모드 — 즉시 ArrivedAtCharging 발행')
+            self._event_pub.publish_event('ArrivedAtCharging', session_id='')
+            return
+        self.get_logger().info('[TopFunc] 도킹 시작...')
         self._docking_active = True
         dock_msg = String()
         dock_msg.data = 'start'
