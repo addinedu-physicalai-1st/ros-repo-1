@@ -69,6 +69,34 @@ class _RealTask:
         }.get(status_i, TaskStatus.PENDING)
 
 
+class _DemoTask:
+    """데모 시뮬레이션용 가상 태스크 객체."""
+    def __init__(self, robot_id: str, type_label: str,
+                 status=None, progress: int = 0) -> None:
+        self.task_id  = f"DEMO-{robot_id}"
+        self.robot_id = robot_id
+        self.type     = type_label
+        self.status   = status if status is not None else TaskStatus.PENDING
+        self.progress = progress
+
+
+# 데모 시나리오: (robot_id, 표시 라벨, 배터리%)
+_DEMO_SCENARIO = [
+    ("PNK01", "식기 수거 → TBL_03",      65),
+    ("PNK02", "안내 서비스 → TBL_01",    45),
+    ("PNK03", "안내 서비스 → KIOSK_A",   30),
+]
+_DEMO_PHASE_MS  = 2000   # 기본 단계 체류 시간(ms)
+# 단계별 체류 시간 오버라이드 {phase_idx: ms}
+_DEMO_PHASE_OVERRIDE: dict[int, int] = {
+    0: 2500,   # 초기 대기 – 잠깐 길게
+    4: 2800,   # PNK01 완료 직후 – 큐에 식기 수거 남아있음 확인
+    5: 2200,   # 배당 중 하이라이트 – 주황색으로 깜박이는 느낌
+    6: 2800,   # 배당 확정 – PNK01 카드 + 큐 변화 함께 확인
+    7: 2000,   # PNK01 이동 중
+}
+
+
 _TASK_TYPE_OPTIONS = [
     (1, "키오스크→테이블 (KIOSK_TO_TABLE)"),
     (2, "테이블→화장실 (TABLE_TO_TOILET)"),
@@ -368,6 +396,10 @@ class TaskManagementPage(QWidget):
         self._no_robots_lbl: QLabel | None = None
         self._load_active_robots_for_monitor()
 
+        # Demo simulation state
+        self._demo_timer: QTimer | None = None
+        self._demo_phase: int = 0
+
     def initUI(self):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(20, 20, 20, 20)
@@ -428,6 +460,15 @@ class TaskManagementPage(QWidget):
         )
         self._monitor_refresh_btn.clicked.connect(self._load_active_robots_for_monitor)
         mon_header.addWidget(self._monitor_refresh_btn)
+
+        self._demo_btn = QPushButton("🎬 데모 시뮬레이션")
+        self._demo_btn.setStyleSheet(
+            "background-color: #E6A23C; color: white; padding: 4px 10px; border-radius: 4px;"
+        )
+        self._demo_btn.setCheckable(True)
+        self._demo_btn.clicked.connect(self._toggle_demo)
+        mon_header.addWidget(self._demo_btn)
+
         monitor_layout.addLayout(mon_header)
 
         self.robot_cards: dict[str, RobotStatusCard] = {}
@@ -781,6 +822,260 @@ class TaskManagementPage(QWidget):
         else:
             QMessageBox.information(self, "취소 완료", "작업이 취소되었습니다.")
         QTimer.singleShot(500, self._load_tasks)
+
+    # ── Demo simulation ───────────────────────────────────────────────────────
+
+    def _toggle_demo(self, checked: bool):
+        self._demo_btn.setVisible(False)
+        self._start_demo()
+
+    def _start_demo(self):
+        self._task_refresh_timer.stop()
+        if hasattr(self, "_battery_timer"):
+            self._battery_timer.stop()
+
+        demo_ids = [r for r, _, _ in _DEMO_SCENARIO]
+        self._build_monitor_cards(demo_ids)
+        # _build_monitor_cards가 배터리 폴링 타이머를 재시작하므로 즉시 중단
+        if hasattr(self, "_battery_timer"):
+            self._battery_timer.stop()
+        for rid, _, bat in _DEMO_SCENARIO:
+            self._real_battery[rid] = bat
+            card = self.robot_cards.get(rid)
+            if card:
+                card.battery_ui.setLevel(bat)
+
+        self._demo_phase = 0
+        self._demo_timer = QTimer(self)
+        self._demo_timer.setSingleShot(True)
+        self._demo_timer.timeout.connect(self._demo_step)
+        self._demo_step()
+
+    def _demo_step(self):
+        """단계를 실행한 뒤 다음 단계 타이머를 단계별 지연시간으로 예약."""
+        self._demo_tick()
+        if self._demo_timer:
+            delay = _DEMO_PHASE_OVERRIDE.get(self._demo_phase, _DEMO_PHASE_MS)
+            self._demo_timer.start(delay)
+
+    def _stop_demo(self):
+        if self._demo_timer:
+            self._demo_timer.stop()
+            self._demo_timer = None
+        self._task_refresh_timer.start(5000)
+        self._load_active_robots_for_monitor()
+        self._load_tasks()
+
+    def _schedule_next_demo(self):
+        if self._demo_timer:
+            delay = _DEMO_PHASE_OVERRIDE.get(self._demo_phase, _DEMO_PHASE_MS)
+            self._demo_timer.start(delay)
+
+    # ── 데모 헬퍼: 테이블 직접 업데이트 ─────────────────────────────────────
+
+    def _demo_set_task_table(self, rows: list[tuple]):
+        """rows: [(task_id, type_label, robot_id, status_label), ...]"""
+        self.task_table.setRowCount(0)
+        for task_id, type_label, robot_id, status_label in rows:
+            row = self.task_table.rowCount()
+            self.task_table.insertRow(row)
+            self.task_table.setItem(row, 0, QTableWidgetItem(task_id))
+            self.task_table.setItem(row, 1, QTableWidgetItem(type_label))
+            self.task_table.setItem(row, 2, QTableWidgetItem(robot_id))
+            self.task_table.setItem(row, 3, QTableWidgetItem(status_label))
+            btn = QPushButton("강제 취소")
+            btn.setStyleSheet("background-color: #F56C6C; color: white; padding: 4px 10px; border-radius: 3px;")
+            btn.setEnabled(False)
+            self.task_table.setCellWidget(row, 4, btn)
+        self._status_lbl.setText(f"총 {len(rows)}건")
+
+    def _demo_set_queue_table(self, rows: list[tuple], highlight_idx: int = -1):
+        """rows: [(task_id, type_label), ...]
+        highlight_idx: 해당 행을 주황색으로 강조 (배당 중 표시)
+        """
+        self.queue_table.setRowCount(len(rows))
+        for i, (task_id, type_label) in enumerate(rows):
+            assigning = (i == highlight_idx)
+            action_text = "▶ 배당 중..." if assigning else "—"
+            robot_text  = "PNK01 배당 중" if assigning else "미할당"
+            items = [
+                QTableWidgetItem(task_id),
+                QTableWidgetItem(type_label),
+                QTableWidgetItem(robot_text),
+                QTableWidgetItem(action_text),
+            ]
+            for col, item in enumerate(items):
+                if assigning:
+                    item.setBackground(QColor("#FDF6EC"))
+                    item.setForeground(QColor("#E6A23C"))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                self.queue_table.setItem(i, col, item)
+
+    def _demo_set_log_table(self, rows: list[tuple]):
+        """rows: [(task_id, type_label, time_str, robot_id, status_str, duration, priority_str), ...]
+        status_str이 '완료'이면 초록, 나머지 빨강.
+        """
+        self.log_table.setRowCount(len(rows))
+        for i, (tid, type_label, t_str, robot, status_s, duration, prio_s) in enumerate(rows):
+            vals = [tid, type_label, t_str, robot, status_s, duration, prio_s]
+            for j, val in enumerate(vals):
+                item = QTableWidgetItem(val)
+                if j == 4:
+                    item.setForeground(QColor("#67C23A") if status_s == "완료" else QColor("#F56C6C"))
+                self.log_table.setItem(i, j, item)
+
+    def _demo_set_robot_card(self, rid: str, label: str | None,
+                             status, progress: int, bat: int):
+        card = self.robot_cards.get(rid)
+        if not card:
+            return
+        if label is None:
+            card.update_state(None, {"battery": bat})
+        else:
+            task = _DemoTask(rid, label, status, progress)
+            card.update_state(task, {"battery": bat})
+
+    # ── 데모 사이클 (9단계) ───────────────────────────────────────────────────
+
+    def _demo_tick(self):
+        """
+        Phase 0 : 초기 – 대기장소 대기(PENDING), 큐: [화장실 안내, 식기 수거]
+        Phase 1 : 3대 이동 중(MOVING)
+        Phase 2 : 작업 중(WORKING)
+        Phase 3 : 작업 중 (progress 높음)
+        Phase 4 : PNK01 수거 완료 → idle, 큐에 식기 수거 대기 중 (강조 없음)
+        Phase 5 : 큐의 식기 수거 행 주황 하이라이트 "▶ 배당 중..." → PNK01 여전히 idle
+        Phase 6 : PNK01 식기 수거 배당 확정(PENDING), 큐에서 해당 행 제거
+        Phase 7 : PNK01 새 태스크 이동 중(MOVING)
+        Phase 8 : 리셋 → Phase 0
+        """
+        p = self._demo_phase
+        bat = {r: b for r, _, b in _DEMO_SCENARIO}
+        now = _dt.datetime.now().strftime("%H:%M:%S")
+
+        # 사이클 시작 시각을 한 번만 기록
+        if p == 0:
+            self._demo_cycle_start = _dt.datetime.now()
+
+        t0 = getattr(self, "_demo_cycle_start", _dt.datetime.now())
+        t_req = t0.strftime("%H:%M:%S")
+
+        # 사전 완료 이력 (데모 시작 전부터 존재했던 태스크들)
+        _prior_log = [
+            ("H-001", "안내 서비스", "09:12:34", "PNK02", "완료",  "42s (예상:80s)",  "보통"),
+            ("H-002", "식기 수거",   "09:14:01", "PNK01", "완료",  "88s (예상:100s)", "높음"),
+            ("H-003", "안내 서비스", "09:15:22", "PNK03", "완료",  "61s (예상:80s)",  "보통"),
+            ("H-004", "식기 수거",   "09:17:45", "PNK01", "취소됨","—",               "높음"),
+        ]
+
+        if p == 0:
+            self._demo_set_robot_card("PNK01", "식기 수거 → TBL_03",    TaskStatus.PENDING, 0, bat["PNK01"])
+            self._demo_set_robot_card("PNK02", "안내 서비스 → TBL_01",  TaskStatus.PENDING, 0, bat["PNK02"])
+            self._demo_set_robot_card("PNK03", "안내 서비스 → KIOSK_A", TaskStatus.PENDING, 0, bat["PNK03"])
+            self._demo_set_task_table([
+                ("D-001", "식기 수거 → TBL_03",    "PNK01", "대기 중"),
+                ("D-002", "안내 서비스 → TBL_01",  "PNK02", "대기 중"),
+                ("D-003", "안내 서비스 → KIOSK_A", "PNK03", "대기 중"),
+            ])
+            self._demo_set_queue_table([
+                ("Q-001", "테이블→화장실 → TOILET"),
+                ("Q-002", "식기 수거 → TBL_05"),
+            ])
+            self._demo_set_log_table(_prior_log)
+
+        elif p == 1:
+            self._demo_set_robot_card("PNK01", "식기 수거 → TBL_03",    TaskStatus.MOVING, 20, bat["PNK01"])
+            self._demo_set_robot_card("PNK02", "안내 서비스 → TBL_01",  TaskStatus.MOVING, 15, bat["PNK02"])
+            self._demo_set_robot_card("PNK03", "안내 서비스 → KIOSK_A", TaskStatus.MOVING, 10, bat["PNK03"])
+            self._demo_set_task_table([
+                ("D-001", "식기 수거 → TBL_03",    "PNK01", "진행 중"),
+                ("D-002", "안내 서비스 → TBL_01",  "PNK02", "진행 중"),
+                ("D-003", "안내 서비스 → KIOSK_A", "PNK03", "진행 중"),
+            ])
+            self._demo_set_log_table(_prior_log)
+
+        elif p == 2:
+            self._demo_set_robot_card("PNK01", "식기 수거 → TBL_03",    TaskStatus.WORKING, 55, bat["PNK01"])
+            self._demo_set_robot_card("PNK02", "안내 서비스 → TBL_01",  TaskStatus.ARRIVED, 45, bat["PNK02"])
+            self._demo_set_robot_card("PNK03", "안내 서비스 → KIOSK_A", TaskStatus.WORKING, 50, bat["PNK03"])
+            self._demo_set_task_table([
+                ("D-001", "식기 수거 → TBL_03",    "PNK01", "진행 중"),
+                ("D-002", "안내 서비스 → TBL_01",  "PNK02", "진행 중"),
+                ("D-003", "안내 서비스 → KIOSK_A", "PNK03", "진행 중"),
+            ])
+            self._demo_set_log_table(_prior_log)
+
+        elif p == 3:
+            self._demo_set_robot_card("PNK01", "식기 수거 → TBL_03",    TaskStatus.WORKING, 88, bat["PNK01"])
+            self._demo_set_robot_card("PNK02", "안내 서비스 → TBL_01",  TaskStatus.WORKING, 70, bat["PNK02"])
+            self._demo_set_robot_card("PNK03", "안내 서비스 → KIOSK_A", TaskStatus.WORKING, 75, bat["PNK03"])
+            self._demo_set_log_table(_prior_log)
+
+        elif p == 4:
+            # PNK01 수거 완료 → idle, 로그에 D-001 완료 항목 추가
+            self._demo_set_robot_card("PNK01", None, None, 0, bat["PNK01"])
+            self._demo_set_robot_card("PNK02", "안내 서비스 → TBL_01",  TaskStatus.WORKING, 80, bat["PNK02"])
+            self._demo_set_robot_card("PNK03", "안내 서비스 → KIOSK_A", TaskStatus.WORKING, 85, bat["PNK03"])
+            self._demo_set_task_table([
+                ("D-002", "안내 서비스 → TBL_01",  "PNK02", "진행 중"),
+                ("D-003", "안내 서비스 → KIOSK_A", "PNK03", "진행 중"),
+            ])
+            self._demo_set_queue_table([
+                ("Q-001", "테이블→화장실 → TOILET"),
+                ("Q-002", "식기 수거 → TBL_05"),
+            ])
+            self._demo_set_log_table([
+                ("D-001", "식기 수거",   t_req, "PNK01", "완료",  "96s (예상:100s)", "높음"),
+                *_prior_log,
+            ])
+
+        elif p == 5:
+            # 큐의 식기 수거 행 → 주황 하이라이트 "배당 중..."
+            self._demo_set_queue_table([
+                ("Q-001", "테이블→화장실 → TOILET"),
+                ("Q-002", "식기 수거 → TBL_05"),
+            ], highlight_idx=1)
+            self._demo_set_log_table([
+                ("D-001", "식기 수거",   t_req, "PNK01", "완료",  "96s (예상:100s)", "높음"),
+                *_prior_log,
+            ])
+
+        elif p == 6:
+            # PNK01 식기 수거 배당 확정, D-004 대기 중 로그 추가
+            self._demo_set_robot_card("PNK01", "식기 수거 → TBL_05",    TaskStatus.PENDING, 0, bat["PNK01"])
+            self._demo_set_task_table([
+                ("D-004", "식기 수거 → TBL_05",    "PNK01", "대기 중"),
+                ("D-002", "안내 서비스 → TBL_01",  "PNK02", "진행 중"),
+                ("D-003", "안내 서비스 → KIOSK_A", "PNK03", "진행 중"),
+            ])
+            self._demo_set_queue_table([
+                ("Q-001", "테이블→화장실 → TOILET"),
+            ])
+            self._demo_set_log_table([
+                ("D-001", "식기 수거",   t_req, "PNK01", "완료",  "96s (예상:100s)", "높음"),
+                *_prior_log,
+            ])
+
+        elif p == 7:
+            # PNK01 새 태스크 이동 중, D-004 진행 중 로그 반영
+            self._demo_set_robot_card("PNK01", "식기 수거 → TBL_05",    TaskStatus.MOVING, 20, bat["PNK01"])
+            self._demo_set_task_table([
+                ("D-004", "식기 수거 → TBL_05",    "PNK01", "진행 중"),
+                ("D-002", "안내 서비스 → TBL_01",  "PNK02", "진행 중"),
+                ("D-003", "안내 서비스 → KIOSK_A", "PNK03", "진행 중"),
+            ])
+            self._demo_set_log_table([
+                ("D-001", "식기 수거",   t_req, "PNK01", "완료",  "96s (예상:100s)", "높음"),
+                *_prior_log,
+            ])
+
+        else:
+            # 리셋
+            self._demo_phase = -1
+
+        self._demo_phase += 1
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
