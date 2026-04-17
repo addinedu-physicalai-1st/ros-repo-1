@@ -221,20 +221,18 @@ class FollowFunctionNode(Node):
         self.get_logger().info(f'[FollowFunc] 명령 수신: {cmd}')
 
         if cmd == 'FollowRequest':
-            self._requester_pose = msg.target_pose
+            self._requester_pose = self._make_pose(msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[FollowFunc] FollowRequest — 요청자 위치로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f})'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
         elif cmd == 'RetryFollowRequest':
-            self._requester_pose = msg.target_pose
+            self._requester_pose = self._make_pose(msg.x, msg.y, msg.theta)
             self.get_logger().info(
                 f'[FollowFunc] RetryFollowRequest — 새 위치로 재이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f})'
             )
             self._nav.send_goal(self._requester_pose, on_arrived=self._on_arrived_requester)
 
@@ -244,12 +242,11 @@ class FollowFunctionNode(Node):
 
         elif cmd == 'GoToTable':
             # Nav2 이동으로 전환 — YOLO 추적은 반드시 꺼야 /cmd_vel 경합 방지
-            self._table_pose = msg.target_pose
+            self._table_pose = self._make_pose(msg.x, msg.y, msg.theta)
             self._stop_following()
             self.get_logger().info(
                 f'[FollowFunc] GoToTable — 테이블로 이동: '
-                f'({msg.target_pose.pose.position.x:.2f}, '
-                f'{msg.target_pose.pose.position.y:.2f})'
+                f'({msg.x:.2f}, {msg.y:.2f})'
             )
             self._nav.send_goal(self._table_pose, on_arrived=self._on_arrived_table)
 
@@ -489,6 +486,16 @@ class FollowFunctionNode(Node):
         self._session_id = ''
         self._requester_pose = None
         self._table_pose = None
+
+    @staticmethod
+    def _make_pose(x: float, y: float, theta: float) -> PoseStamped:
+        pose = PoseStamped()
+        pose.header.frame_id = 'map'
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.orientation.z = math.sin(theta / 2.0)
+        pose.pose.orientation.w = math.cos(theta / 2.0)
+        return pose
 
     # ------------------------------------------------------------------ #
     # 종료 정리                                                              #
