@@ -200,13 +200,18 @@ class MapWidget(QGraphicsView):
             return
         scene_pts = [_world_to_scene(x, y) for x, y in world_points]
         color = self._get_robot_color(r_id)
+        # Remove and re-add to force Qt scene repaint
+        self.scene.removeItem(path_item)
         path_item.set_points(scene_pts, color)
+        self.scene.addItem(path_item)
 
     def clear_planned_path(self, r_id: str) -> None:
         """Clear a robot's planned path."""
         path_item = self._path_items.get(r_id)
         if path_item:
+            self.scene.removeItem(path_item)
             path_item.set_points([])
+            self.scene.addItem(path_item)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -470,8 +475,14 @@ class MapDashboard(QWidget):
                     was_moving.discard(r_id)
 
         # Replan paths for robots with active goals
-        if self._robot_goals:
-            self._replan_all_paths()
+        remaining_goals = list(self._robot_goals.keys())
+        if remaining_goals:
+            print(f"[poll] goals={remaining_goals}", file=sys.stderr, flush=True)
+            try:
+                self._replan_all_paths()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
 
     def _fetch_task_label(self, r_id: str, task_id: str) -> None:
         w = ApiWorker(self._api.get_task, task_id)
@@ -574,9 +585,15 @@ class MapDashboard(QWidget):
         # Register goal and replan immediately
         if goal_wp_id is not None:
             self._robot_goals[robot_id] = (goal_wp_id, label)
+            import sys
             print(f"[click] {robot_id} goal=wp#{goal_wp_id} ({label}), "
-                  f"pose={self._robot_poses.get(robot_id)}", flush=True)
-            self._replan_all_paths()
+                  f"pose={self._robot_poses.get(robot_id)}",
+                  file=sys.stderr, flush=True)
+            try:
+                self._replan_all_paths()
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
         # Create task + assign
         self._create_and_assign_task(dest_id, label, robot_id)
@@ -660,8 +677,7 @@ class MapDashboard(QWidget):
                     nearest_d = d
                     current_wp = wp.wp_id
 
-            # Dynamic obstacles: ONLY other robots that have active goals
-            # (idle robots at destinations should NOT block paths)
+            # Dynamic obstacles: all OTHER robots with goals (not self)
             dyn_obs = []
             for other_id, other_pose in self._robot_poses.items():
                 if other_id != r_id and other_id in self._robot_goals:
@@ -671,12 +687,11 @@ class MapDashboard(QWidget):
                         radius=0.12, label=other_id,
                     ))
 
-            # Reserved paths: other robots' REMAINING waypoints only
+            # Reserved paths: other robots' remaining waypoints
             reserved = []
             for other_id in self._robot_goals:
                 if other_id == r_id:
                     continue
-                # Use new_plans if available, else cached
                 other_wps = new_plans.get(other_id,
                              self._robot_planned_wps.get(other_id, []))
                 if not other_wps:
@@ -687,52 +702,45 @@ class MapDashboard(QWidget):
                 if remaining:
                     reserved.append(remaining)
 
+            # Always snap to nearest waypoint for wp→wp planning
+            # (avoids diagonal free-start segments)
             try:
-                WP_ON_THRESHOLD = 0.08
-                start_wp = None
+                best_start_wp, best_start_d = None, math.inf
                 for wp in graph.waypoints.values():
-                    if math.hypot(wp.x - rwx, wp.y - rwy) <= WP_ON_THRESHOLD:
-                        start_wp = wp.wp_id
-                        break
+                    d = math.hypot(wp.x - rwx, wp.y - rwy)
+                    if d < best_start_d:
+                        best_start_d = d
+                        best_start_wp = wp.wp_id
 
-                dyn_labels = [d.label for d in dyn_obs] if dyn_obs else []
-                res_summary = [len(r) for r in reserved] if reserved else []
-                print(f"[replan-dbg] {r_id}: pos=({rwx:.2f},{rwy:.2f}) "
-                      f"start_wp={start_wp} goal={goal_wp_id} "
-                      f"dyn={dyn_labels} res_lens={res_summary}",
-                      flush=True)
-
-                if start_wp is not None and start_wp != goal_wp_id:
+                if best_start_wp is not None and best_start_wp != goal_wp_id:
                     path_wps, cost = plan_path(
-                        bm, start_wp, goal_wp_id,
+                        bm, best_start_wp, goal_wp_id,
                         dynamic_obstacles=dyn_obs if dyn_obs else None,
                         reserved_paths=reserved if reserved else None,
                     )
                     plan_waypoints = path_wps if path_wps else None
                 else:
-                    result = plan_path_from_point(
-                        bm, (rwx, rwy), goal_wp_id,
-                        dynamic_obstacles=dyn_obs if dyn_obs else None,
-                        reserved_paths=reserved if reserved else None,
-                    )
-                    plan_waypoints = result.waypoints if result else None
+                    plan_waypoints = None
             except Exception as e:
-                print(f"[replan] {r_id} plan error: {e}", flush=True)
+                print(f"[replan] {r_id} error: {e}",
+                      file=sys.stderr, flush=True)
                 plan_waypoints = None
 
             if plan_waypoints:
                 new_plans[r_id] = list(plan_waypoints)
                 self._robot_wp_idx[r_id] = 0
-                points = [(rwx, rwy)]
+                # Path display: waypoints ONLY (no robot pos → no diagonal)
+                points = []
                 for wp_id in plan_waypoints:
                     wp = graph.waypoints[wp_id]
                     points.append((wp.x, wp.y))
-                print(f"[replan] {r_id} → {label}: {len(plan_waypoints)} wps, "
-                      f"{len(points)} pts", flush=True)
+                print(f"[replan] {r_id} → {label}: {len(plan_waypoints)} wps",
+                      file=sys.stderr, flush=True)
                 self.map_view.set_planned_path(r_id, points)
             else:
                 new_plans[r_id] = []
-                print(f"[replan] {r_id} → {label}: BLOCKED", flush=True)
+                print(f"[replan] {r_id} → {label}: BLOCKED",
+                      file=sys.stderr, flush=True)
                 self.map_view.clear_planned_path(r_id)
 
         self._robot_planned_wps = new_plans
