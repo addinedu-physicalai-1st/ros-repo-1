@@ -311,92 +311,95 @@ class FollowFunctionNode(Node):
     # ------------------------------------------------------------------ #
 
     def _track_tick(self) -> None:
-        """주기적으로 호출. _is_following=True일 때만 실제 추적 수행."""
-        if not self._is_following:
-            return
-
+        """주기적으로 호출. 항상 카메라 화면을 LCD에 표시.
+        _is_following=True 일 때만 YOLO 추적 및 cmd_vel 발행."""
         with self._frame_lock:
             frame = None if self._latest_frame is None else self._latest_frame.copy()
 
         if frame is None:
             return
 
-        results = self._yolo_model.track(
-            source=frame, persist=True, tracker='bytetrack.yaml',
-            classes=0, verbose=False, imgsz=160,
-        )
-        r = results[0]
-
         msg = Twist()
-        self._track_state = 'WAITING'
-        status_text = 'WAITING TARGET'
+        status_text = 'STANDBY'
         text_color = self.COLORS['BLUE']
-        found_target = False
-        best_box = None
 
-        if r.boxes is not None and r.boxes.id is not None:
-            for box in r.boxes:
-                idx = int(box.id[0])
+        if self._is_following:
+            results = self._yolo_model.track(
+                source=frame, persist=True, tracker='bytetrack.yaml',
+                classes=0, verbose=False, imgsz=160,
+            )
+            r = results[0]
 
-                # 타겟 미등록 → 화면 중앙 근처 사람 자동 등록
-                if self._target_id is None:
-                    x1, _, x2, _ = box.xyxy[0].cpu().numpy()
-                    cx = (x1 + x2) / 2
-                    if 100 < cx < 220:
-                        self._target_id = idx
-                        self.get_logger().info(f'[FollowFunc] 🎯 타겟 등록 ID={idx}')
+            self._track_state = 'WAITING'
+            status_text = 'WAITING TARGET'
+            found_target = False
+            best_box = None
 
-                if idx == self._target_id:
-                    best_box = box
-                    found_target = True
+            if r.boxes is not None and r.boxes.id is not None:
+                for box in r.boxes:
+                    idx = int(box.id[0])
+
+                    # 타겟 미등록 → 화면 중앙 근처 사람 자동 등록
+                    if self._target_id is None:
+                        x1, _, x2, _ = box.xyxy[0].cpu().numpy()
+                        cx = (x1 + x2) / 2
+                        if 100 < cx < 220:
+                            self._target_id = idx
+                            self.get_logger().info(f'[FollowFunc] 타겟 등록 ID={idx}')
+
+                    if idx == self._target_id:
+                        best_box = box
+                        found_target = True
+                        self._lost_count = 0
+                        break
+
+            if best_box is not None:
+                x1, y1, x2, y2 = best_box.xyxy[0].cpu().numpy()
+                cx, h = (x1 + x2) / 2, y2 - y1
+
+                error = self._center_x - cx
+                angular = (error * self._kp) + (error - self._prev_error) * self._kd
+                msg.angular.z = float(max(-3.0, min(3.0, angular)))
+                self._prev_error = error
+
+                if h < 210:
+                    msg.linear.x = self._max_speed if h < 160 else self._max_speed * 0.4
+                    self._track_state = 'FOLLOWING'
+                    status_text = f'FOLLOWING ID:{self._target_id}'
+                    text_color = self.COLORS['WHITE']
+                else:
+                    msg.linear.x = 0.0
+                    self._track_state = 'ARRIVED'
+                    status_text = 'ARRIVED!'
+                    text_color = self.COLORS['GREEN']
+
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+
+            # 타겟 놓침 → 카운트 증가, 임계 초과 시 리셋
+            if not found_target and self._target_id is not None:
+                self._lost_count += 1
+                status_text = f'LOST.. {self._lost_threshold - self._lost_count}'
+                text_color = self.COLORS['ORANGE']
+                if self._lost_count > self._lost_threshold:
+                    self.get_logger().warn('[FollowFunc] 타겟 놓침 — 재탐색 모드')
+                    self._target_id = None
                     self._lost_count = 0
-                    break
+                    self._prev_error = 0.0
 
-        if best_box is not None:
-            x1, y1, x2, y2 = best_box.xyxy[0].cpu().numpy()
-            cx, h = (x1 + x2) / 2, y2 - y1
+            # 긴급 정지
+            if self._emergency_stop:
+                msg.linear.x, msg.angular.z = 0.0, 0.0
+                self._track_state = 'EMERGENCY'
+                status_text = '!!! EMERGENCY !!!'
+                text_color = self.COLORS['RED']
 
-            error = self._center_x - cx
-            angular = (error * self._kp) + (error - self._prev_error) * self._kd
-            msg.angular.z = float(max(-3.0, min(3.0, angular)))
-            self._prev_error = error
+            self._cmd_vel_pub.publish(msg)
 
-            if h < 210:
-                msg.linear.x = self._max_speed if h < 160 else self._max_speed * 0.4
-                self._track_state = 'FOLLOWING'
-                status_text = f'FOLLOWING ID:{self._target_id}'
-                text_color = self.COLORS['WHITE']
-            else:
-                msg.linear.x = 0.0
-                self._track_state = 'ARRIVED'
-                status_text = 'ARRIVED!'
-                text_color = self.COLORS['GREEN']
+            # LED 표시 (추적 중일 때만)
+            if self._leds is not None:
+                self._update_leds()
 
-            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-
-        # 타겟 놓침 → 카운트 증가, 임계 초과 시 리셋
-        if not found_target and self._target_id is not None:
-            self._lost_count += 1
-            status_text = f'LOST.. {self._lost_threshold - self._lost_count}'
-            if self._lost_count > self._lost_threshold:
-                self.get_logger().warn('[FollowFunc] ⚠️ 타겟 놓침 — 재탐색 모드')
-                self._target_id = None
-                self._lost_count = 0
-                self._prev_error = 0.0
-
-        # 긴급 정지
-        if self._emergency_stop:
-            msg.linear.x, msg.angular.z = 0.0, 0.0
-            self._track_state = 'EMERGENCY'
-            status_text = '!!! EMERGENCY !!!'
-            text_color = self.COLORS['RED']
-
-        self._cmd_vel_pub.publish(msg)
-
-        # LED / LCD 표시
-        if self._leds is not None:
-            self._update_leds()
-
+        # LCD: 항상 카메라 화면 + 상태 텍스트 표시
         if self._lcd is not None and (time.time() - self._last_lcd_update > 0.05):
             overlay = self._draw_overlay(frame, status_text,
                                          (text_color[2], text_color[1], text_color[0]))
