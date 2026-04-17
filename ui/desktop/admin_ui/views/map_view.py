@@ -1,12 +1,12 @@
 import math
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGraphicsView, QGraphicsScene, QScrollArea, QFrame,
-                             QMessageBox, QGraphicsLineItem, QMenu, QAction,
-                             QInputDialog)
+                             QMessageBox, QGraphicsLineItem, QGraphicsItem,
+                             QMenu, QAction, QInputDialog, QPushButton)
 from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap, QPen
 from PyQt5.QtCore import Qt, QTimer, QPointF, pyqtSignal
 
@@ -82,6 +82,8 @@ def _scene_to_world(sx: float, sy: float) -> Tuple[float, float]:
 class MapWidget(QGraphicsView):
     # Signal: (waypoint_label, world_x, world_y)
     waypoint_clicked = pyqtSignal(str, float, float)
+    # Signal: emitted when waypoints are saved in edit mode
+    waypoints_saved = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -115,6 +117,10 @@ class MapWidget(QGraphicsView):
 
         # Per-robot planned path line items
         self._path_items: dict[str, PathLineItem] = {}
+
+        # Edit mode state
+        self._edit_mode = False
+        self._dragging_wp: Optional[WaypointItem] = None
 
         self._load_waypoint_graph()
 
@@ -220,8 +226,97 @@ class MapWidget(QGraphicsView):
     def fit_view(self):
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
 
+    # ── Edit mode ──────────────────────────────────────────────────────
+
+    def toggle_edit_mode(self) -> bool:
+        """Toggle edit mode. Returns new state."""
+        self._edit_mode = not self._edit_mode
+        for item in self._wp_items:
+            item.editable = self._edit_mode
+            if self._edit_mode:
+                item.setFlag(QGraphicsItem.ItemIsMovable, True)
+                item.setCursor(Qt.OpenHandCursor)
+            else:
+                item.setFlag(QGraphicsItem.ItemIsMovable, False)
+                item.unsetCursor()
+            item.update()
+        if not self._edit_mode:
+            # Rebuild edges from new positions
+            self._rebuild_edges()
+        return self._edit_mode
+
+    def _rebuild_edges(self) -> None:
+        """Remove old edge lines and redraw from current wp positions."""
+        for edge in self._edge_items:
+            self.scene.removeItem(edge)
+        self._edge_items.clear()
+
+        if not self._buffet_map:
+            return
+        graph = self._buffet_map.graph
+        seen = set()
+        for wp_id, neighbors in graph.adjacency.items():
+            for nb in neighbors:
+                key = (min(wp_id, nb), max(wp_id, nb))
+                if key in seen:
+                    continue
+                seen.add(key)
+                a = graph.waypoints[wp_id]
+                b = graph.waypoints[nb]
+                pa = _world_to_scene(a.x, a.y)
+                pb = _world_to_scene(b.x, b.y)
+                line = QGraphicsLineItem(pa.x(), pa.y(), pb.x(), pb.y())
+                line.setPen(QPen(QColor("#7aa6c2"), 2, Qt.SolidLine))
+                line.setOpacity(0.5)
+                line.setZValue(1)
+                self.scene.addItem(line)
+                self._edge_items.append(line)
+
+    def save_waypoints(self) -> bool:
+        """Write current waypoint positions back to the map YAML."""
+        if not self._buffet_map:
+            return False
+        graph = self._buffet_map.graph
+        # Update graph waypoints from scene positions
+        for item in self._wp_items:
+            wp = graph.waypoints.get(item.wp_id)
+            if wp:
+                sx, sy = item.pos().x(), item.pos().y()
+                wx, wy = _scene_to_world(sx, sy)
+                from path_planning.map_data import Waypoint
+                graph.waypoints[item.wp_id] = Waypoint(
+                    wp_id=wp.wp_id, x=wx, y=wy,
+                    label=wp.label, yaw=wp.yaw,
+                )
+        # Rebuild edges and save
+        self._buffet_map._rebuild_edges()
+        try:
+            self._buffet_map.save_to_yaml()
+            self._rebuild_edges()
+            return True
+        except Exception:
+            return False
+
+    def mouseReleaseEvent(self, event):
+        """After dragging a waypoint, update graph position."""
+        super().mouseReleaseEvent(event)
+        if self._edit_mode and self._buffet_map:
+            for item in self._wp_items:
+                wp = self._buffet_map.graph.waypoints.get(item.wp_id)
+                if wp:
+                    sx, sy = item.pos().x(), item.pos().y()
+                    wx, wy = _scene_to_world(sx, sy)
+                    from path_planning.map_data import Waypoint
+                    self._buffet_map.graph.waypoints[item.wp_id] = Waypoint(
+                        wp_id=wp.wp_id, x=wx, y=wy,
+                        label=wp.label, yaw=wp.yaw,
+                    )
+            self._rebuild_edges()
+
     def mouseDoubleClickEvent(self, event):
         """Double-click on map → find nearest waypoint → emit signal."""
+        if self._edit_mode:
+            return  # No navigation in edit mode
         if not self._buffet_map:
             return super().mouseDoubleClickEvent(event)
 
@@ -302,6 +397,23 @@ class MapDashboard(QWidget):
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
             legend_layout.addWidget(lbl)
+
+        # Edit / Save buttons
+        self.btn_edit = QPushButton("편집 모드")
+        self.btn_edit.setStyleSheet(
+            "QPushButton { padding: 4px 12px; font-weight: bold; }"
+            "QPushButton:checked { background-color: #ff7f0e; color: white; }"
+        )
+        self.btn_edit.setCheckable(True)
+        self.btn_edit.clicked.connect(self._toggle_edit_mode)
+        legend_layout.addWidget(self.btn_edit)
+
+        self.btn_save = QPushButton("저장")
+        self.btn_save.setStyleSheet("padding: 4px 12px; font-weight: bold;")
+        self.btn_save.setEnabled(False)
+        self.btn_save.clicked.connect(self._save_waypoints)
+        legend_layout.addWidget(self.btn_save)
+
         left_layout.addWidget(legend_frame)
         main_layout.addLayout(left_layout, 2)
 
@@ -455,6 +567,21 @@ class MapDashboard(QWidget):
         card = self._robot_cards.get(r_id)
         if card is not None:
             card.battery_ui.setLevel(int(data.get("battery_percent", 0)))
+
+    def _toggle_edit_mode(self) -> None:
+        editing = self.map_view.toggle_edit_mode()
+        self.btn_edit.setChecked(editing)
+        self.btn_save.setEnabled(editing)
+        if editing:
+            self.btn_edit.setText("편집 중")
+        else:
+            self.btn_edit.setText("편집 모드")
+
+    def _save_waypoints(self) -> None:
+        if self.map_view.save_waypoints():
+            QMessageBox.information(self, "저장 완료", "웨이포인트가 저장되었습니다.")
+        else:
+            QMessageBox.warning(self, "저장 실패", "맵 파일 저장에 실패했습니다.")
 
     def _on_robots_status_polled(self, data: dict):
         for robot in data.get("robots", []):

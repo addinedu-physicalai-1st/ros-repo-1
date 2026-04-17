@@ -121,7 +121,10 @@ class WaypointItem(QGraphicsItem):
         super().__init__(parent)
         self.wp_id = wp_id
         self.label = label
+        self.editable = False  # Set True in edit mode
+        self._hover = False
         self.setPos(x, y)
+        self.setAcceptHoverEvents(True)
 
     def boundingRect(self):
         r = self.RADIUS
@@ -130,6 +133,12 @@ class WaypointItem(QGraphicsItem):
     def paint(self, painter, option, widget):
         painter.setRenderHint(QPainter.Antialiasing)
         r = self.RADIUS
+        # Edit mode: orange drag handle
+        if self.editable:
+            handle_r = 14 if self._hover else 10
+            painter.setPen(QPen(QColor("#ff7f0e"), 2.5 if self._hover else 1.5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(-handle_r, -handle_r, handle_r * 2, handle_r * 2)
         # Node circle
         painter.setPen(QPen(QColor("#1f77b4"), 1.5))
         painter.setBrush(QBrush(QColor("#1f77b4")))
@@ -152,6 +161,16 @@ class WaypointItem(QGraphicsItem):
                 Qt.AlignCenter, self.label,
             )
             painter.restore()
+
+    def hoverEnterEvent(self, event):
+        if self.editable:
+            self._hover = True
+            self.update()
+
+    def hoverLeaveEvent(self, event):
+        if self.editable:
+            self._hover = False
+            self.update()
 
 
 # ── Path line ─────────────────────────────────────────────────────────────────
