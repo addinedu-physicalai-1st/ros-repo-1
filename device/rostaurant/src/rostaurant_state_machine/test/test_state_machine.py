@@ -256,7 +256,7 @@ class HQSimulatorNode(Node):
         ]
 
     def _scenario_follow(self):
-        """동행 시나리오: FollowRequest → FOLLOWING → FollowEnd"""
+        """동행 시나리오: FollowRequest → FollowStart → FOLLOW 유지 (FollowEnd 없음)"""
         return [
             ('배터리 85% 설정 (STANDBY 상태 유지)',
              lambda: self._set_battery(85.0)),
@@ -266,11 +266,9 @@ class HQSimulatorNode(Node):
                  1.0, 2.0, 0.0
              )),
             # 로봇이 자동으로 MOVE_TO_REQUESTER → VERIFY_REQUESTER (nav_delay 후)
-            ('[FOLLOW] FollowStart 전송 (요청자 확인 완료)',
+            ('[FOLLOW] FollowStart 전송 (요청자 확인 완료) — 이후 FOLLOW 상태 유지',
              lambda: self._send_command('FollowStart', 'follow-001')),
-            # 로봇이 FOLLOWING 상태 유지 (1분 타이머가 있지만 테스트에서는 짧게)
-            ('[FOLLOW] FollowEnd 전송 (동행 종료)',
-             lambda: self._send_command('FollowEnd', 'follow-001')),
+            # FollowEnd 없음 — FOLLOW 상태에서 계속 대기
         ]
 
     def _scenario_delivery(self):

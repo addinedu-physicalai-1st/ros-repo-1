@@ -41,9 +41,9 @@ from geometry_msgs.msg import PoseStamped, Twist
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
-from rost_state_machine.msg import RobotCommand
-from rost_function.core.navigation_client import NavigationClient
-from rost_function.core.event_publisher import EventPublisher
+from rostaurant_state_machine.msg import RobotCommand
+from rostaurant_function.core.navigation_client import NavigationClient
+from rostaurant_function.core.event_publisher import EventPublisher
 
 # -------------------------------------------------------------------- #
 # 옵셔널 의존성 (없어도 FSM 동작은 유지되도록 try/except)                     #
