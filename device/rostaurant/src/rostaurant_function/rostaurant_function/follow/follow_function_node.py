@@ -193,8 +193,9 @@ class FollowFunctionNode(Node):
             self._camera_thread = threading.Thread(target=self._camera_loop, daemon=True)
             self._camera_thread.start()
 
-            rate_hz = self.get_parameter('follow_rate_hz').value
-            self._track_timer = self.create_timer(1.0 / rate_hz, self._track_tick)
+            # 타이머 대신 tight loop 스레드 — YOLO 속도에 자동으로 맞춰짐 (원본 코드 방식)
+            self._track_thread = threading.Thread(target=self._track_loop, daemon=True)
+            self._track_thread.start()
 
         # 테스트 모드: FSM 없이 바로 following 시작
         if self.get_parameter('test_follow_mode').value:
@@ -377,6 +378,11 @@ class FollowFunctionNode(Node):
     # ------------------------------------------------------------------ #
     # YOLO 추적 틱 (타이머 콜백)                                              #
     # ------------------------------------------------------------------ #
+
+    def _track_loop(self) -> None:
+        """YOLO 추적 tight loop — 추론 속도에 자동으로 맞춰짐."""
+        while not self._camera_stop_flag:
+            self._track_tick()
 
     def _track_tick(self) -> None:
         """주기적으로 호출. 항상 YOLO 추론 + LCD 표시.
