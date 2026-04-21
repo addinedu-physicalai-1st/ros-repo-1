@@ -135,12 +135,18 @@ if [[ "${START_ROBOTS}" == "true" ]]; then
 
     _publish_initial_pose() {
         local ip="$1" domain_id="$2" pose_str="$3" name="$4"
+        # Skip silently if the robot is unreachable — saves the whole
+        # startup from hanging when only one robot is powered on.
+        if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "pinky@${ip}" "true" 2>/dev/null; then
+            echo "[system] skip initial pose for ${name} (${ip} unreachable)"
+            return
+        fi
         read px py pz pyaw <<< "${pose_str}"
-        # Convert yaw to quaternion z/w
         local qz qw
         qz=$(python3 -c "import math; print(math.sin(${pyaw}/2))")
         qw=$(python3 -c "import math; print(math.cos(${pyaw}/2))")
-        ssh "pinky@${ip}" "source /opt/ros/jazzy/setup.bash && \
+        timeout 10 ssh -o ConnectTimeout=3 "pinky@${ip}" \
+            "source /opt/ros/jazzy/setup.bash && \
             ROS_DOMAIN_ID=${domain_id} ros2 topic pub /initialpose \
             geometry_msgs/msg/PoseWithCovarianceStamped \
             \"{header: {frame_id: 'map'}, pose: {pose: {position: {x: ${px}, y: ${py}, z: ${pz}}, orientation: {z: ${qz}, w: ${qw}}}}}\" \
@@ -176,6 +182,68 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 echo
+
+# ── Sync admin API key if DB's hash diverges from .env ─────────────
+if [[ -n "${ADMIN_API_KEY:-}" ]]; then
+    AUTH_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 3 \
+        -H "Authorization: Bearer ${ADMIN_API_KEY}" \
+        "http://localhost:${MRTA_PORT}/robots" 2>/dev/null || echo "000")
+    if [[ "${AUTH_CODE}" != "200" ]]; then
+        echo "[system] Admin API key mismatch (HTTP ${AUTH_CODE}) — syncing DB..."
+        (
+            cd "${SERVER_DIR}"
+            [[ -f .venv/bin/activate ]] && source .venv/bin/activate
+            ADMIN_API_KEY="${ADMIN_API_KEY}" python3 - <<'PY'
+import os, sys, sqlite3
+sys.path.insert(0, 'control')
+from auth import hash_api_key
+conn = sqlite3.connect('control/rostaurant.db')
+n = conn.execute(
+    "UPDATE users SET api_key_hash = ? WHERE name = 'admin'",
+    (hash_api_key(os.environ["ADMIN_API_KEY"]),),
+).rowcount
+conn.commit()
+print(f"[system] Synced {n} admin user(s) to .env API key")
+PY
+        ) || echo "[system] WARNING: admin key sync failed"
+    fi
+fi
+
+# ── Sync place coordinates from map YAML if NULL ───────────────────
+if [[ -n "${MRTA_MAP_PATH:-}" && -f "${MRTA_MAP_PATH}" ]]; then
+    MRTA_MAP_PATH="${MRTA_MAP_PATH}" /usr/bin/python3 - "${SERVER_DIR}" <<'PY' || echo "[system] WARNING: place coord sync failed"
+import os, sys, sqlite3
+server_dir = sys.argv[1]
+sys.path.insert(0, os.path.join(server_dir, "lib"))
+from path_planning import load_buffet_map
+
+LABEL_TO_PLACE = {
+    "Kitchen": "KITCHEN", "Waiting": "WAIT_A", "Kiosk": "KIOSK_1",
+    "Table-N": "TBL_01", "Table-S": "TBL_02",
+    "Toilet": "TOILET", "Food1": "DISP_01", "Food2": "DISP_02",
+    "Food3": "DISP_03", "Collect": "DISP_04",
+}
+bm = load_buffet_map(os.environ["MRTA_MAP_PATH"])
+conn = sqlite3.connect(os.path.join(server_dir, "control/rostaurant.db"))
+changed = 0
+for wp in bm.graph.waypoints.values():
+    pid = LABEL_TO_PLACE.get(wp.label or "")
+    if not pid:
+        continue
+    row = conn.execute("SELECT x, y FROM places WHERE place_id = ?", (pid,)).fetchone()
+    if not row:
+        continue
+    if row[0] is None or row[1] is None or abs(row[0] - wp.x) > 1e-6 or abs(row[1] - wp.y) > 1e-6:
+        conn.execute(
+            "UPDATE places SET x = ?, y = ?, theta = ? WHERE place_id = ?",
+            (float(wp.x), float(wp.y), float(getattr(wp, "yaw", 0.0) or 0.0), pid),
+        )
+        changed += 1
+conn.commit()
+if changed:
+    print(f"[system] Synced {changed} place coord(s) from map YAML")
+PY
+fi
 
 # ── 3) Monitor (standalone, only if --monitor without dashboard) ──
 # The admin dashboard now includes the map visualization, so the

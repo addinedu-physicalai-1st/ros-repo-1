@@ -153,4 +153,14 @@ if __name__ == "__main__":
     app.setFont(font)
     window = UnifiedAdminGUI()
     window.showMaximized()
+    # Install SIGTERM/SIGINT handlers so kill_system.sh can shut us down
+    # cleanly. Qt's exec_() ignores Python-level signals unless we wake the
+    # event loop periodically.
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    from PyQt5.QtCore import QTimer
+    _wake = QTimer()
+    _wake.start(300)
+    _wake.timeout.connect(lambda: None)
     sys.exit(app.exec_())

@@ -49,19 +49,29 @@ done
 echo "[kill] Stopping RosTaurant system..."
 
 # ── 1) Dashboard (PyQt5 admin GUI) ────────────────────────────────
+# PyQt's exec_() ignores SIGINT, so go SIGTERM → SIGKILL quickly.
 DASHBOARD_PID_FILE="${RUN_DIR}/dashboard.pid"
 if [[ -f "${DASHBOARD_PID_FILE}" ]]; then
     pid="$(cat "${DASHBOARD_PID_FILE}")"
     if kill -0 "${pid}" 2>/dev/null; then
         echo "[kill] Stopping dashboard (PID ${pid})..."
-        kill -INT "${pid}" 2>/dev/null || true
-        sleep 1
-        kill -0 "${pid}" 2>/dev/null && kill -TERM "${pid}" 2>/dev/null || true
+        kill -TERM "${pid}" 2>/dev/null || true
+        for _ in 1 2 3; do
+            kill -0 "${pid}" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -0 "${pid}" 2>/dev/null && kill -KILL "${pid}" 2>/dev/null || true
     fi
     rm -f "${DASHBOARD_PID_FILE}"
 fi
-# Sweep any leftover dashboard processes
-pkill -f "admin_ui/main.py" 2>/dev/null || true
+# Sweep any leftover dashboard processes — match by cwd or script path,
+# since cmdline is just "python3 main.py" once the shell cd's into admin_ui.
+for p in $(pgrep -f "python3 main.py" 2>/dev/null); do
+    cwd=$(readlink "/proc/$p/cwd" 2>/dev/null || true)
+    case "$cwd" in
+        */ui/desktop/admin_ui*) kill -KILL "$p" 2>/dev/null || true ;;
+    esac
+done
 
 # ── 2) ROS2 Bridge ─────────────────────────────────────────────────
 BRIDGE_PID_FILE="${RUN_DIR}/bridge.pid"

@@ -257,7 +257,7 @@ class RobotBridge(threading.Thread):
 
                 # ── Pending goal: try to plan and dispatch ────
                 if pending_goal and not self._nav_busy:
-                    if now - last_replan_t >= 2.0:  # retry every 2s
+                    if now - last_replan_t >= 0.5:  # retry every 0.5s
                         last_replan_t = now
                         tx, ty, tt = pending_goal
                         path_msg = self._plan_nav_path(tx, ty, tt)
@@ -307,6 +307,16 @@ class RobotBridge(threading.Thread):
                                 self._send_status(tcp_sock, tag)
                             except Exception:
                                 pass
+                        # ACK the command so server marks task COMPLETED/FAILED
+                        if tcp_sock and pending_cmd_id:
+                            ack_status = (pb.AckStatus.EXECUTED if ok
+                                          else pb.AckStatus.ACK_FAILED)
+                            try:
+                                self._send_command_ack(
+                                    tcp_sock, tag, pending_cmd_id, ack_status)
+                            except Exception:
+                                pass
+                            pending_cmd_id = ""
                         active_goal_handle = None
                         result_future = None
                         goal_xy = None
@@ -326,8 +336,8 @@ class RobotBridge(threading.Thread):
                             except Exception:
                                 pass
 
-                    elif goal_xy and self._pose:
-                        # Proximity preempt
+                    elif goal_xy and self._pose and not preempted:
+                        # Proximity preempt — only fire once per goal
                         dist = math.hypot(
                             self._pose[0] - goal_xy[0],
                             self._pose[1] - goal_xy[1],
@@ -376,15 +386,33 @@ class RobotBridge(threading.Thread):
             )
             self._pose = (x, y, theta)
 
-            # Update shared pose + track waypoint visitation
+            # Update shared pose + track waypoint visitation.
+            # Advance idx when either (a) close to wps[idx], or (b) closer to
+            # wps[idx+1] than wps[idx] (robot has passed the current wp even
+            # if Nav2 cut the corner outside WP_PROXIMITY).
             with _shared_lock:
                 _robot_poses[self.robot_id] = (x, y)
                 wps = _active_paths.get(self.robot_id, [])
                 idx = _active_path_idx.get(self.robot_id, 0)
-                if wps and idx < len(wps) and self._buffet_map:
-                    wp = self._buffet_map.graph.waypoints.get(wps[idx])
-                    if wp and math.hypot(x - wp.x, y - wp.y) <= self.WP_PROXIMITY:
-                        _active_path_idx[self.robot_id] = idx + 1
+                graph = self._buffet_map.graph if self._buffet_map else None
+                while graph and wps and idx < len(wps):
+                    wp = graph.waypoints.get(wps[idx])
+                    if not wp:
+                        break
+                    d_cur = math.hypot(x - wp.x, y - wp.y)
+                    passed = False
+                    if d_cur <= self.WP_PROXIMITY:
+                        passed = True
+                    elif idx + 1 < len(wps):
+                        nxt = graph.waypoints.get(wps[idx + 1])
+                        if nxt:
+                            d_nxt = math.hypot(x - nxt.x, y - nxt.y)
+                            if d_nxt < d_cur:
+                                passed = True
+                    if not passed:
+                        break
+                    idx += 1
+                    _active_path_idx[self.robot_id] = idx
         except Exception:
             pass
 
@@ -484,10 +512,21 @@ class RobotBridge(threading.Thread):
             _active_path_idx[self.robot_id] = 0
 
         points = densify_path(graph, plan_waypoints, step=0.05)
+        # Append the actual MOVE_TO target as the final point so the robot
+        # ends at the dispatched coordinates (not just the nearest YAML wp).
+        # This makes DB-saved place coords (e.g. dragged/edited) the source
+        # of truth for the final destination, not the static graph.
+        if points:
+            last_x, last_y = points[-1]
+            if math.hypot(last_x - goal_x, last_y - goal_y) > 0.02:
+                points.append((goal_x, goal_y))
+        else:
+            points = [(goal_x, goal_y)]
         wp_labels = []
         for wp_id in plan_waypoints:
             wp = graph.waypoints[wp_id]
             wp_labels.append(wp.label or f"({wp.x:.2f},{wp.y:.2f})")
+        wp_labels.append(f"→({goal_x:.2f},{goal_y:.2f})")
         print(f"[{self.robot_id}] Path: {' → '.join(wp_labels)}")
         return _build_nav_path(points)
 
@@ -688,9 +727,31 @@ def main() -> None:
 
     print(f"ROS2 bridge running ({len(bridges)} robots). Ctrl+C to stop.")
 
+    # Watch the map YAML so admin edits propagate without a full restart.
+    last_mtime = None
+    if map_path and _HAS_PLANNER and os.path.isfile(map_path):
+        try:
+            last_mtime = os.path.getmtime(map_path)
+        except OSError:
+            last_mtime = None
+
     try:
         while True:
             time.sleep(1)
+            if map_path and _HAS_PLANNER and last_mtime is not None:
+                try:
+                    mt = os.path.getmtime(map_path)
+                except OSError:
+                    continue
+                if mt != last_mtime:
+                    last_mtime = mt
+                    try:
+                        new_map = load_buffet_map(map_path)
+                        for b in bridges:
+                            b._buffet_map = new_map
+                        print(f"[map] reloaded {map_path} ({len(new_map.graph.waypoints)} wps)")
+                    except Exception as e:
+                        print(f"[map] reload failed: {e}")
     except KeyboardInterrupt:
         pass
     finally:

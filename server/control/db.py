@@ -188,6 +188,7 @@ class Database:
         ("DISP_04",   "진열장 4",         4, 15),
         ("DISP_05",   "진열장 5",         4, 16),
         ("DISP_06",   "진열장 6",         4, 17),
+        *[(f"USER_{i:02d}", f"사용자 {i}", 6, 17 + i) for i in range(1, 31)],
     ]
 
     # (name, place_id, sort_order) — 진열장 6곳과 1:1 매핑
